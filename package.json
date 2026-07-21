@@ -1,0 +1,102 @@
+{
+  "name": "clamps-vscode",
+  "displayName": "CLAMPS",
+  "description": "CLAMPS-Sprachunterstützung für VS Code über LSP (Swank-Bridge)",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:lisp",
+    "onCommand:clamps.openRepl",
+    "onCommand:clamps.macroexpand",
+    "onCommand:clamps.macroexpandAll"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "clamps.start",
+        "title": "CLAMPS: Start"
+      },
+      {
+        "command": "clamps.stop",
+        "title": "CLAMPS: Stop"
+      },
+      {
+        "command": "clamps.restart",
+        "title": "CLAMPS: Restart"
+      },
+      {
+        "command": "clamps.openRepl",
+        "title": "CLAMPS: Open REPL"
+      },
+      {
+        "command": "clamps.evalSelection",
+        "title": "CLAMPS: Evaluate Selection or Line"
+      },
+      {
+        "command": "clamps.evalFile",
+        "title": "CLAMPS: Evaluate File"
+      },
+      {
+        "command": "clamps.macroexpand",
+        "title": "CLAMPS: Macroexpand-1 (eine Ebene)"
+      },
+      {
+        "command": "clamps.macroexpandAll",
+        "title": "CLAMPS: Macroexpand (vollständig)"
+      }
+    ],
+    "languages": [
+      {
+        "id": "lisp",
+        "extensions": [
+          ".lisp",
+          ".cl",
+          ".asd"
+        ],
+        "aliases": [
+          "Common Lisp",
+          "lisp"
+        ]
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "clamps.evalSelection",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.openRepl",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r"
+      },
+      {
+        "command": "clamps.macroexpand",
+        "key": "ctrl+c ctrl+m",
+        "when": "editorTextFocus && editorLangId == lisp"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

@@ -1,0 +1,572 @@
+;;;; bridge-server.lisp
+;;;;
+;;;; Übersetzt zwischen LSP (JSON-RPC über stdio, Richtung VS Code) und
+;;;; dem Swank-Wire-Protokoll (Richtung SBCL-Prozess aus bootstrap.lisp).
+;;;;
+;;;; WICHTIG: *standard-output* ist der LSP-Nachrichtenkanal. Es darf
+;;;; NICHTS außer über write-lsp-message dort landen – jedes stray
+;;;; (format t ...) oder eine SBCL-Warnung auf stdout zerstört das
+;;;; Framing. Logging geht deshalb konsequent in bridge.log, nie auf
+;;;; stdout. stderr ist unkritisch (VS Code liest davon nicht für LSP).
+;;;;
+;;;; BEKANNTE EINSCHRÄNKUNGEN (bewusst nicht gelöst, für den nächsten
+;;;; Ausbauschritt):
+;;;;   - Positions-Handling ist naives Zeichen-Counting, kein UTF-16-
+;;;;     Code-Unit-Offset wie es der LSP-Spec eigentlich verlangt.
+;;;;     Bei Umlauten/Emoji in Kommentaren kann das um wenige Zeichen
+;;;;     danebenliegen.
+;;;;   - read-swank-message nutzt CL:READ-FROM-STRING auf der Antwort.
+;;;;     Enthält die Antwort Symbole aus Paketen, die im Bridge-Prozess
+;;;;     nicht existieren (z. B. interne CLAMPS-Symbole in Backtraces),
+;;;;     schlägt das Lesen fehl. Aktuell: Fehler wird geloggt, Anfrage
+;;;;     bekommt eine leere Antwort statt eines Absturzes. Für robustere
+;;;;     Introspektion bräuchte es einen toleranten Reader.
+;;;;   - DAP (Debugger) ist NICHT implementiert. :debug-Events von Swank
+;;;;     werden nur geloggt. Siehe TODO bei handle-swank-message.
+
+(require :asdf)
+
+(let ((ql-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file ql-init) (load ql-init)))
+
+(handler-case
+    (ql:quickload '(:usocket :bordeaux-threads) :silent t)
+  (error (e)
+    (format *error-output* "~&[clamps-bridge] FATAL beim Laden von usocket/bordeaux-threads: ~A~%" e)
+    (force-output *error-output*)
+    (sb-ext:exit :code 1)))
+
+(defpackage :clamps-bridge
+  (:use :cl))
+(in-package :clamps-bridge)
+
+;;; ---------------------------------------------------------------------
+;;; Logging (niemals auf *standard-output* – siehe Kommentar oben)
+;;; ---------------------------------------------------------------------
+
+(defvar *log-file* nil)
+(defparameter *fallback-log-file* #P"/tmp/clamps-bridge-fallback.log")
+
+(defun init-logging (session-dir)
+  (setf *log-file* (merge-pathnames "bridge.log" session-dir)))
+
+(defun log-msg (fmt &rest args)
+  ;; Schreibt IMMER irgendwohin, auch bevor init-logging lief (Fehler
+  ;; ganz am Anfang landeten vorher im Nichts, weil *log-file* noch nil
+  ;; war und die alte Version dann einfach gar nichts tat).
+  (let ((target (or *log-file* *fallback-log-file*)))
+    (ignore-errors
+      (with-open-file (s target :direction :output
+                                 :if-exists :append
+                                 :if-does-not-exist :create)
+        (format s "~&[~A] " (get-universal-time))
+        (apply #'format s fmt args)
+        (terpri s))))
+  ;; Zusätzlich auf stderr: bei manuellem Start im Terminal sofort
+  ;; sichtbar, unabhängig davon ob das Log-File-Schreiben klappt.
+  (ignore-errors
+    (format *error-output* "~&[clamps-bridge] ")
+    (apply #'format *error-output* fmt args)
+    (terpri *error-output*)
+    (force-output *error-output*)))
+
+;;; ---------------------------------------------------------------------
+;;; Minimaler JSON-Reader/-Writer (bewusst ohne yason/jzon-Abhängigkeit,
+;;; um explizite Kontrolle über true/false/null zu haben)
+;;; ---------------------------------------------------------------------
+
+(defun make-jobj (&rest plist)
+  (let ((h (make-hash-table :test 'equal)))
+    (loop for (k v) on plist by #'cddr do (setf (gethash k h) v))
+    h))
+
+(defun json-read (string)
+  (let ((pos 0) (len (length string)))
+    (labels ((peek () (if (< pos len) (char string pos) nil))
+             (advance () (prog1 (peek) (incf pos)))
+             (skip-ws ()
+               (loop while (and (< pos len)
+                                 (member (peek) '(#\Space #\Tab #\Newline #\Return)))
+                     do (incf pos)))
+             (parse-value ()
+               (skip-ws)
+               (case (peek)
+                 (#\{ (parse-object))
+                 (#\[ (parse-array))
+                 (#\" (parse-string))
+                 (t (cond
+                      ((and (<= (+ pos 4) len) (string= string "true" :start1 pos :end1 (+ pos 4)))
+                       (incf pos 4) :true)
+                      ((and (<= (+ pos 5) len) (string= string "false" :start1 pos :end1 (+ pos 5)))
+                       (incf pos 5) :false)
+                      ((and (<= (+ pos 4) len) (string= string "null" :start1 pos :end1 (+ pos 4)))
+                       (incf pos 4) :null)
+                      (t (parse-number))))))
+             (parse-object ()
+               (let ((h (make-hash-table :test 'equal)))
+                 (advance) ; {
+                 (skip-ws)
+                 (unless (eql (peek) #\})
+                   (loop
+                     (skip-ws)
+                     (let ((key (parse-string)))
+                       (skip-ws) (advance) ; :
+                       (setf (gethash key h) (parse-value)))
+                     (skip-ws)
+                     (if (eql (peek) #\,) (advance) (return))))
+                 (skip-ws) (advance) ; }
+                 h))
+             (parse-array ()
+               (let ((items '()))
+                 (advance) ; [
+                 (skip-ws)
+                 (unless (eql (peek) #\])
+                   (loop
+                     (push (parse-value) items)
+                     (skip-ws)
+                     (if (eql (peek) #\,) (advance) (return))))
+                 (skip-ws) (advance) ; ]
+                 (coerce (nreverse items) 'vector)))
+             (parse-string ()
+               (advance) ; "
+               (with-output-to-string (s)
+                 (loop
+                   (let ((ch (advance)))
+                     (cond
+                       ((eql ch #\") (return))
+                       ((eql ch #\\)
+                        (let ((esc (advance)))
+                          (case esc
+                            (#\n (write-char #\Newline s))
+                            (#\t (write-char #\Tab s))
+                            (#\r (write-char #\Return s))
+                            (#\u (let ((hex (subseq string pos (+ pos 4))))
+                                   (incf pos 4)
+                                   (write-char (code-char (parse-integer hex :radix 16)) s)))
+                            (t (write-char esc s)))))
+                       (t (write-char ch s)))))))
+             (parse-number ()
+               (let ((start pos))
+                 (loop while (and (< pos len) (find (peek) "-+0123456789.eE")) do (advance))
+                 (let ((token (subseq string start pos)))
+                   (if (find-if (lambda (c) (find c ".eE")) token)
+                       (let ((*read-default-float-format* 'double-float))
+                         (read-from-string token))
+                       (parse-integer token))))))
+      (parse-value))))
+
+(defun json-write-string (s stream)
+  (write-char #\" stream)
+  (loop for ch across s do
+    (case ch
+      (#\" (write-string "\\\"" stream))
+      (#\\ (write-string "\\\\" stream))
+      (#\Newline (write-string "\\n" stream))
+      (#\Tab (write-string "\\t" stream))
+      (#\Return (write-string "\\r" stream))
+      (t (write-char ch stream))))
+  (write-char #\" stream))
+
+(defun json-write (obj stream)
+  (etypecase obj
+    (hash-table
+     (write-char #\{ stream)
+     (let ((first t))
+       (maphash (lambda (k v)
+                  (unless first (write-char #\, stream))
+                  (setf first nil)
+                  (json-write-string k stream)
+                  (write-char #\: stream)
+                  (json-write v stream))
+                obj))
+     (write-char #\} stream))
+    ;; STRING must precede VECTOR: Common Lisp strings are vectors of characters.
+    (string (json-write-string obj stream))
+    (vector
+     (write-char #\[ stream)
+     (loop for i from 0 below (length obj)
+           do (when (> i 0) (write-char #\, stream))
+              (json-write (aref obj i) stream))
+     (write-char #\] stream))
+    (integer (format stream "~D" obj))
+    (float (format stream "~F" obj))
+    (symbol
+     (cond
+       ((eq obj :true) (write-string "true" stream))
+       ((eq obj :false) (write-string "false" stream))
+       ((or (eq obj :null) (null obj)) (write-string "null" stream))
+       (t (json-write-string (string-downcase (symbol-name obj)) stream))))))
+
+;;; ---------------------------------------------------------------------
+;;; LSP-Transport (Content-Length-Framing über stdio)
+;;; ---------------------------------------------------------------------
+
+(defvar *stdout-lock* (bt:make-lock))
+
+(defun read-lsp-message (stream)
+  (let ((content-length nil))
+    (loop
+      (let ((line (read-line stream nil nil)))
+        (when (null line) (return-from read-lsp-message nil))
+        (setf line (string-right-trim '(#\Return) line))
+        (when (string= line "") (return))
+        (let ((idx (position #\: line)))
+          (when (and idx (string-equal (subseq line 0 idx) "Content-Length"))
+            (setf content-length (parse-integer (string-trim " " (subseq line (1+ idx)))))))))
+    (unless content-length (return-from read-lsp-message nil))
+    (let ((buf (make-string content-length)))
+      (read-sequence buf stream)
+      (json-read buf))))
+
+(defun write-lsp-message (obj)
+  (bt:with-lock-held (*stdout-lock*)
+    (let ((body (with-output-to-string (s) (json-write obj s))))
+      (format *standard-output* "Content-Length: ~D~C~C~C~C"
+              (length body) #\Return #\Newline #\Return #\Newline)
+      (write-string body *standard-output*)
+      (force-output *standard-output*))))
+
+(defun send-response (id result)
+  (write-lsp-message (make-jobj "jsonrpc" "2.0" "id" id "result" result)))
+
+(defun send-error (id code message)
+  (write-lsp-message
+   (make-jobj "jsonrpc" "2.0" "id" id
+              "error" (make-jobj "code" code "message" message))))
+
+;;; ---------------------------------------------------------------------
+;;; Swank-Client (Wire-Protokoll: 6-Hex-Zeichen Länge + gedruckte Form)
+;;; ---------------------------------------------------------------------
+
+(defvar *swank-stream*)
+(defvar *swank-lock* (bt:make-lock))
+(defvar *pending-requests* (make-hash-table))
+(defvar *swank-request-id* 0)
+(defvar *swank-package* "COMMON-LISP-USER")
+
+(defun next-swank-id ()
+  (bt:with-lock-held (*swank-lock*) (incf *swank-request-id*)))
+
+(defun connect-swank (host port)
+  (usocket:socket-stream (usocket:socket-connect host port :element-type 'character)))
+
+(defun send-swank-text (text)
+  (bt:with-lock-held (*swank-lock*)
+    (write-string (format nil "~6,'0X" (length text)) *swank-stream*)
+    (write-string text *swank-stream*)
+    (force-output *swank-stream*)))
+
+(defun swank-rex (form-string &key (package *swank-package*) callback)
+  "FORM-STRING ist ein fertig formatierter Lisp-Form-String, z.B.
+   (format nil \"(swank:simple-completions ~S ~S)\" prefix package).
+   Bewusst String statt Lisp-Datenstruktur: so muss das Bridge-Image
+   die Symbole (swank:..., clamps:...) nicht selbst kennen."
+  (let ((id (next-swank-id)))
+    (when callback (setf (gethash id *pending-requests*) callback))
+    (send-swank-text (format nil "(:emacs-rex ~A ~S t ~D)" form-string package id))
+    id))
+
+(defun read-swank-message (stream)
+  (let ((len-str (make-string 6)))
+    (let ((n (read-sequence len-str stream)))
+      (when (< n 6) (return-from read-swank-message nil)))
+    (let* ((len (parse-integer len-str :radix 16))
+           (buf (make-string len)))
+      (read-sequence buf stream)
+      (handler-case
+          (let ((*read-eval* nil)) ; niemals #.-Forms remote auswerten
+            (read-from-string buf))
+        (error (e)
+          (log-msg "Konnte Swank-Antwort nicht lesen (~A): ~A" e
+                    (subseq buf 0 (min 200 (length buf))))
+          :unreadable)))))
+
+(defun handle-swank-message (msg)
+  (cond
+    ((eq msg :unreadable) nil)
+    ((not (consp msg)) (log-msg "Unerwartete Swank-Nachricht: ~S" msg))
+    ((eq (first msg) :return)
+     (let* ((result (second msg))
+            (id (third msg))
+            (cb (gethash id *pending-requests*)))
+       (remhash id *pending-requests*)
+       (when cb
+         (if (and (consp result) (eq (first result) :ok))
+             (funcall cb :ok (second result))
+             (funcall cb :abort result)))))
+    ((eq (first msg) :debug)
+     ;; TODO: hier setzt die DAP-Anbindung an. Ein :debug-Event heißt,
+     ;; SBCL ist in den Debugger gefallen (Condition + Restarts). Für
+     ;; DAP müsste das zu einem StoppedEvent + StackTraceResponse
+     ;; werden, siehe swank:debugger-info-for-emacs für die Struktur.
+     (log-msg "Debug-Event empfangen (DAP noch nicht angebunden): ~S" msg))
+    (t (log-msg "Unbehandeltes Swank-Event: ~S" (first msg)))))
+
+(defun swank-reader-loop ()
+  (loop
+    (let ((msg (handler-case (read-swank-message *swank-stream*)
+                 (error (e) (log-msg "Swank-Leseschleife-Fehler: ~A" e) nil))))
+      (unless msg (return))
+      (handle-swank-message msg))))
+
+;;; ---------------------------------------------------------------------
+;;; Dokument-Store + Symbol-Erkennung an Cursor-Position
+;;; ---------------------------------------------------------------------
+
+(defvar *documents* (make-hash-table :test 'equal))
+
+(defun nth-line (text line-number)
+  (let ((start 0) (current 0))
+    (loop
+      (let ((nl (position #\Newline text :start start)))
+        (when (= current line-number)
+          (return-from nth-line (subseq text start (or nl (length text)))))
+        (unless nl (return-from nth-line ""))
+        (setf start (1+ nl))
+        (incf current)))))
+
+(defun symbol-constituent-p (ch)
+  (or (alphanumericp ch) (find ch "-+*/<>=!?_%&^~.:@")))
+
+(defun symbol-at (text line character)
+  (let ((line-text (nth-line text line)))
+    (when (and line-text (<= character (length line-text)))
+      (let ((start character) (end character))
+        (loop while (and (> start 0) (symbol-constituent-p (char line-text (1- start))))
+              do (decf start))
+        (loop while (and (< end (length line-text)) (symbol-constituent-p (char line-text end)))
+              do (incf end))
+        (when (> end start) (subseq line-text start end))))))
+
+;;; ---------------------------------------------------------------------
+;;; LSP-Request-Handler
+;;; ---------------------------------------------------------------------
+
+(defun handle-initialize (id)
+  (send-response id
+    (make-jobj
+     "capabilities" (make-jobj
+                     "textDocumentSync" 1 ; Full-Sync, einfachste Variante
+                     "hoverProvider" :true
+                     "completionProvider" (make-jobj "triggerCharacters" (vector))
+                     "definitionProvider" :true)
+     "serverInfo" (make-jobj "name" "clamps-bridge" "version" "0.1.0"))))
+
+(defun handle-did-open (params)
+  (let* ((doc (gethash "textDocument" params)))
+    (setf (gethash (gethash "uri" doc) *documents*) (gethash "text" doc))))
+
+(defun handle-did-change (params)
+  (let* ((doc (gethash "textDocument" params))
+         (changes (gethash "contentChanges" params)))
+    (when (> (length changes) 0)
+      (setf (gethash (gethash "uri" doc) *documents*)
+            (gethash "text" (aref changes 0))))))
+
+(defun position-symbol (params)
+  (let* ((doc (gethash "textDocument" params))
+         (pos (gethash "position" params))
+         (text (gethash (gethash "uri" doc) *documents*)))
+    (and text (symbol-at text (gethash "line" pos) (gethash "character" pos)))))
+
+(defun handle-hover (id params)
+  (let ((sym (position-symbol params)))
+    (if (null sym)
+        (send-response id :null)
+        (swank-rex
+         (format nil "(swank:describe-symbol ~S)" sym)
+         :callback
+         (lambda (status value)
+           (if (eq status :ok)
+               (send-response id (make-jobj "contents" (make-jobj "kind" "markdown" "value" (or value ""))))
+               (send-response id :null)))))))
+
+(defun handle-completion (id params)
+  (let ((prefix (or (position-symbol params) "")))
+    (swank-rex
+     (format nil "(swank:simple-completions ~S ~S)" prefix *swank-package*)
+     :callback
+     (lambda (status value)
+       (send-response id
+         (if (and (eq status :ok) (consp value) (consp (first value)))
+             (map 'vector (lambda (label) (make-jobj "label" label "kind" 12)) (first value))
+             (vector)))))))
+
+(defun offset->line-char (filepath offset)
+  "Best-effort: zählt Zeilenumbrüche bis OFFSET. Swank-Offsets sind
+   1-indexierte Buffer-Positionen, hier grob auf 0-indexiert gemappt."
+  (handler-case
+      (with-open-file (s filepath :direction :input)
+        (let ((line 0) (col 0) (count 0))
+          (loop
+            (let ((ch (read-char s nil nil)))
+              (when (or (null ch) (>= count offset)) (return))
+              (if (char= ch #\Newline) (progn (incf line) (setf col 0)) (incf col))
+              (incf count)))
+          (values line col)))
+    (error () (values 0 0))))
+
+(defun definitions->locations (defs)
+  (let ((out '()))
+    (when (consp defs)
+      (dolist (def defs)
+        (let ((loc (second def)))
+          (when (and (consp loc) (eq (first loc) :location))
+            (let* ((file-part (find :file (rest loc) :key #'first :test (lambda (a b) (eq a (and (consp b) (first b))))))
+                   (pos-part (find :position (rest loc) :key #'first :test (lambda (a b) (eq a (and (consp b) (first b))))))
+                   (file (and file-part (second file-part)))
+                   (offset (and pos-part (second pos-part))))
+              (when (and file offset)
+                (multiple-value-bind (line col) (offset->line-char file (max 0 (1- offset)))
+                  (push (make-jobj
+                         "uri" (format nil "file://~A" file)
+                         "range" (make-jobj
+                                  "start" (make-jobj "line" line "character" col)
+                                  "end" (make-jobj "line" line "character" col)))
+                        out))))))))
+    (coerce (nreverse out) 'vector)))
+
+(defun handle-definition (id params)
+  (let ((sym (position-symbol params)))
+    (if (null sym)
+        (send-response id (vector))
+        (swank-rex
+         (format nil "(swank:find-definitions-for-emacs ~S)" sym)
+         :callback
+         (lambda (status value)
+           (send-response id (if (eq status :ok) (definitions->locations value) (vector))))))))
+
+(defun lisp-escape-string (s)
+  "Escaped einen String für das Einbetten in eine Lisp-Form via ~S.
+   Prin1 macht das korrekt inkl. Quotes und Backslashes."
+  (prin1-to-string s))
+
+(defun handle-eval (id params)
+  "clamps/eval — wertet Code in der laufenden CLAMPS-Session aus.
+   Client schickt {code, package}, erwartet {output, package}."
+  (let* ((code (gethash "code" params))
+         (pkg (or (gethash "package" params) *swank-package*)))
+    (if (or (null code) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) code) ""))
+        (send-response id (make-jobj "output" "" "package" pkg))
+        ;; eval-for-repl gibt (STATUS OUTPUT PACKAGE) zurück. Wir bauen
+        ;; die Form als String, code und pkg werden via ~S sauber
+        ;; escaped (prin1-Repräsentation), damit Anführungszeichen,
+        ;; Backslashes und Zeilenumbrüche im Code nicht die Form zerlegen.
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:eval-for-repl ~S ~S)" code pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value))
+               (let* ((eval-status (first value))
+                      (output (or (second value) ""))
+                      (result-pkg (or (third value) pkg)))
+                 (declare (ignore eval-status))
+                 ;; Wichtig: das TS-Terminal rendert output einfach als
+                 ;; Text, Fehler und Werte kommen beide über denselben
+                 ;; Kanal. Der eval-status (:ok/:error) ist im String
+                 ;; bereits enthalten (Fehlertext), daher hier egal.
+                 (when result-pkg (setf *swank-package* result-pkg))
+                 (send-response id (make-jobj "output" output "package" result-pkg)))
+               ;; Swank selbst hat den Aufruf abgebrochen (z.B. Funktion
+               ;; nicht gefunden, Reader-Fehler in der RPC-Form).
+               (send-response id
+                 (make-jobj "output"
+                            (format nil "Bridge-Eval fehlgeschlagen: ~A" value)
+                            "package" pkg))))))))
+
+(defun handle-macroexpand (id params)
+  "clamps/macroexpand — expandiert die Form im Code-String.
+   Client schickt {code, package, full}, erwartet {output, package}."
+  (let* ((code (gethash "code" params))
+         (pkg (or (gethash "package" params) *swank-package*))
+         (full (gethash "full" params)))
+    (if (or (null code) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) code) ""))
+        (send-response id (make-jobj "output" "" "package" pkg))
+        ;; full ist :true/:false (aus json-read) oder nil. Für die Lisp-
+        ;; Seite in t/nil übersetzen: nur :true zählt als voll.
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:macroexpand-for-repl ~S ~S ~A)"
+                 code pkg (if (eq full :true) "t" "nil"))
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value))
+               (let ((output (or (second value) ""))
+                     (result-pkg (or (third value) pkg)))
+                 (send-response id (make-jobj "output" output "package" result-pkg)))
+               (send-response id
+                 (make-jobj "output"
+                            (format nil "Bridge-Macroexpand fehlgeschlagen: ~A" value)
+                            "package" pkg))))))))
+
+(defun handle-request (msg)
+  (let ((method (gethash "method" msg))
+        (id (gethash "id" msg))
+        (params (gethash "params" msg)))
+    (handler-case
+        (cond
+          ((string= method "initialize") (handle-initialize id))
+          ((string= method "shutdown") (send-response id :null))
+          ((string= method "exit") (finish-output) (sb-ext:exit :code 0))
+          ((string= method "textDocument/didOpen") (handle-did-open params))
+          ((string= method "textDocument/didChange") (handle-did-change params))
+          ((string= method "textDocument/hover") (handle-hover id params))
+          ((string= method "textDocument/completion") (handle-completion id params))
+          ((string= method "textDocument/definition") (handle-definition id params))
+          ((string= method "clamps/eval") (handle-eval id params))
+          ((string= method "clamps/macroexpand") (handle-macroexpand id params))
+          (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
+          (t (log-msg "Unbehandelte Notification: ~A" method)))
+      (error (e)
+        (log-msg "Fehler beim Behandeln von ~A: ~A" method e)
+        (when id (send-error id -32603 (format nil "Interner Fehler: ~A" e)))))))
+
+;;; ---------------------------------------------------------------------
+;;; Session-Datei lesen/abwarten (geschrieben von bootstrap.lisp)
+;;; ---------------------------------------------------------------------
+
+(defun read-stream-to-string (stream)
+  (with-output-to-string (out)
+    (loop for line = (read-line stream nil nil) while line do (write-line line out))))
+
+(defun wait-for-ready (session-file &optional (timeout-seconds 60))
+  (let ((start (get-universal-time)))
+    (loop
+      (let ((info (ignore-errors
+                    (with-open-file (s session-file :direction :input)
+                      (json-read (read-stream-to-string s))))))
+        (when (and info (equal (gethash "status" info) "ready"))
+          (return-from wait-for-ready info))
+        (when (and info (equal (gethash "status" info) "error"))
+          (error "CLAMPS-Bootstrap meldet Fehler: ~A" (gethash "detail" info))))
+      (when (> (- (get-universal-time) start) timeout-seconds)
+        (error "Timeout: Session in ~A nicht bereit nach ~As" session-file timeout-seconds))
+      (sleep 0.3))))
+
+;;; ---------------------------------------------------------------------
+;;; Einstiegspunkt
+;;; ---------------------------------------------------------------------
+
+(defun main ()
+  (let* ((session-dir-str (or (sb-ext:posix-getenv "CLAMPS_SESSION_DIR")
+                               (error "CLAMPS_SESSION_DIR nicht gesetzt")))
+         ;; Trailing slash erzwingen, sonst behandelt merge-pathnames
+         ;; den letzten Pfadteil als Dateinamen statt als Verzeichnis.
+         (session-dir (pathname (concatenate 'string session-dir-str "/")))
+         (session-file (merge-pathnames "session.json" session-dir)))
+    (init-logging session-dir)
+    (log-msg "Bridge-Server startet, warte auf ~A" session-file)
+    (let* ((info (wait-for-ready session-file))
+           (port (gethash "port" info)))
+      (log-msg "Session bereit, verbinde zu Swank auf Port ~A" port)
+      (setf *swank-stream* (connect-swank "127.0.0.1" port))
+      (bt:make-thread #'swank-reader-loop :name "swank-reader")
+      (log-msg "Verbunden. Starte LSP-Loop auf stdio.")
+      (loop
+        (let ((msg (read-lsp-message *standard-input*)))
+          (unless msg (return))
+          (handle-request msg))))))
+
+(handler-case (main)
+  (error (e)
+    (log-msg "Fataler Fehler: ~A" e)
+    (sb-ext:exit :code 1)))
