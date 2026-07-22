@@ -86,7 +86,20 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   handleInput(data: string): void {
-    // VS Code may deliver escape sequences and pasted text in one chunk.
+    // Paste-Erkennung: Ein einzelner Tastendruck liefert genau EIN Zeichen
+    // (oder eine kurze Escape-Sequenz, die mit \x1b beginnt). Kommt mehr
+    // als ein Zeichen auf einmal und beginnt NICHT mit \x1b, ist es
+    // eingefügter Text — egal ob mit oder ohne Zeilenumbruch. (Auch
+    // "paste as one line" landet hier, weil es zwar die Newlines entfernt,
+    // aber immer noch als ein mehrzeichiger Block ankommt.) So löst kein
+    // eingebettetes \r ein vorzeitiges submit() aus und die Prompt-Zeile
+    // wird nur EINMAL gerendert statt pro Zeichen.
+    if (data.length > 1 && !data.startsWith('\x1b')) {
+      this.handlePaste(data);
+      return;
+    }
+
+    // VS Code may deliver escape sequences in one chunk.
     for (let index = 0; index < data.length;) {
       if (data.startsWith('\x1b[A', index)) {
         this.previousHistory();
@@ -126,6 +139,26 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
         }
       }
     }
+  }
+
+  /**
+   * Fügt eingefügten (gepasteten) Text ein. Zeilenumbrüche (\r\n, \r, \n)
+   * werden zu einem einheitlichen \n normalisiert und als Teil des
+   * Buffers eingefügt — NICHT als submit interpretiert. So kann man
+   * mehrzeilige Formen einfügen, ohne dass jede Zeile sofort abgeschickt
+   * wird. Gerendert wird nur EINMAL am Ende, nicht pro Zeichen.
+   */
+  private handlePaste(data: string): void {
+    const normalized = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // Steuerzeichen außer \n und \t herausfiltern, damit kein \x03 o.ä.
+    // im Buffer landet.
+    const cleaned = Array.from(normalized)
+      .filter(ch => ch === '\n' || ch === '\t' || ch >= ' ')
+      .join('');
+    this.buffer =
+      this.buffer.slice(0, this.cursor) + cleaned + this.buffer.slice(this.cursor);
+    this.cursor += cleaned.length;
+    this.renderInput();
   }
 
   async evaluateCode(code: string): Promise<void> {

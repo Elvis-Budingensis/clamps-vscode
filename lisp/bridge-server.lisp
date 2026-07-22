@@ -498,6 +498,26 @@
                             (format nil "Bridge-Macroexpand fehlgeschlagen: ~A" value)
                             "package" pkg))))))))
 
+(defun handle-disassemble (id params)
+  "clamps/disassemble — disassembliert die Funktion am Symbol.
+   Client schickt {symbol, package}, erwartet {output, package}."
+  (let* ((symbol (gethash "symbol" params))
+         (pkg (or (gethash "package" params) *swank-package*)))
+    (if (or (null symbol) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) symbol) ""))
+        (send-response id (make-jobj "output" "" "package" pkg))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:disassemble-for-repl ~S ~S)" symbol pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value))
+               (let ((output (or (second value) ""))
+                     (result-pkg (or (third value) pkg)))
+                 (send-response id (make-jobj "output" output "package" result-pkg)))
+               (send-response id
+                 (make-jobj "output"
+                            (format nil "Bridge-Disassemble fehlgeschlagen: ~A" value)
+                            "package" pkg))))))))
+
 (defun handle-request (msg)
   (let ((method (gethash "method" msg))
         (id (gethash "id" msg))
@@ -514,6 +534,7 @@
           ((string= method "textDocument/definition") (handle-definition id params))
           ((string= method "clamps/eval") (handle-eval id params))
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
+          ((string= method "clamps/disassemble") (handle-disassemble id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
       (error (e)

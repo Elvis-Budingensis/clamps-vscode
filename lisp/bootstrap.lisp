@@ -182,8 +182,47 @@
 
 (defpackage :clamps-bridge-rpc
   (:use :cl)
-  (:export #:eval-for-repl #:macroexpand-for-repl))
+  (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl))
 (in-package :clamps-bridge-rpc)
+
+(defun disassemble-for-repl (symbol-string package-name)
+  "Disassembliert die Funktion, auf die SYMBOL-STRING im Paket
+   PACKAGE-NAME zeigt, und gibt den nativen Maschinencode als Text
+   zurück. Das ist genau das, was SBCLs (disassemble #'fn) auf
+   *standard-output* schreibt — wir fangen es in einen String.
+   Gibt (STATUS OUTPUT-STRING PACKAGE-STRING) zurück."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               ;; Symbol aus dem String lesen (respektiert Paket-Prefixe
+               ;; wie clamps::rts-start, weil *package* gebunden ist).
+               (sym (let ((*read-eval* nil))
+                      (read-from-string symbol-string))))
+          (cond
+            ((not (symbolp sym))
+             (list :error
+                   (format nil "~S ist kein Symbol." sym)
+                   (package-name pkg)))
+            ((not (fboundp sym))
+             (list :error
+                   (format nil "~A ist keine Funktion (fboundp = nil)." sym)
+                   (package-name pkg)))
+            ((macro-function sym)
+             ;; disassemble auf ein Makro ist wenig sinnvoll — die
+             ;; Expander-Funktion würde disassembliert, nicht das, was
+             ;; der Nutzer erwartet. Ehrlich zurückmelden.
+             (list :error
+                   (format nil "~A ist ein Makro, kein disassemblierbarer Funktionsaufruf.~%~
+                                Für Makros eignet sich Macroexpand." sym)
+                   (package-name pkg)))
+            (t
+             (let ((out (make-string-output-stream)))
+               (let ((*standard-output* out))
+                 (disassemble (fdefinition sym)))
+               (list :ok (get-output-stream-string out) (package-name pkg))))))
+      (error (e)
+        (list :error (format nil "~A" e) (package-name pkg))))))
 
 (defun macroexpand-for-repl (code-string package-name full-p)
   "Liest die ERSTE Form aus CODE-STRING und expandiert sie im Paket
@@ -226,12 +265,26 @@
    zurück, STATUS ist :OK oder :ERROR."
   (let* ((pkg (or (find-package (string-upcase package-name))
                   (find-package :common-lisp-user)))
-         (out (make-string-output-stream)))
+         (out (make-string-output-stream))
+         ;; Ein Synonym-Stream, der auf out zeigt, damit alle Streams
+         ;; wirklich denselben Puffer teilen.
+         (two-way (make-two-way-stream (make-string-input-stream "") out)))
+    (declare (ignorable two-way))
     (handler-case
+        ;; ALLE Standard-Output-Streams auf out binden. Vorher waren nur
+        ;; *standard-output*/*error-output*/*trace-output* gebunden; CLAMPS
+        ;; (z.B. (clamps), describe) schreibt aber teils über *debug-io*,
+        ;; *query-io* und *terminal-io*. Blieb einer davon an Swanks
+        ;; Original-Stream gebunden, erschien die Ausgabe zusätzlich über
+        ;; Swank und damit DOPPELT in der REPL. Jetzt teilen sich alle
+        ;; denselben Puffer.
         (let* ((*package* pkg)
                (*standard-output* out)
                (*error-output* out)
                (*trace-output* out)
+               (*debug-io* (make-two-way-stream (make-string-input-stream "") out))
+               (*query-io* (make-two-way-stream (make-string-input-stream "") out))
+               (*terminal-io* (make-two-way-stream (make-string-input-stream "") out))
                (values-strings '()))
           ;; Mehrere Forms nacheinander lesen und auswerten, damit eine
           ;; REPL-Zeile wie "(defparameter *x* 1) *x*" komplett läuft.

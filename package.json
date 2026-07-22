@@ -15,7 +15,9 @@
     "onLanguage:lisp",
     "onCommand:clamps.openRepl",
     "onCommand:clamps.macroexpand",
-    "onCommand:clamps.macroexpandAll"
+    "onCommand:clamps.macroexpandAll",
+    "onCommand:clamps.openGui",
+    "onCommand:clamps.disassemble"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -51,6 +53,14 @@
       {
         "command": "clamps.macroexpandAll",
         "title": "CLAMPS: Macroexpand (vollständig)"
+      },
+      {
+        "command": "clamps.openGui",
+        "title": "CLAMPS: GUI öffnen (ATS Explorer)"
+      },
+      {
+        "command": "clamps.disassemble",
+        "title": "CLAMPS: Disassemble (Maschinencode)"
       }
     ],
     "languages": [
@@ -83,8 +93,23 @@
         "command": "clamps.macroexpand",
         "key": "ctrl+c ctrl+m",
         "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.disassemble",
+        "key": "ctrl+c ctrl+d",
+        "when": "editorTextFocus && editorLangId == lisp"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "CLAMPS",
+      "properties": {
+        "clamps.guiPort": {
+          "type": "number",
+          "default": 54619,
+          "description": "Port des CLAMPS-GUI-Webservers (clamps-start :port). Default 54619."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

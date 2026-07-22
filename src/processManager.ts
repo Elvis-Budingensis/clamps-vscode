@@ -44,6 +44,15 @@ export class ClampsProcessManager {
     }
   }
 
+  /** Aktueller Swank-Port der laufenden Session, oder null wenn keine läuft. */
+  getPort(): number | null {
+    const info = this.readSession();
+    if (info && info.status === 'ready' && info.port !== null) {
+      return info.port;
+    }
+    return null;
+  }
+
   private isPidAlive(pid: number): boolean {
     try {
       // Signal 0 sendet nichts, prüft nur ob der Prozess existiert und

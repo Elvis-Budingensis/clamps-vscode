@@ -21,6 +21,7 @@ import {
 import { ClampsProcessManager } from './processManager';
 import { ClampsReplTerminal } from './replTerminal';
 import { macroexpandCommand } from './macroexpand';
+import { disassembleCommand } from './disassemble';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -86,10 +87,33 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.macroexpandAll', () =>
       macroexpandCommand(() => client, true, outputChannel)
     ),
+    vscode.commands.registerCommand('clamps.disassemble', () =>
+      disassembleCommand(() => client, outputChannel)
+    ),
+    vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel
   );
 
   await enqueueLifecycle(() => startClamps(context, bridgePath));
+}
+
+async function openGui(): Promise<void> {
+  // Der GUI-Webserver (Hunchentoot) läuft NICHT auf dem Swank-Port,
+  // sondern auf dem port-Argument von clamps-start (Default 54619).
+  // Konfigurierbar über clamps.guiPort, falls clamps-start mit anderem
+  // Port aufgerufen wird.
+  const guiPort = vscode.workspace
+    .getConfiguration('clamps')
+    .get<number>('guiPort', 54619);
+  const url = `http://127.0.0.1:${guiPort}/ats-explorer`;
+
+  const choice = await vscode.window.showInformationMessage(
+    `CLAMPS-GUI: ${url}`,
+    'Im Browser öffnen'
+  );
+  if (choice === 'Im Browser öffnen') {
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
 }
 
 async function startClamps(context: vscode.ExtensionContext, bridgePath: string) {

@@ -135,6 +135,30 @@ class ScanState {
   }
 }
 
+/**
+ * Ermittelt das für die Cursor-Position gültige Paket, indem die letzte
+ * (in-package ...)-Form vor oder an der Position aus dem Dokument gelesen
+ * wird. Fällt auf COMMON-LISP-USER zurück, wenn keine gefunden wird.
+ *
+ * Erkennt die üblichen Schreibweisen:
+ *   (in-package :foo)  (in-package #:foo)  (in-package "FOO")  (in-package foo)
+ */
+export function packageAt(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): string {
+  const offset = document.offsetAt(position);
+  const textBefore = document.getText().slice(0, offset + 1);
+  // Alle in-package-Formen bis zum Cursor finden; die letzte gewinnt.
+  const re = /\(\s*in-package\s+(?:#?:)?"?([a-zA-Z0-9\-+*/<>=!?_.%&^~]+)"?\s*\)/gi;
+  let match: RegExpExecArray | null;
+  let pkg = 'COMMON-LISP-USER';
+  while ((match = re.exec(textBefore)) !== null) {
+    pkg = match[1].toUpperCase();
+  }
+  return pkg;
+}
+
 export async function macroexpandCommand(
   getClient: () => LanguageClient | undefined,
   full: boolean,
@@ -162,10 +186,12 @@ export async function macroexpandCommand(
     return;
   }
 
+  const pkg = packageAt(editor.document, editor.selection.active);
+
   try {
     const result = await client.sendRequest<MacroexpandResult>(
       'clamps/macroexpand',
-      { code: form, package: 'COMMON-LISP-USER', full }
+      { code: form, package: pkg, full }
     );
 
     const header = full
