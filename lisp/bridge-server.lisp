@@ -458,7 +458,9 @@
                                        "end" (make-jobj "line" line "character" col)))
                              locations))))
                  (send-response id (coerce (nreverse locations) 'vector)))
-               (send-response id (vector))))))))
+               (progn
+                 (log-msg "definition: nichts gefunden für ~S in ~S" sym pkg)
+                 (send-response id (vector)))))))))
 
 (defun lisp-escape-string (s)
   "Escaped einen String für das Einbetten in eine Lisp-Form via ~S.
