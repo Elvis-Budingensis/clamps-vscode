@@ -35,6 +35,49 @@ export function topLevelFormAt(
   return text.slice(start, end + 1);
 }
 
+/**
+ * Findet die S-Expression, die unmittelbar vor der Cursor-Position endet
+ * — das SLIME-Verhalten von C-x C-e (eval-last-expression). Sucht von
+ * der Position aus rückwärts das erste ')' (überspringt Whitespace) und
+ * dann die passende öffnende '('. Für ein Atom direkt vor dem Cursor
+ * (z.B. eine Zahl oder ein Symbol) wird dieses Atom zurückgegeben.
+ */
+export function sexpBeforePoint(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): string | undefined {
+  const text = document.getText();
+  let offset = document.offsetAt(position);
+
+  // Whitespace links vom Cursor überspringen.
+  while (offset > 0 && /\s/.test(text[offset - 1])) offset--;
+  if (offset === 0) return undefined;
+
+  const prev = text[offset - 1];
+  if (prev === ')') {
+    // Klammerausdruck: von der schließenden Klammer zur passenden
+    // öffnenden zurückbalancieren.
+    let depth = 0;
+    for (let i = offset - 1; i >= 0; i--) {
+      const ch = text[i];
+      // simple Version: Strings/Kommentare hier ignoriert, weil der
+      // Cursor typischerweise direkt hinter einer echten Form steht.
+      if (ch === ')') depth++;
+      else if (ch === '(') {
+        depth--;
+        if (depth === 0) return text.slice(i, offset);
+      }
+    }
+    return undefined;
+  }
+  // Atom: rückwärts bis zum Symbol-/Zahlanfang.
+  let start = offset;
+  while (start > 0 && /[a-zA-Z0-9\-+*/<>=!?_%&^~.:]/.test(text[start - 1])) {
+    start--;
+  }
+  return start < offset ? text.slice(start, offset) : undefined;
+}
+
 function findFormStart(text: string, offset: number): number {
   // Wir scannen vom Dateianfang und merken uns den Beginn jeder
   // Top-Level-Form (depth 0 -> 1). Die letzte Form, die bei oder vor

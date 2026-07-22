@@ -544,6 +544,40 @@
                             (format nil "Bridge-Disassemble fehlgeschlagen: ~A" value)
                             "package" pkg))))))))
 
+(defun handle-inspect (id params)
+  "clamps/inspect — inspiziert das Ergebnis eines Ausdrucks.
+   Client schickt {expr, package}, erwartet
+   {type, print, parts: [{label, accessor}], package}."
+  (let* ((expr (gethash "expr" params))
+         (pkg (or (gethash "package" params) *swank-package*)))
+    (if (or (null expr) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) expr) ""))
+        (send-response id (make-jobj "type" "" "print" "" "parts" (vector) "package" pkg))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:inspect-for-repl ~S ~S)" expr pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+               (destructuring-bind (ok type print parts result-pkg) value
+                 (declare (ignore ok))
+                 (send-response id
+                   (make-jobj
+                    "type" (or type "")
+                    "print" (or print "")
+                    "parts" (coerce
+                             (mapcar (lambda (p)
+                                       (make-jobj "label" (first p)
+                                                  "accessor" (second p)))
+                                     parts)
+                             'vector)
+                    "package" (or result-pkg pkg))))
+               ;; :error oder unerwartet
+               (let ((errmsg (if (and (consp value) (stringp (second value)))
+                                 (second value)
+                                 (format nil "~A" value))))
+                 (send-response id
+                   (make-jobj "type" "error" "print" errmsg
+                              "parts" (vector) "package" pkg)))))))))
+
 (defun handle-request (msg)
   (let ((method (gethash "method" msg))
         (id (gethash "id" msg))
@@ -561,6 +595,7 @@
           ((string= method "clamps/eval") (handle-eval id params))
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))
+          ((string= method "clamps/inspect") (handle-inspect id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
       (error (e)

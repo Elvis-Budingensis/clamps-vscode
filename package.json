@@ -17,7 +17,9 @@
     "onCommand:clamps.macroexpand",
     "onCommand:clamps.macroexpandAll",
     "onCommand:clamps.openGui",
-    "onCommand:clamps.disassemble"
+    "onCommand:clamps.disassemble",
+    "onCommand:clamps.inspect",
+    "onCommand:clamps.evalTopLevel"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -61,6 +63,18 @@
       {
         "command": "clamps.disassemble",
         "title": "CLAMPS: Disassemble (Maschinencode)"
+      },
+      {
+        "command": "clamps.inspect",
+        "title": "CLAMPS: Inspect (Objekt-Inspektor)"
+      },
+      {
+        "command": "clamps.evalTopLevel",
+        "title": "CLAMPS: Evaluate Top-Level Form"
+      },
+      {
+        "command": "clamps.evalLastExpression",
+        "title": "CLAMPS: Evaluate Last Expression"
       }
     ],
     "languages": [
@@ -79,15 +93,29 @@
     ],
     "keybindings": [
       {
-        "command": "clamps.evalSelection",
-        "key": "ctrl+enter",
-        "mac": "cmd+enter",
+        "command": "clamps.evalLastExpression",
+        "key": "ctrl+x ctrl+e",
         "when": "editorTextFocus && editorLangId == lisp"
       },
       {
-        "command": "clamps.openRepl",
-        "key": "ctrl+alt+r",
-        "mac": "cmd+alt+r"
+        "command": "clamps.evalLastExpression",
+        "key": "ctrl+c ctrl+e",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.evalTopLevel",
+        "key": "ctrl+c ctrl+c",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.evalTopLevel",
+        "key": "ctrl+alt+x",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.evalFile",
+        "key": "ctrl+c ctrl+k",
+        "when": "editorTextFocus && editorLangId == lisp"
       },
       {
         "command": "clamps.macroexpand",
@@ -95,8 +123,18 @@
         "when": "editorTextFocus && editorLangId == lisp"
       },
       {
+        "command": "clamps.inspect",
+        "key": "ctrl+c ctrl+i",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
         "command": "clamps.disassemble",
-        "key": "ctrl+c ctrl+d",
+        "key": "ctrl+c alt+d",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.openRepl",
+        "key": "ctrl+c ctrl+z",
         "when": "editorTextFocus && editorLangId == lisp"
       }
     ],

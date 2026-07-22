@@ -20,8 +20,9 @@ import {
 } from 'vscode-languageclient/node';
 import { ClampsProcessManager } from './processManager';
 import { ClampsReplTerminal } from './replTerminal';
-import { macroexpandCommand } from './macroexpand';
+import { macroexpandCommand, topLevelFormAt, sexpBeforePoint } from './macroexpand';
 import { disassembleCommand } from './disassemble';
+import { inspectCommand } from './inspector';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -81,6 +82,30 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!editor) return;
       await ClampsReplTerminal.evaluate(() => client, editor.document.getText());
     }),
+    vscode.commands.registerCommand('clamps.evalLastExpression', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const form = sexpBeforePoint(editor.document, editor.selection.active);
+      if (!form) {
+        vscode.window.showWarningMessage(
+          'CLAMPS: Keine S-Expression vor dem Cursor.'
+        );
+        return;
+      }
+      await ClampsReplTerminal.evaluate(() => client, form);
+    }),
+    vscode.commands.registerCommand('clamps.evalTopLevel', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const form = topLevelFormAt(editor.document, editor.selection.active);
+      if (!form) {
+        vscode.window.showWarningMessage(
+          'CLAMPS: Keine Top-Level-Form am Cursor gefunden.'
+        );
+        return;
+      }
+      await ClampsReplTerminal.evaluate(() => client, form);
+    }),
     vscode.commands.registerCommand('clamps.macroexpand', () =>
       macroexpandCommand(() => client, false, outputChannel)
     ),
@@ -89,6 +114,9 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand('clamps.disassemble', () =>
       disassembleCommand(() => client, outputChannel)
+    ),
+    vscode.commands.registerCommand('clamps.inspect', () =>
+      inspectCommand(() => client)
     ),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel

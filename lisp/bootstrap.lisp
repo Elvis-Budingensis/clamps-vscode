@@ -183,8 +183,124 @@
 (defpackage :clamps-bridge-rpc
   (:use :cl)
   (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
-           #:find-definitions-for-repl))
+           #:find-definitions-for-repl #:inspect-for-repl))
 (in-package :clamps-bridge-rpc)
+
+(defun %inspect-parts (obj)
+  "Liefert die navigierbaren Teile von OBJ als Liste von
+   (label . accessor-form-string). accessor-form-string ist ein
+   Lisp-Ausdruck mit __OBJ__ als Platzhalter für das inspizierte Objekt;
+   der Client/die Bridge ersetzt __OBJ__ durch den tatsächlichen
+   Zugriffs-Ausdruck, um tiefer zu navigieren."
+  (typecase obj
+    (standard-object
+     (let ((class (class-of obj)))
+       (loop for slot in (%class-slot-names class)
+             collect (cons (string-downcase (symbol-name slot))
+                           (format nil "(slot-value __OBJ__ '~A)"
+                                   (%package-qualified slot))))))
+    (structure-object
+     (loop for slot in (%struct-slot-names obj)
+           collect (cons (string-downcase (symbol-name slot))
+                         (format nil "(slot-value __OBJ__ '~A)"
+                                 (%package-qualified slot)))))
+    (cons
+     ;; Liste: erste ~50 Elemente + Rest
+     (let ((parts '()) (i 0))
+       (dolist (el obj)
+         (declare (ignore el))
+         (when (>= i 50) (return))
+         (push (cons (format nil "[~A]" i)
+                     (format nil "(nth ~A __OBJ__)" i))
+               parts)
+         (incf i))
+       (nreverse parts)))
+    ((and vector (not string))
+     (loop for i from 0 below (min 50 (length obj))
+           collect (cons (format nil "[~A]" i)
+                         (format nil "(aref __OBJ__ ~A)" i))))
+    (hash-table
+     (let ((parts '()) (i 0))
+       (maphash (lambda (k v)
+                  (declare (ignore v))
+                  (when (< i 50)
+                    (push (cons (format nil "~S" k)
+                                (format nil "(gethash '~S __OBJ__)" k))
+                          parts)
+                    (incf i)))
+                obj)
+       (nreverse parts)))
+    (t nil)))
+
+(defun %class-slot-names (class)
+  (handler-case
+      (mapcar (lambda (s)
+                (funcall (find-symbol "SLOT-DEFINITION-NAME" :sb-mop) s))
+              (funcall (find-symbol "CLASS-SLOTS" :sb-mop) class))
+    (error () nil)))
+
+(defun %struct-slot-names (obj)
+  (handler-case
+      (mapcar (lambda (dsd)
+                (funcall (find-symbol "DSD-NAME" :sb-kernel) dsd))
+              (funcall (find-symbol "DD-SLOTS" :sb-kernel)
+                       (funcall (find-symbol "LAYOUT-INFO" :sb-kernel)
+                                (funcall (find-symbol "%INSTANCE-LAYOUT" :sb-kernel) obj))))
+    (error () nil)))
+
+(defun %package-qualified (sym)
+  "Symbolname mit Paket, damit slot-value es im richtigen Paket findet."
+  (let ((pkg (symbol-package sym)))
+    (if pkg
+        (format nil "~A::~A" (string-downcase (package-name pkg))
+                (string-downcase (symbol-name sym)))
+        (string-downcase (symbol-name sym)))))
+
+(defun inspect-for-repl (expr-string package-name)
+  "Wertet EXPR-STRING aus und beschreibt das Ergebnis-Objekt: Typ,
+   Druckdarstellung und navigierbare Teile. Gibt zurück:
+   (:ok type-string print-string ((label . accessor) ...) package)
+   accessor enthält __OBJ__ als Platzhalter für EXPR-STRING."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               (*read-eval* nil)
+               (form (read-from-string expr-string))
+               (obj (eval form))
+               (type-str (let ((*print-case* :downcase))
+                           (princ-to-string (type-of obj))))
+               (print-str (let ((*print-length* 100)
+                                (*print-level* 5)
+                                (*print-circle* t))
+                            (prin1-to-string obj)))
+               (parts (%inspect-parts obj)))
+          (list :ok type-str print-str
+                (mapcar (lambda (p)
+                          (list (car p)
+                                ;; __OBJ__ durch den echten Ausdruck ersetzen
+                                (%replace-obj (cdr p) expr-string)))
+                        parts)
+                (package-name pkg)))
+      (error (e)
+        (list :error (format nil "~A" e) "" nil (package-name pkg))))))
+
+(defun %replace-obj (template expr-string)
+  "Ersetzt jedes __OBJ__ im Template durch den geklammerten expr-string."
+  (let ((wrapped (format nil "(progn ~A)" expr-string))
+        (result (make-string-output-stream))
+        (pos 0))
+    (loop
+      (let ((idx (search "__OBJ__" template :start2 pos)))
+        (cond
+          (idx
+           (write-string (subseq template pos idx) result)
+           (write-string wrapped result)
+           (setf pos (+ idx 7)))
+          (t
+           (write-string (subseq template pos) result)
+           (return)))))
+    (get-output-stream-string result)))
 
 (defun %offset->line-col (filepath offset)
   "Zählt Zeilen/Spalten bis OFFSET (0-indexiert für LSP). Läuft im
