@@ -20,8 +20,8 @@ import {
 } from 'vscode-languageclient/node';
 import { ClampsProcessManager } from './processManager';
 import { ClampsReplTerminal } from './replTerminal';
-import { macroexpandCommand, topLevelFormAt, sexpBeforePoint } from './macroexpand';
-import { disassembleCommand } from './disassemble';
+import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
+import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
 
 let client: LanguageClient | undefined;
@@ -118,6 +118,36 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.inspect', () =>
       inspectCommand(() => client)
     ),
+    vscode.commands.registerCommand('clamps.toggleTrace', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const symbol = symbolAt(editor.document, editor.selection.active);
+      if (!symbol) {
+        vscode.window.showWarningMessage('CLAMPS: Kein Symbol am Cursor.');
+        return;
+      }
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        return;
+      }
+      const pkg = packageAt(editor.document, editor.selection.active);
+      const result = await client.sendRequest<{ output: string; traced: boolean }>(
+        'clamps/toggleTrace',
+        { symbol, package: pkg }
+      );
+      vscode.window.setStatusBarMessage(`CLAMPS: ${result.output}`, 5000);
+    }),
+    vscode.commands.registerCommand('clamps.untraceAll', async () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        return;
+      }
+      const result = await client.sendRequest<{ output: string }>(
+        'clamps/untraceAll',
+        {}
+      );
+      vscode.window.setStatusBarMessage(`CLAMPS: ${result.output}`, 5000);
+    }),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel
   );

@@ -183,7 +183,8 @@
 (defpackage :clamps-bridge-rpc
   (:use :cl)
   (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
-           #:find-definitions-for-repl #:inspect-for-repl))
+           #:find-definitions-for-repl #:inspect-for-repl
+           #:trace-toggle-for-repl #:untrace-all-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %inspect-parts (obj)
@@ -373,6 +374,44 @@
                                   (let ((obj (read-from-string symbol-string)))
                                     (and (symbolp obj) obj))))))))))))
     (error () nil)))
+
+(defun trace-toggle-for-repl (symbol-string package-name)
+  "Schaltet Trace für die Funktion am Symbol an/aus (SLIME
+   C-c C-t Verhalten). (trace) ohne Argumente liefert die Liste der
+   aktuell getracten Funktionsnamen — darüber wird der Zustand geprüft.
+   trace/untrace sind Makros, daher der Umweg über eval mit
+   eingesetztem Symbol. Gibt (:ok STATUS-TEXT TRACED-P) zurück."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               (sym (resolve-symbol symbol-string pkg)))
+          (cond
+            ((null sym)
+             (list :error (format nil "Symbol ~A nicht gefunden." symbol-string) nil))
+            ((not (fboundp sym))
+             (list :error (format nil "~A ist keine Funktion." sym) nil))
+            (t
+             (let ((traced (member sym (eval '(trace)) :test #'eq)))
+               (if traced
+                   (progn
+                     (eval `(untrace ,sym))
+                     (list :ok (format nil "Trace AUS: ~A" sym) nil))
+                   (progn
+                     (eval `(trace ,sym))
+                     (list :ok (format nil "Trace AN: ~A - Aufrufe erscheinen in der REPL" sym) t)))))))
+      (error (e)
+        (list :error (format nil "~A" e) nil)))))
+
+(defun untrace-all-for-repl ()
+  "Schaltet alle Traces aus. Gibt (:ok TEXT) zurück."
+  (handler-case
+      (let ((traced (eval '(trace))))
+        (eval '(untrace))
+        (list :ok (if traced
+                      (format nil "Alle Traces aus (~A Funktion~:P)." (length traced))
+                      "Es war nichts getraced.")))
+    (error (e) (list :error (format nil "~A" e)))))
 
 (defun find-definitions-for-repl (symbol-string package-name)
   "Findet alle Definitionsorte des Symbols — auch für eingebaute

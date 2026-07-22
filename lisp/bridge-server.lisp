@@ -220,9 +220,15 @@
 
 (defun write-lsp-message (obj)
   (bt:with-lock-held (*stdout-lock*)
-    (let ((body (with-output-to-string (s) (json-write obj s))))
+    (let* ((body (with-output-to-string (s) (json-write obj s)))
+           ;; LSP verlangt Content-Length in BYTES (UTF-8), nicht in
+           ;; Zeichen. Ein Umlaut oder Em-Dash ist 1 Zeichen, aber 2-3
+           ;; Bytes — (length body) war zu klein, der Client las eine
+           ;; abgeschnittene Nachricht, der JSON-Parser brach ab
+           ;; ("Expected ',' or '}'"). Byte-Länge über die Oktette.
+           (byte-length (length (sb-ext:string-to-octets body :external-format :utf-8))))
       (format *standard-output* "Content-Length: ~D~C~C~C~C"
-              (length body) #\Return #\Newline #\Return #\Newline)
+              byte-length #\Return #\Newline #\Return #\Newline)
       (write-string body *standard-output*)
       (force-output *standard-output*))))
 
@@ -578,6 +584,38 @@
                    (make-jobj "type" "error" "print" errmsg
                               "parts" (vector) "package" pkg)))))))))
 
+(defun handle-trace-toggle (id params)
+  "clamps/toggleTrace — Trace für Funktion an/aus.
+   Client schickt {symbol, package}, erwartet {output, traced}."
+  (let* ((symbol (gethash "symbol" params))
+         (pkg (or (gethash "package" params) *swank-package*)))
+    (if (null symbol)
+        (send-response id (make-jobj "output" "Kein Symbol." "traced" :false))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:trace-toggle-for-repl ~S ~S)" symbol pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value))
+               (destructuring-bind (st text traced) value
+                 (declare (ignore st))
+                 (send-response id (make-jobj "output" (or text "")
+                                             "traced" (if traced :true :false))))
+               (send-response id (make-jobj
+                                  "output" (format nil "Trace fehlgeschlagen: ~A" value)
+                                  "traced" :false))))))))
+
+(defun handle-untrace-all (id params)
+  "clamps/untraceAll — alle Traces aus."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:untrace-all-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value))
+         (send-response id (make-jobj "output" (or (second value) "")))
+         (send-response id (make-jobj
+                            "output" (format nil "Untrace fehlgeschlagen: ~A" value)))))))
+
 (defun handle-request (msg)
   (let ((method (gethash "method" msg))
         (id (gethash "id" msg))
@@ -596,6 +634,8 @@
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))
           ((string= method "clamps/inspect") (handle-inspect id params))
+          ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
+          ((string= method "clamps/untraceAll") (handle-untrace-all id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
       (error (e)
@@ -629,6 +669,16 @@
 ;;; ---------------------------------------------------------------------
 
 (defun main ()
+  ;; stdout explizit als UTF-8-Stream neu anlegen, damit die tatsächlich
+  ;; geschriebenen Bytes exakt zur in write-lsp-message berechneten
+  ;; Byte-Content-Length passen. Sonst richtet sich die Kodierung nach
+  ;; der Locale und kann abweichen -> abgeschnittene Nachrichten, JSON-
+  ;; Parse-Fehler beim Client.
+  (setf sb-impl::*default-external-format* :utf-8)
+  (ignore-errors
+    (setf *standard-output*
+          (sb-sys:make-fd-stream 1 :output t :external-format :utf-8
+                                   :buffering :full)))
   (let* ((session-dir-str (or (sb-ext:posix-getenv "CLAMPS_SESSION_DIR")
                                (error "CLAMPS_SESSION_DIR nicht gesetzt")))
          ;; Trailing slash erzwingen, sonst behandelt merge-pathnames

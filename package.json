@@ -19,7 +19,9 @@
     "onCommand:clamps.openGui",
     "onCommand:clamps.disassemble",
     "onCommand:clamps.inspect",
-    "onCommand:clamps.evalTopLevel"
+    "onCommand:clamps.evalTopLevel",
+    "onCommand:clamps.toggleTrace",
+    "onCommand:clamps.untraceAll"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -75,6 +77,14 @@
       {
         "command": "clamps.evalLastExpression",
         "title": "CLAMPS: Evaluate Last Expression"
+      },
+      {
+        "command": "clamps.toggleTrace",
+        "title": "CLAMPS: Toggle Trace (Funktion tracen)"
+      },
+      {
+        "command": "clamps.untraceAll",
+        "title": "CLAMPS: Untrace All (alle Traces aus)"
       }
     ],
     "languages": [
@@ -135,6 +145,11 @@
       {
         "command": "clamps.openRepl",
         "key": "ctrl+c ctrl+z",
+        "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.toggleTrace",
+        "key": "ctrl+c ctrl+t",
         "when": "editorTextFocus && editorLangId == lisp"
       }
     ],
