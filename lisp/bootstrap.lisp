@@ -182,8 +182,138 @@
 
 (defpackage :clamps-bridge-rpc
   (:use :cl)
-  (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl))
+  (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
+           #:find-definitions-for-repl))
 (in-package :clamps-bridge-rpc)
+
+(defun %offset->line-col (filepath offset)
+  "Zählt Zeilen/Spalten bis OFFSET (0-indexiert für LSP). Läuft im
+   Image, wo die Datei sicher lesbar ist."
+  (handler-case
+      (with-open-file (s filepath :direction :input
+                                   :external-format :utf-8)
+        (let ((line 0) (col 0) (count 0))
+          (loop
+            (let ((ch (read-char s nil nil)))
+              (when (or (null ch) (>= count offset)) (return))
+              (if (char= ch #\Newline)
+                  (progn (incf line) (setf col 0))
+                  (incf col))
+              (incf count)))
+          (list line col)))
+    (error () (list 0 0))))
+
+(defun %resolve-source-file (raw-file)
+  "Übersetzt einen Datei-Eintrag aus einer Swank-Location in einen
+   existierenden physischen Pfad. SBCL-interne Definitionen kommen als
+   Logical Pathnames (SYS:SRC;CODE;LIST.LISP) — translate-logical-pathname
+   macht daraus den echten Pfad der installierten SBCL-Quellen. Gibt
+   NIL zurück, wenn die Datei nicht existiert (z.B. SBCL ohne Quellen
+   installiert), damit der Client das ehrlich melden kann statt ins
+   Leere zu springen."
+  (handler-case
+      (let* ((path (etypecase raw-file
+                     (pathname raw-file)
+                     (string (parse-namestring raw-file))))
+             (physical (translate-logical-pathname path)))
+        (when (probe-file physical)
+          (namestring physical)))
+    (error () nil)))
+
+(defun resolve-symbol (symbol-string pkg)
+  "Löst SYMBOL-STRING zu einem echten Symbol-Objekt auf. Behandelt
+   qualifizierte Namen (incudine:rt-start, clamps::foo) direkt über den
+   Reader; für nackte Namen (rt-start) wird zuerst im übergebenen Paket
+   PKG gesucht, dann fällt es auf einen unqualifizierten Reader-Versuch
+   zurück. Gibt NIL zurück, wenn nichts gefunden wird."
+  (handler-case
+      (let ((*package* pkg) (*read-eval* nil))
+        (if (find #\: symbol-string)
+            ;; Qualifizierter Name: Reader macht das korrekt.
+            (let ((obj (read-from-string symbol-string)))
+              (and (symbolp obj) obj))
+            ;; Nackter Name: erst im Paket suchen (findet auch geerbte
+            ;; und interne Symbole), dann bild-weit, dann Reader-Fallback.
+            (let ((upcased (string-upcase symbol-string)))
+              (multiple-value-bind (sym status) (find-symbol upcased pkg)
+                (cond
+                  (status sym)
+                  ;; Nicht im aktuellen Paket sichtbar (z.B. rt-start ohne
+                  ;; (in-package :incudine) in der Datei): über alle Pakete
+                  ;; suchen. Bevorzugt ein Symbol, das tatsächlich fboundp
+                  ;; oder boundp ist, damit wir nicht ein zufälliges
+                  ;; gleichnamiges Keyword o.ä. erwischen.
+                  (t (let ((candidates '()))
+                       (dolist (p (list-all-packages))
+                         (multiple-value-bind (s st) (find-symbol upcased p)
+                           (when (and st (eq (symbol-package s) p))
+                             (pushnew s candidates))))
+                       (or (find-if (lambda (s) (or (fboundp s) (boundp s)
+                                                    (find-class s nil)))
+                                    candidates)
+                           (first candidates)
+                           (and (not (find #\: symbol-string))
+                                (ignore-errors
+                                  (let ((obj (read-from-string symbol-string)))
+                                    (and (symbolp obj) obj))))))))))))
+    (error () nil)))
+
+(defun find-definitions-for-repl (symbol-string package-name)
+  "Findet alle Definitionsorte des Symbols — auch für eingebaute
+   SBCL-Funktionen, Variablen, Makros, Klassen (das M-. Erlebnis).
+   Gibt (:ok ((file line col label) ...)) zurück; Einträge, deren
+   Quelldatei nicht auffindbar ist, kommen mit file=NIL und dem Label,
+   damit der Client sie anzeigen kann (z.B. 'Quelle nicht installiert')."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               ;; Symbol zu einem echten Symbol-Objekt auflösen, dann
+               ;; Swank mit dem VOLLQUALIFIZIERTEN Namen füttern. Grund:
+               ;; find-definitions-for-emacs findet "rt-start" NICHT,
+               ;; wenn man nur das Paket INCUDINE mitgibt, aber
+               ;; "incudine:rt-start" schon. Wir bestimmen also das
+               ;; Home-Paket des Symbols und bauen den qualifizierten
+               ;; Namen selbst.
+               (sym (resolve-symbol symbol-string pkg))
+               (query-name (if sym
+                               (let ((*package* (find-package :keyword)))
+                                 ;; prin1 mit keyword-package erzwingt volle
+                                 ;; Paket-Qualifizierung im ausgegebenen Namen.
+                                 (let ((*print-case* :downcase)
+                                       (*print-readably* nil))
+                                   (prin1-to-string sym)))
+                               symbol-string))
+               (defs (funcall (find-symbol "FIND-DEFINITIONS-FOR-EMACS" :swank)
+                              query-name))
+               (results '()))
+          (dolist (def defs)
+            (let* ((label (let ((*print-case* :downcase))
+                            (princ-to-string (first def))))
+                   (loc (second def)))
+              (when (and (consp loc) (eq (first loc) :location))
+                (let ((file nil) (position nil))
+                  ;; Location-Teile einsammeln: (:file "...") (:position n)
+                  ;; oder (:buffer ...) (:offset start n) je nach Quelle.
+                  (dolist (part (rest loc))
+                    (when (consp part)
+                      (case (first part)
+                        (:file (setf file (second part)))
+                        (:buffer-and-file (setf file (third part)))
+                        (:position (setf position (second part)))
+                        (:offset (setf position (+ (or (second part) 0)
+                                                   (or (third part) 0)))))))
+                  (let ((resolved (and file (%resolve-source-file file))))
+                    (if resolved
+                        (destructuring-bind (line col)
+                            (%offset->line-col resolved
+                                               (max 0 (1- (or position 1))))
+                          (push (list resolved line col label) results))
+                        ;; Datei nicht auffindbar: Label trotzdem melden.
+                        (push (list nil 0 0 label) results)))))))
+          (list :ok (nreverse results)))
+      (error (e)
+        (list :error (format nil "~A" e))))))
 
 (defun disassemble-for-repl (symbol-string package-name)
   "Disassembliert die Funktion, auf die SYMBOL-STRING im Paket
@@ -303,8 +433,13 @@
                                         (if (and (> (length printed) 0)
                                                  (> (length value-text) 0))
                                             (string #\Newline) "")
-                                        value-text)))
-            (list :ok combined (package-name pkg))))
+                                        value-text))
+                 ;; *package* AUSLESEN, nicht pkg: wenn der Code ein
+                 ;; (in-package ...) enthielt, hat sich *package* innerhalb
+                 ;; dieser Bindung geändert. pkg zeigt weiter aufs alte
+                 ;; Paket — deshalb blieb der REPL-Prompt hängen.
+                 (current-pkg-name (package-name *package*)))
+            (list :ok combined current-pkg-name)))
       (error (e)
         (let ((printed (get-output-stream-string out)))
           (list :error

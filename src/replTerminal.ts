@@ -113,6 +113,19 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       } else if (data.startsWith('\x1b[D', index)) {
         this.moveCursor(-1);
         index += 3;
+      } else if (data.startsWith('\x1b[', index)) {
+        // Unbekannte CSI-Sequenz (F-Tasten wie ESC[24~ für F12, Home,
+        // End, PageUp, Entf ESC[3~, ...) komplett verschlucken — sonst
+        // landen die druckbaren Teile ("[24~") als Müll im Buffer.
+        // CSI-Format: ESC [ <Parameter '0'..';'> <Endzeichen>
+        let j = index + 2;
+        while (j < data.length && data[j] >= '0' && data[j] <= ';') j++;
+        if (j < data.length) j++; // Endzeichen (Buchstabe oder ~) mitnehmen
+        index = j;
+      } else if (data.startsWith('\x1b', index)) {
+        // Einzelnes ESC oder unbekannte Nicht-CSI-Sequenz: ESC + ein
+        // Folgezeichen verschlucken.
+        index += Math.min(2, data.length - index);
       } else {
         const ch = data[index++];
         switch (ch) {

@@ -392,49 +392,73 @@
              (map 'vector (lambda (label) (make-jobj "label" label "kind" 12)) (first value))
              (vector)))))))
 
-(defun offset->line-char (filepath offset)
-  "Best-effort: zählt Zeilenumbrüche bis OFFSET. Swank-Offsets sind
-   1-indexierte Buffer-Positionen, hier grob auf 0-indexiert gemappt."
-  (handler-case
-      (with-open-file (s filepath :direction :input)
-        (let ((line 0) (col 0) (count 0))
-          (loop
-            (let ((ch (read-char s nil nil)))
-              (when (or (null ch) (>= count offset)) (return))
-              (if (char= ch #\Newline) (progn (incf line) (setf col 0)) (incf col))
-              (incf count)))
-          (values line col)))
-    (error () (values 0 0))))
-
-(defun definitions->locations (defs)
-  (let ((out '()))
-    (when (consp defs)
-      (dolist (def defs)
-        (let ((loc (second def)))
-          (when (and (consp loc) (eq (first loc) :location))
-            (let* ((file-part (find :file (rest loc) :key #'first :test (lambda (a b) (eq a (and (consp b) (first b))))))
-                   (pos-part (find :position (rest loc) :key #'first :test (lambda (a b) (eq a (and (consp b) (first b))))))
-                   (file (and file-part (second file-part)))
-                   (offset (and pos-part (second pos-part))))
-              (when (and file offset)
-                (multiple-value-bind (line col) (offset->line-char file (max 0 (1- offset)))
-                  (push (make-jobj
-                         "uri" (format nil "file://~A" file)
-                         "range" (make-jobj
-                                  "start" (make-jobj "line" line "character" col)
-                                  "end" (make-jobj "line" line "character" col)))
-                        out))))))))
-    (coerce (nreverse out) 'vector)))
+(defun package-at-position (text line character)
+  "Findet das für die Position gültige Paket: die letzte
+   (in-package ...)-Form im Text VOR der Position. Kennt die üblichen
+   Schreibweisen :foo, #:foo, \"FOO\", foo. Fallback COMMON-LISP-USER."
+  (let ((offset 0) (current-line 0))
+    ;; Zeichen-Offset der Position bestimmen
+    (loop for i from 0 below (length text)
+          while (< current-line line)
+          do (when (char= (char text i) #\Newline) (incf current-line))
+             (incf offset))
+    (incf offset character)
+    (setf offset (min offset (length text)))
+    (let ((pkg "COMMON-LISP-USER")
+          (search-region (subseq text 0 offset))
+          (start 0))
+      (loop
+        (let ((idx (search "(in-package" search-region :start2 start
+                            :test #'char-equal)))
+          (unless idx (return))
+          ;; Namen hinter "(in-package" extrahieren
+          (let* ((rest-start (+ idx (length "(in-package")))
+                 (end (position #\) search-region :start rest-start)))
+            (when end
+              (let ((name (string-trim '(#\Space #\Tab #\Newline #\Return #\: #\# #\")
+                                        (subseq search-region rest-start end))))
+                (when (> (length name) 0)
+                  (setf pkg (string-upcase name)))))
+            (setf start (1+ idx)))))
+      pkg)))
 
 (defun handle-definition (id params)
-  (let ((sym (position-symbol params)))
+  "textDocument/definition — das M-. Erlebnis: springt zur Definition
+   jedes Symbols, auch in SBCLs eigene Quellen. Die eigentliche Suche
+   inkl. Logical-Pathname-Übersetzung läuft im CLAMPS-Image
+   (find-definitions-for-repl), hier wird nur noch auf LSP gemappt."
+  (let* ((sym (position-symbol params))
+         (doc (gethash "textDocument" params))
+         (pos (gethash "position" params))
+         (text (and doc (gethash (gethash "uri" doc) *documents*)))
+         (pkg (if text
+                  (package-at-position text
+                                       (gethash "line" pos)
+                                       (gethash "character" pos))
+                  "COMMON-LISP-USER")))
     (if (null sym)
         (send-response id (vector))
         (swank-rex
-         (format nil "(swank:find-definitions-for-emacs ~S)" sym)
+         (format nil "(clamps-bridge-rpc:find-definitions-for-repl ~S ~S)" sym pkg)
          :callback
          (lambda (status value)
-           (send-response id (if (eq status :ok) (definitions->locations value) (vector))))))))
+           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+               (let ((locations '()))
+                 (dolist (entry (second value))
+                   (destructuring-bind (file line col label) entry
+                     (declare (ignore label))
+                     ;; Einträge ohne auffindbare Datei (SBCL ohne
+                     ;; installierte Quellen) überspringen — LSP kann
+                     ;; nur echte Orte anspringen.
+                     (when file
+                       (push (make-jobj
+                              "uri" (format nil "file://~A" file)
+                              "range" (make-jobj
+                                       "start" (make-jobj "line" line "character" col)
+                                       "end" (make-jobj "line" line "character" col)))
+                             locations))))
+                 (send-response id (coerce (nreverse locations) 'vector)))
+               (send-response id (vector))))))))
 
 (defun lisp-escape-string (s)
   "Escaped einen String für das Einbetten in eine Lisp-Form via ~S.
