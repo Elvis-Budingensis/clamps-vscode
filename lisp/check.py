@@ -85,7 +85,31 @@ called_anywhere = set(re.findall(r'\((handle-[a-z-]+)[ )]', bs))
 orphans = [h for h in handlers - INFRA if h not in called_anywhere]
 if orphans: problems.append(f"Handler wird nie aufgerufen: {orphans}")
 
+# TypeScript: jeder registrierte Befehl muss in package.json stehen und
+# umgekehrt. Der Debugger hat gezeigt, wie leicht das auseinanderläuft.
+import json, glob
+try:
+    pkg = json.load(io.open('package.json', encoding='utf-8'))
+    declared = {c['command'] for c in pkg.get('contributes', {}).get('commands', [])}
+    src = ''.join(io.open(f, encoding='utf-8').read() for f in glob.glob('src/*.ts'))
+    registered = set(re.findall(r"registerCommand\(\s*'([^']+)'", src))
+    # Menü-Einträge dürfen auf Befehle zeigen, also beides gegeneinander
+    only_declared = declared - registered
+    only_registered = registered - declared
+    if only_declared:
+        problems.append(f"package.json nennt Befehle ohne Registrierung: {sorted(only_declared)}")
+    if only_registered:
+        problems.append(f"registriert, aber nicht in package.json: {sorted(only_registered)}")
+    for m in pkg.get('contributes', {}).get('menus', {}).values():
+        for entry in m:
+            c = entry.get('command')
+            if c and c not in declared:
+                problems.append(f"Menüeintrag zeigt auf unbekannten Befehl: {c}")
+except FileNotFoundError:
+    pass
+
 if problems:
     print("PROBLEME:"); [print(" -", p) for p in problems]; sys.exit(1)
 print(f"ok — {len(defined)} Funktionen, {len(exported)} Exporte, "
-      f"{len(called)} Bridge-Aufrufe, {len(methods)} Methoden")
+      f"{len(called)} Bridge-Aufrufe, {len(methods)} Methoden, "
+      f"{len(registered)} Befehle")

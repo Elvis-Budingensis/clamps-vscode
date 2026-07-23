@@ -24,6 +24,7 @@ import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from '
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
 import { ClampsRtStatus } from './rtStatus';
+import { ClampsDebugSession } from './debugSession';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -60,6 +61,41 @@ export async function activate(context: vscode.ExtensionContext) {
   processManager = new ClampsProcessManager(workspaceRoot, bootstrapPath);
   rtStatus = new ClampsRtStatus(() => client);
   context.subscriptions.push(rtStatus);
+
+  // Debug-Adapter. Läuft "inline", also im selben Extension-Host-Prozess
+  // — kein eigener Adapter-Prozess, und der Adapter kommt an
+  // processManager heran, statt session.json ein zweites Mal zu lesen.
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory('clamps', {
+      createDebugAdapterDescriptor() {
+        const port = processManager?.getPort();
+        if (!port) {
+          vscode.window.showErrorMessage(
+            'CLAMPS läuft nicht — erst „CLAMPS: Start" ausführen.'
+          );
+          return undefined;
+        }
+        return new vscode.DebugAdapterInlineImplementation(
+          new ClampsDebugSession(port, workspaceRoot)
+        );
+      },
+    }),
+    // Attach ohne launch.json: die Konfiguration ist ohnehin leer, weil
+    // Port und Wurzelverzeichnis aus dem Prozess-Manager kommen.
+    vscode.debug.registerDebugConfigurationProvider('clamps', {
+      provideDebugConfigurations() {
+        return [{ type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen' }];
+      },
+      resolveDebugConfiguration(_folder, config) {
+        if (!config.type) {
+          config.type = 'clamps';
+          config.request = 'attach';
+          config.name = 'CLAMPS: Debugger anhängen';
+        }
+        return config;
+      },
+    })
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('clamps.start', () =>
@@ -119,8 +155,13 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.disassemble', () =>
       disassembleCommand(() => client, outputChannel)
     ),
-    vscode.commands.registerCommand('clamps.inspect', () =>
-      inspectCommand(() => client)
+    // Optionale Argumente: der Debugger ruft diesen Befehl mit einem
+    // bereits gebundenen Symbolnamen auf, statt über den aktiven Editor
+    // zu gehen. Ohne Argumente bleibt das Verhalten unverändert.
+    vscode.commands.registerCommand(
+      'clamps.inspect',
+      (expression?: string, packageName?: string) =>
+        inspectCommand(() => client, expression, packageName)
     ),
     vscode.commands.registerCommand('clamps.toggleTrace', async () => {
       const editor = vscode.window.activeTextEditor;
@@ -151,6 +192,37 @@ export async function activate(context: vscode.ExtensionContext) {
         {}
       );
       vscode.window.setStatusBarMessage(`CLAMPS: ${result.output}`, 5000);
+    }),
+    vscode.commands.registerCommand('clamps.debugAttach', () =>
+      vscode.debug.startDebugging(undefined, {
+        type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen',
+      })
+    ),
+    vscode.commands.registerCommand('clamps.debugRestarts', () => chooseRestart()),
+    vscode.commands.registerCommand('clamps.debugAbortAll', async () => {
+      const session = vscode.debug.activeDebugSession;
+      if (!session || session.type !== 'clamps') {
+        vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+        return;
+      }
+      await session.customRequest('clamps/abortAll', {});
+    }),
+    vscode.commands.registerCommand('clamps.debugInspectCondition', () =>
+      inspectFromDebugger('clamps/bindCondition', {})
+    ),
+    vscode.commands.registerCommand('clamps.debugInspectVariable', (arg?: any) => {
+      const expression =
+        arg?.variable?.evaluateName ?? arg?.evaluateName ?? arg?.variable?.name ?? arg?.name;
+      if (typeof expression !== 'string' || !expression) {
+        vscode.window.showWarningMessage(
+          'Dieser Wert hat keinen auswertbaren Lisp-Namen.'
+        );
+        return;
+      }
+      return inspectFromDebugger('clamps/bindForInspector', {
+        expression,
+        frameId: arg?.variable?.frameId ?? arg?.frameId,
+      });
     }),
     vscode.commands.registerCommand('clamps.rtStatusDetails', () =>
       rtStatus?.showDetails()
@@ -308,4 +380,52 @@ export async function deactivate(): Promise<void> {
   // der soll den Editor überleben. Nur der LanguageClient/Bridge-Prozess
   // wird beendet, den startet die nächste Session einfach neu.
   await stopLanguageClient();
+}
+
+/**
+ * Reicht einen Debugger-Wert an den vorhandenen Inspector weiter. Die
+ * Debug-Session bindet ihn an ein frisches Symbol und liefert dessen
+ * Namen; hier wird nur noch clamps.inspect mit diesem Namen aufgerufen.
+ */
+async function inspectFromDebugger(request: string, args: any): Promise<void> {
+  const session = vscode.debug.activeDebugSession;
+  if (!session || session.type !== 'clamps') {
+    vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+    return;
+  }
+  try {
+    const prepared = await session.customRequest(request, args);
+    if (!prepared?.expression) return;
+    await vscode.commands.executeCommand(
+      'clamps.inspect',
+      prepared.expression,
+      prepared.package
+    );
+  } catch (error) {
+    vscode.window.showErrorMessage(`Inspektion fehlgeschlagen: ${String(error)}`);
+  }
+}
+
+/** Restart-Auswahl als Schnellauswahl. */
+async function chooseRestart(): Promise<void> {
+  const session = vscode.debug.activeDebugSession;
+  if (!session || session.type !== 'clamps') {
+    vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+    return;
+  }
+  const data = await session.customRequest('clamps/restarts', {});
+  const restarts: any[] = data?.restarts ?? [];
+  if (restarts.length === 0) {
+    vscode.window.showInformationMessage('Zurzeit kein aktiver Lisp-Debugger.');
+    return;
+  }
+  const picked = await vscode.window.showQuickPick(
+    restarts.map(r => ({
+      label: `${r.index}: [${r.name}]`,
+      description: r.description,
+      index: r.index,
+    })),
+    { placeHolder: 'Restart auswählen' }
+  );
+  if (picked) await session.customRequest('clamps/invokeRestart', { index: picked.index });
 }

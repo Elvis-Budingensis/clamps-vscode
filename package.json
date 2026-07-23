@@ -21,7 +21,9 @@
     "onCommand:clamps.inspect",
     "onCommand:clamps.evalTopLevel",
     "onCommand:clamps.toggleTrace",
-    "onCommand:clamps.untraceAll"
+    "onCommand:clamps.untraceAll",
+    "onDebug",
+    "onCommand:clamps.debugAttach"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -89,6 +91,26 @@
       {
         "command": "clamps.rtStatusDetails",
         "title": "CLAMPS: DSP-Status anzeigen"
+      },
+      {
+        "command": "clamps.debugAttach",
+        "title": "CLAMPS: Debugger anhängen"
+      },
+      {
+        "command": "clamps.debugRestarts",
+        "title": "CLAMPS: Restart auswählen"
+      },
+      {
+        "command": "clamps.debugInspectCondition",
+        "title": "CLAMPS: Condition inspizieren"
+      },
+      {
+        "command": "clamps.debugInspectVariable",
+        "title": "CLAMPS: Wert inspizieren"
+      },
+      {
+        "command": "clamps.debugAbortAll",
+        "title": "CLAMPS: Alle Debugger-Ebenen verlassen"
       }
     ],
     "languages": [
@@ -169,8 +191,49 @@
           "type": "number",
           "default": 3000,
           "description": "Abstand in Millisekunden, in dem der DSP-Status in der Statusleiste aktualisiert wird. 0 schaltet das Polling ab."
+        },
+        "clamps.debugTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Schreibt den rohen Swank-Verkehr der Debug-Session in die Debug-Konsole. Nur zur Fehlersuche."
         }
       }
+    },
+    "debuggers": [
+      {
+        "type": "clamps",
+        "label": "CLAMPS (Common Lisp)",
+        "languages": [
+          "lisp"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "properties": {}
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "clamps",
+            "request": "attach",
+            "name": "CLAMPS: Debugger anhängen"
+          }
+        ]
+      }
+    ],
+    "menus": {
+      "debug/variables/context": [
+        {
+          "command": "clamps.debugInspectVariable",
+          "when": "debugType == clamps",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "clamps.debugInspectVariable",
+          "when": "false"
+        }
+      ]
     }
   },
   "scripts": {
@@ -179,9 +242,9 @@
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
-    "@types/node": "^20.11.0",
-    "typescript": "^5.4.0"
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.85",
+    "typescript": "5.4"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

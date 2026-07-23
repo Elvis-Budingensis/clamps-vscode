@@ -586,9 +586,38 @@ export class ClampsInspector {
   }
 }
 
+/**
+ * Öffnet den Inspector.
+ *
+ * Ohne Argumente wie bisher: Auswahl, Symbol am Cursor oder Top-Level-
+ * Form aus dem aktiven Editor. Mit Argumenten direkt auf den übergebenen
+ * Ausdruck — das braucht der Debugger, der einen Wert an ein Symbol
+ * bindet und dessen Namen hereinreicht. Der Prototyp hat dafür ein
+ * ungespeichertes Lisp-Dokument angelegt, den Text markiert und diesen
+ * Befehl aufgerufen; das hinterliess Geistertabs.
+ */
 export async function inspectCommand(
-  getClient: () => LanguageClient | undefined
+  getClient: () => LanguageClient | undefined,
+  expression?: string,
+  packageName?: string
 ): Promise<void> {
+  const client = getClient();
+  if (!client || client.state !== State.Running) {
+    vscode.window.showErrorMessage(
+      'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start" aus.'
+    );
+    return;
+  }
+
+  if (expression && expression.trim()) {
+    await ClampsInspector.inspect(
+      getClient,
+      expression.trim(),
+      packageName || 'COMMON-LISP-USER'
+    );
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage('CLAMPS: Kein aktiver Editor.');
@@ -607,14 +636,6 @@ export async function inspectCommand(
   if (!expr) {
     vscode.window.showWarningMessage(
       'CLAMPS: Nichts zum Inspizieren am Cursor gefunden.'
-    );
-    return;
-  }
-
-  const client = getClient();
-  if (!client || client.state !== State.Running) {
-    vscode.window.showErrorMessage(
-      'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start“ aus.'
     );
     return;
   }

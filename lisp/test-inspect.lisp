@@ -214,13 +214,17 @@
     (format t "~&ZIRKULÄR      kind=~A meta=~A parts=~A~%"
             (first d) (second d) (length (third d)))))
 
-(let ((d (%rpc "%inspect-describe" '(1 2 . 3))))
-  (format t "~&DOTTED        kind=~A letzter=~A~%"
-          (first d) (car (last (third d)))))
+(let* ((d (%rpc "%inspect-describe" '(1 2 . 3)))
+       (p (car (last (third d)))))
+  ;; Nur die ersten drei Felder: das vierte ist der Setter, und ein
+  ;; ausgedrucktes #<FUNCTION ...> sagt hier nichts.
+  (format t "~&DOTTED        kind=~A letzter=(~S ~S ~S)~%"
+          (first d) (first p) (second p) (third p)))
 
-(let ((d (%rpc "%inspect-describe" (make-instance 'foo))))
-  (format t "~&UNBOUND-SLOT  ~A~%"
-          (find "y" (third d) :key #'first :test #'string=)))
+(let* ((d (%rpc "%inspect-describe" (make-instance 'foo)))
+       (p (find "y" (third d) :key #'first :test #'string=)))
+  (format t "~&UNBOUND-SLOT  label=~S wert=~A preview=~S setzbar=~:[nein~;ja~]~%"
+          (first p) (second p) (third p) (fourth p)))
 
 (format t "~&~%===== Completion =====~%")
 
