@@ -5,24 +5,34 @@ import { symbolAt } from './disassemble';
 
 interface InspectPart {
   label: string;
-  accessor: string;
+  /** Position in der Teileliste des Objekts — damit wird navigiert. */
+  index: number;
   /** Kurze Druckdarstellung des Wertes — spart einen Klick. */
   preview?: string;
+  /** Nicht gebundene Slots lassen sich nicht betreten. */
+  navigable?: boolean;
 }
 interface InspectMeta {
   key: string;
   value: string;
 }
 interface InspectResult {
-  /** Kategorie vom Lisp-Image: object, struct, list, vector, array,
-   *  hash-table, string, symbol, function, number, character,
-   *  pathname, package, atom, error. */
+  /** ID des Objekts in der Tabelle des Images. */
+  id: number;
+  /** object, struct, list, vector, array, hash-table, string, symbol,
+   *  function, number, character, pathname, package, atom, error. */
   kind?: string;
   type: string;
   print: string;
   parts: InspectPart[];
   meta?: InspectMeta[];
   package: string;
+}
+
+/** Ein Schritt in der Navigationshistorie. */
+interface Crumb {
+  id: number;
+  label: string;
 }
 
 const esc = (s: string): string =>
@@ -32,18 +42,23 @@ const esc = (s: string): string =>
     .replace(/>/g, '&gt;');
 
 /**
- * Der Inspector ist zustandsbehaftet: ein einzelnes Webview-Panel, das
- * das aktuell inspizierte Objekt zeigt und eine Navigations-Historie
- * führt (zurück zu übergeordneten Objekten). Jeder Klick auf einen Slot
- * löst eine neue clamps/inspect-Anfrage mit dem Accessor-Ausdruck aus.
+ * Der Inspector navigiert über Objekt-IDs, nicht über Ausdrücke.
  *
- * Gerendert wird typspezifisch: eine Hash-Table sieht anders aus als ein
- * CLOS-Objekt oder ein Vektor. Die Kategorie liefert das Image als
- * `kind`; der Renderer wählt danach das Layout.
+ * Die frühere Fassung setzte für jeden Klick einen Zugriffs-Ausdruck
+ * zusammen ("(slot-value (progn <expr>) 'x)") und liess ihn neu
+ * auswerten. Das hatte drei Fehler: bei Seiteneffekten entstand ein
+ * NEUES Objekt statt in das vorhandene zu navigieren, die Ausdrücke
+ * wuchsen mit jeder Ebene, und Werte ohne lesbare Druckdarstellung
+ * (etwa CLOS-Instanzen als Hash-Schlüssel) brachen die Navigation ganz.
+ *
+ * Jetzt hält das Image eine Objekt-Tabelle; der Client kennt nur IDs.
+ * Beim Schließen des Panels wird sie freigegeben, damit keine Objekte
+ * am Garbage Collector vorbei festgehalten werden.
  */
 export class ClampsInspector {
   private static panel: vscode.WebviewPanel | undefined;
-  private static history: string[] = [];
+  private static trail: Crumb[] = [];
+  private static rootExpr = '';
   private static pkg = 'COMMON-LISP-USER';
   private static getClient: () => LanguageClient | undefined;
 
@@ -54,9 +69,10 @@ export class ClampsInspector {
   ): Promise<void> {
     this.getClient = getClient;
     this.pkg = pkg;
-    this.history = [expr];
+    this.rootExpr = expr;
+    this.trail = [];
     await this.ensurePanel();
-    await this.load(expr);
+    await this.request('clamps/inspect', { expr, package: pkg }, expr);
   }
 
   private static async ensurePanel(): Promise<void> {
@@ -71,24 +87,102 @@ export class ClampsInspector {
       { enableScripts: true, retainContextWhenHidden: true }
     );
     this.panel.webview.html = this.renderError('Lade …');
+
     this.panel.onDidDispose(() => {
       this.panel = undefined;
-      this.history = [];
+      this.trail = [];
+      // Objekt-Tabelle im Image freigeben. Ohne das hielten wir alles
+      // fest, was je angeschaut wurde — bei Audio-Buffern schnell teuer.
+      void this.release();
     });
+
     this.panel.webview.onDidReceiveMessage(async msg => {
-      if (msg.command === 'navigate' && typeof msg.accessor === 'string') {
-        this.history.push(msg.accessor);
-        await this.load(msg.accessor);
-      } else if (msg.command === 'back') {
-        if (this.history.length > 1) {
-          this.history.pop();
-          await this.load(this.history[this.history.length - 1]);
-        }
+      switch (msg.command) {
+        case 'navigate':
+          await this.navigate(Number(msg.index), String(msg.label ?? '?'));
+          break;
+        case 'back':
+          await this.back();
+          break;
+        case 'jump':
+          await this.jump(Number(msg.depth));
+          break;
+        case 'refresh':
+          await this.refresh();
+          break;
       }
     });
   }
 
-  private static async load(expr: string): Promise<void> {
+  private static get current(): Crumb | undefined {
+    return this.trail[this.trail.length - 1];
+  }
+
+  private static async navigate(index: number, label: string): Promise<void> {
+    const cur = this.current;
+    if (!cur) return;
+    await this.request(
+      'clamps/inspectPart',
+      { id: cur.id, index },
+      label,
+      'push'
+    );
+  }
+
+  private static async back(): Promise<void> {
+    if (this.trail.length < 2) return;
+    this.trail.pop();
+    const target = this.current;
+    if (!target) return;
+    await this.request(
+      'clamps/inspectRefresh',
+      { id: target.id },
+      target.label,
+      'replace'
+    );
+  }
+
+  /** Sprung im Breadcrumb auf eine frühere Ebene. */
+  private static async jump(depth: number): Promise<void> {
+    if (depth < 0 || depth >= this.trail.length - 1) return;
+    this.trail = this.trail.slice(0, depth + 1);
+    const target = this.current;
+    if (!target) return;
+    await this.request(
+      'clamps/inspectRefresh',
+      { id: target.id },
+      target.label,
+      'replace'
+    );
+  }
+
+  private static async refresh(): Promise<void> {
+    const cur = this.current;
+    if (!cur) return;
+    await this.request(
+      'clamps/inspectRefresh',
+      { id: cur.id },
+      cur.label,
+      'replace'
+    );
+  }
+
+  private static async release(): Promise<void> {
+    const client = this.getClient?.();
+    if (!client || client.state !== State.Running) return;
+    try {
+      await client.sendRequest('clamps/inspectRelease', {});
+    } catch {
+      // Beim Herunterfahren normal — nicht der Rede wert.
+    }
+  }
+
+  private static async request(
+    method: string,
+    params: object,
+    label: string,
+    mode: 'push' | 'replace' | 'root' = 'root'
+  ): Promise<void> {
     if (!this.panel) return;
     const client = this.getClient();
     if (!client || client.state !== State.Running) {
@@ -99,12 +193,16 @@ export class ClampsInspector {
     }
 
     try {
-      const result = await client.sendRequest<InspectResult>('clamps/inspect', {
-        expr,
-        package: this.pkg,
-      });
-      if (result.package) this.pkg = result.package;
-      this.panel.webview.html = this.render(expr, result);
+      const r = await client.sendRequest<InspectResult>(method, params);
+      if (r.package) this.pkg = r.package;
+      if (r.kind === 'error') {
+        this.panel.webview.html = this.renderError(r.print || 'Unbekannter Fehler');
+        return;
+      }
+      if (mode === 'root') this.trail = [{ id: r.id, label }];
+      else if (mode === 'push') this.trail.push({ id: r.id, label });
+      else if (this.current) this.current.id = r.id;
+      this.panel.webview.html = this.render(r);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.panel.webview.html = this.renderError(message);
@@ -115,16 +213,15 @@ export class ClampsInspector {
   // Rendering
   // ------------------------------------------------------------------
 
-  private static render(expr: string, r: InspectResult): string {
+  private static render(r: InspectResult): string {
     const kind = r.kind || 'atom';
     const parts = r.parts ?? [];
     const meta = r.meta ?? [];
-
     const body = this.renderBody(kind, parts);
-    const canBack = this.history.length > 1;
+    const canBack = this.trail.length > 1;
 
     // Bei skalaren Typen ist die Meta-Tabelle die eigentliche Information,
-    // die print-Zeile also redundant — dann sparen wir sie uns.
+    // die print-Zeile also redundant.
     const scalar = ['number', 'character', 'string', 'pathname', 'package'];
     const showPrint = !(scalar.includes(kind) && meta.length > 0);
 
@@ -133,28 +230,37 @@ export class ClampsInspector {
     </style></head><body>
       <div class="bar">
         <button id="back" ${canBack ? '' : 'disabled'}>← Zurück</button>
+        <button id="refresh" title="Objekt neu einlesen">↻</button>
         <span class="kind kind-${esc(kind)}">${esc(kind)}</span>
         <span class="type">${esc(r.type)}</span>
+        <span class="oid" title="ID in der Objekt-Tabelle">#${r.id}</span>
       </div>
-      <div class="expr" title="Inspizierter Ausdruck">${esc(expr)}</div>
+      ${this.renderTrail()}
       ${this.renderMeta(meta)}
       ${showPrint ? `<div class="print">${esc(r.print)}</div>` : ''}
       ${body}
       <script>
         const vscode = acquireVsCodeApi();
-        const back = document.getElementById('back');
-        if (back) back.addEventListener('click', () =>
+        document.getElementById('back')?.addEventListener('click', () =>
           vscode.postMessage({ command: 'back' }));
-        for (const a of document.querySelectorAll('[data-accessor]')) {
+        document.getElementById('refresh')?.addEventListener('click', () =>
+          vscode.postMessage({ command: 'refresh' }));
+        for (const c of document.querySelectorAll('[data-depth]')) {
+          c.addEventListener('click', e => {
+            e.preventDefault();
+            vscode.postMessage({ command: 'jump', depth: Number(c.dataset.depth) });
+          });
+        }
+        for (const a of document.querySelectorAll('[data-index]')) {
           a.addEventListener('click', e => {
             e.preventDefault();
             vscode.postMessage({
               command: 'navigate',
-              accessor: a.dataset.accessor
+              index: Number(a.dataset.index),
+              label: a.dataset.label
             });
           });
         }
-        // Filterfeld für lange Slot-/Element-Listen.
         const filter = document.getElementById('filter');
         if (filter) {
           filter.addEventListener('input', () => {
@@ -171,6 +277,52 @@ export class ClampsInspector {
         }
       </script>
     </body></html>`;
+  }
+
+  /**
+   * Pfad vom Wurzelausdruck bis hierher, jede Ebene anklickbar.
+   *
+   * Zwei Kürzungen, weil die Leiste sonst unbenutzbar wird: lange
+   * Labels (ein Wurzelausdruck kann eine ganze defparameter-Form sein)
+   * werden gestutzt, und ab einer gewissen Tiefe fallen die mittleren
+   * Ebenen zu einem "…" zusammen. Der vollständige Text steht jeweils
+   * im title-Attribut.
+   */
+  private static renderTrail(): string {
+    if (this.trail.length === 0) return '';
+
+    const MAX_LABEL = 28;
+    const HEAD = 1; // Wurzel immer zeigen
+    const TAIL = 3; // die letzten Ebenen immer zeigen
+
+    const shorten = (t: string): string =>
+      t.length <= MAX_LABEL ? t : t.slice(0, MAX_LABEL - 1) + '…';
+
+    const full = (i: number): string =>
+      i === 0 ? this.rootExpr : this.trail[i].label;
+
+    const crumb = (i: number): string => {
+      const last = i === this.trail.length - 1;
+      const text = esc(shorten(full(i)));
+      const title = esc(full(i));
+      return last
+        ? `<span class="crumb here" title="${title}">${text}</span>`
+        : `<a class="crumb" href="#" data-depth="${i}" title="${title}">${text}</a>`;
+    };
+
+    const n = this.trail.length;
+    let items: string[];
+    if (n <= HEAD + TAIL + 1) {
+      items = this.trail.map((_, i) => crumb(i));
+    } else {
+      const hidden = n - HEAD - TAIL;
+      items = [
+        ...Array.from({ length: HEAD }, (_, i) => crumb(i)),
+        `<span class="crumb ellipsis" title="${hidden} Ebenen ausgeblendet">…</span>`,
+        ...Array.from({ length: TAIL }, (_, k) => crumb(n - TAIL + k)),
+      ];
+    }
+    return `<div class="trail">${items.join('<span class="sep">›</span>')}</div>`;
   }
 
   /** Wählt das Layout anhand der Objekt-Kategorie. */
@@ -195,9 +347,7 @@ export class ClampsInspector {
         // Meist steht alles Wesentliche in der Meta-Tabelle. Ausnahme:
         // Komplexzahlen kommen ebenfalls als kind "number", haben aber
         // real- und imagpart als navigierbare Teile.
-        return parts.length > 0
-          ? this.renderPairs(parts, 'Teil', 'Wert')
-          : '';
+        return parts.length > 0 ? this.renderPairs(parts, 'Teil', 'Wert') : '';
       case 'pathname':
         return this.renderPairs(parts, 'Komponente', 'Wert');
       default:
@@ -207,7 +357,6 @@ export class ClampsInspector {
     }
   }
 
-  /** Kopfzeilen-Infos als kompaktes Key/Value-Raster. */
   private static renderMeta(meta: InspectMeta[]): string {
     if (meta.length === 0) return '';
     const cells = meta
@@ -220,23 +369,27 @@ export class ClampsInspector {
     return `<div class="meta">${cells}</div>`;
   }
 
-  /** Zweispaltig: Name/Schlüssel links (klickbar), Vorschau rechts. */
+  /** Klickbares Label, sofern der Teil betretbar ist. */
+  private static link(p: InspectPart, cls: string): string {
+    const label = esc(p.label);
+    if (p.navigable === false) {
+      return `<span class="${cls} dead" title="nicht gebunden">${label}</span>`;
+    }
+    return `<a class="${cls}" href="#" data-index="${p.index}" data-label="${label}">${label}</a>`;
+  }
+
   private static renderPairs(
     parts: InspectPart[],
     leftHead: string,
     rightHead: string
   ): string {
-    if (parts.length === 0) {
-      return '<div class="empty">Keine Teile.</div>';
-    }
+    if (parts.length === 0) return '<div class="empty">Keine Teile.</div>';
     const rows = parts
       .map(
         p =>
-          `<div class="row">
-             <a class="k" href="#" data-accessor="${esc(p.accessor)}"
-                title="${esc(p.accessor)}">${esc(p.label)}</a>
-             <span class="v">${esc(p.preview ?? '')}</span>
-           </div>`
+          `<div class="row">${this.link(p, 'k')}<span class="v">${esc(
+            p.preview ?? ''
+          )}</span></div>`
       )
       .join('');
     return `
@@ -248,19 +401,14 @@ export class ClampsInspector {
       </div>`;
   }
 
-  /** Sequenzen: schmaler Index-Badge links, Wert rechts. */
   private static renderIndexed(parts: InspectPart[]): string {
-    if (parts.length === 0) {
-      return '<div class="empty">Leere Sequenz.</div>';
-    }
+    if (parts.length === 0) return '<div class="empty">Leere Sequenz.</div>';
     const rows = parts
       .map(
         p =>
-          `<div class="row">
-             <a class="idx" href="#" data-accessor="${esc(p.accessor)}"
-                title="${esc(p.accessor)}">${esc(p.label)}</a>
-             <span class="v">${esc(p.preview ?? '')}</span>
-           </div>`
+          `<div class="row">${this.link(p, 'idx')}<span class="v">${esc(
+            p.preview ?? ''
+          )}</span></div>`
       )
       .join('');
     return `
@@ -268,7 +416,6 @@ export class ClampsInspector {
       <div class="indexed">${rows}</div>`;
   }
 
-  /** Ab einer gewissen Länge wird Suchen wichtiger als Scrollen. */
   private static filterBar(count: number): string {
     if (count < 12) return '';
     return `<div class="filterbar">
@@ -283,14 +430,13 @@ export class ClampsInspector {
              font-size: 13px; padding: 12px;
              color: var(--vscode-foreground); }
       .bar { display: flex; align-items: center; gap: 8px;
-             margin-bottom: 10px; }
+             margin-bottom: 8px; }
       button { font: inherit; padding: 2px 10px; cursor: pointer;
                background: var(--vscode-button-background);
                color: var(--vscode-button-foreground);
                border: none; border-radius: 3px; }
       button:disabled { opacity: 0.4; cursor: default; }
 
-      /* Kategorie-Badge: sofort sichtbar, womit man es zu tun hat. */
       .kind { font-size: 11px; text-transform: uppercase;
               letter-spacing: 0.5px; padding: 1px 7px; border-radius: 9px;
               background: var(--vscode-badge-background);
@@ -308,8 +454,16 @@ export class ClampsInspector {
       .kind-error      { background: var(--vscode-errorForeground); color: #fff; }
 
       .type { color: var(--vscode-descriptionForeground); }
-      .expr { color: var(--vscode-descriptionForeground);
-              word-break: break-all; margin-bottom: 10px; }
+      .oid  { color: var(--vscode-descriptionForeground); opacity: 0.6;
+              margin-left: auto; font-size: 11px; }
+
+      .trail { margin-bottom: 10px; }
+      .crumb { color: var(--vscode-textLink-foreground); text-decoration: none; }
+      .crumb.here { color: var(--vscode-descriptionForeground); }
+      .crumb.ellipsis { color: var(--vscode-descriptionForeground);
+                        opacity: 0.7; cursor: default; }
+      .trail { white-space: nowrap; overflow-x: auto; }
+      .sep { opacity: 0.5; margin: 0 5px; }
 
       .meta { display: grid; grid-template-columns: max-content 1fr;
               gap: 2px 12px; margin-bottom: 12px;
@@ -317,7 +471,7 @@ export class ClampsInspector {
               background: var(--vscode-textBlockQuote-background);
               border-left: 3px solid var(--vscode-textBlockQuote-border); }
       .meta-k { color: var(--vscode-descriptionForeground); }
-      .meta-v { word-break: break-all; }
+      .meta-v { word-break: break-all; white-space: pre-wrap; }
 
       .print { white-space: pre-wrap; word-break: break-all;
                background: var(--vscode-textCodeBlock-background);
@@ -340,7 +494,7 @@ export class ClampsInspector {
                      border-bottom: 1px solid var(--vscode-panel-border);
                      padding-bottom: 3px; margin-bottom: 3px; }
       .pairs .row { display: contents; }
-      .pairs .row .k, .pairs .row .v {
+      .pairs .row > * {
         padding: 3px 0; border-bottom: 1px solid var(--vscode-panel-border); }
 
       .indexed .row { display: flex; gap: 10px; align-items: baseline;
@@ -352,6 +506,7 @@ export class ClampsInspector {
 
       a { color: var(--vscode-textLink-foreground); text-decoration: none; }
       a:hover { text-decoration: underline; }
+      .dead { color: var(--vscode-descriptionForeground); opacity: 0.6; }
       .v { white-space: pre-wrap; word-break: break-all; }
       .empty { color: var(--vscode-descriptionForeground); }
     `;

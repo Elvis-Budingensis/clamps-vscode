@@ -602,55 +602,93 @@
                             (format nil "Bridge-Disassemble fehlgeschlagen: ~A" value)
                             "package" pkg))))))))
 
+(defun send-inspect-result (id value fallback-pkg)
+  "Gemeinsame Antwortformung für alle drei Inspect-Methoden.
+   Erwartet (:ok obj-id type print parts kind meta) oder (:error msg ...)."
+  (if (and (consp value) (eq (first value) :ok))
+      (destructuring-bind (ok obj-id type print parts kind meta) value
+        (declare (ignore ok))
+        (send-response id
+          (make-jobj
+           "id" obj-id
+           "kind" (or kind "atom")
+           "type" (or type "")
+           "print" (or print "")
+           "meta" (coerce (mapcar (lambda (m)
+                                    (make-jobj "key" (first m)
+                                               "value" (second m)))
+                                  meta)
+                          'vector)
+           ;; parts: (label index preview navigierbar-p)
+           "parts" (coerce (mapcar (lambda (p)
+                                     (make-jobj "label" (first p)
+                                                "index" (second p)
+                                                "preview" (or (third p) "")
+                                                "navigable"
+                                                (if (fourth p) :true :false)))
+                                   parts)
+                           'vector)
+           "package" fallback-pkg)))
+      (let ((errmsg (if (and (consp value) (stringp (second value)))
+                        (second value)
+                        (format nil "~A" value))))
+        (send-response id
+          (make-jobj "id" 0 "kind" "error" "type" "error" "print" errmsg
+                     "meta" (vector) "parts" (vector)
+                     "package" fallback-pkg)))))
+
 (defun handle-inspect (id params)
-  "clamps/inspect — inspiziert das Ergebnis eines Ausdrucks.
-   Client schickt {expr, package}, erwartet
-   {kind, type, print, meta: [{key,value}],
-    parts: [{label, accessor, preview}], package}."
+  "clamps/inspect — wertet einen Ausdruck aus und inspiziert das Ergebnis.
+   Client schickt {expr, package}, bekommt eine Objekt-ID zurück, über
+   die weiter navigiert wird."
   (let* ((expr (gethash "expr" params))
          (pkg (or (gethash "package" params) *swank-package*)))
-    (if (or (null expr) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) expr) ""))
-        (send-response id (make-jobj "kind" "atom" "type" "" "print" ""
+    (if (or (null expr)
+            (string= (string-trim '(#\Space #\Tab #\Newline #\Return) expr) ""))
+        (send-response id (make-jobj "id" 0 "kind" "atom" "type" "" "print" ""
                                      "meta" (vector) "parts" (vector)
                                      "package" pkg))
         (swank-rex
          (format nil "(clamps-bridge-rpc:inspect-for-repl ~S ~S)" expr pkg)
          :callback
          (lambda (status value)
-           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
-               ;; kind/meta sind optional, damit ein altes Image (ohne die
-               ;; neuen Rückgabewerte) die Bridge nicht sprengt.
-               (destructuring-bind (ok type print parts result-pkg
-                                    &optional kind meta)
-                   value
-                 (declare (ignore ok))
-                 (send-response id
-                   (make-jobj
-                    "kind" (or kind "atom")
-                    "type" (or type "")
-                    "print" (or print "")
-                    "meta" (coerce
-                            (mapcar (lambda (m)
-                                      (make-jobj "key" (first m)
-                                                 "value" (second m)))
-                                    meta)
-                            'vector)
-                    "parts" (coerce
-                             (mapcar (lambda (p)
-                                       (make-jobj "label" (first p)
-                                                  "accessor" (second p)
-                                                  "preview" (or (third p) "")))
-                                     parts)
-                             'vector)
-                    "package" (or result-pkg pkg))))
-               ;; :error oder unerwartet
-               (let ((errmsg (if (and (consp value) (stringp (second value)))
-                                 (second value)
-                                 (format nil "~A" value))))
-                 (send-response id
-                   (make-jobj "kind" "error" "type" "error" "print" errmsg
-                              "meta" (vector) "parts" (vector)
-                              "package" pkg)))))))))
+           (send-inspect-result id (if (eq status :ok) value nil) pkg))))))
+
+(defun handle-inspect-part (id params)
+  "clamps/inspectPart — navigiert von einem Objekt zu dessen n-tem Teil.
+   Ersetzt die frühere Navigation über re-evaluierbare Ausdrücke."
+  (let ((obj-id (gethash "id" params))
+        (index (gethash "index" params))
+        (pkg *swank-package*))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:inspect-part-for-repl ~D ~D)"
+             (or obj-id 0) (or index 0))
+     :callback
+     (lambda (status value)
+       (send-inspect-result id (if (eq status :ok) value nil) pkg)))))
+
+(defun handle-inspect-refresh (id params)
+  "clamps/inspectRefresh — beschreibt dasselbe Objekt neu. Nötig, weil
+   sich Objekte bei laufendem DSP unter der Anzeige verändern."
+  (let ((obj-id (gethash "id" params))
+        (pkg *swank-package*))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:inspect-id-for-repl ~D)" (or obj-id 0))
+     :callback
+     (lambda (status value)
+       (send-inspect-result id (if (eq status :ok) value nil) pkg)))))
+
+(defun handle-inspect-release (id params)
+  "clamps/inspectRelease — gibt die Objekt-Tabelle frei. Der Client ruft
+   das beim Schließen des Panels; ohne das hielten wir Objekte am GC
+   vorbei fest, was bei Audio-Buffern teuer wird."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:inspect-release-for-repl)"
+   :callback
+   (lambda (status value)
+     (declare (ignore status value))
+     (send-response id (make-jobj "ok" :true)))))
 
 (defun handle-rt-status (id params)
   "clamps/rtStatus — Zustand des Incudine-Realtime-Servers.
@@ -729,6 +767,9 @@
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))
           ((string= method "clamps/inspect") (handle-inspect id params))
+          ((string= method "clamps/inspectPart") (handle-inspect-part id params))
+          ((string= method "clamps/inspectRefresh") (handle-inspect-refresh id params))
+          ((string= method "clamps/inspectRelease") (handle-inspect-release id params))
           ((string= method "clamps/rtStatus") (handle-rt-status id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))

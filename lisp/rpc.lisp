@@ -34,7 +34,9 @@
   (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
            #:find-definitions-for-repl #:inspect-for-repl
            #:trace-toggle-for-repl #:untrace-all-for-repl
-           #:rt-status-for-repl #:completions-for-repl))
+           #:rt-status-for-repl #:completions-for-repl
+           #:inspect-id-for-repl #:inspect-part-for-repl
+           #:inspect-release-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -60,23 +62,6 @@
         (format nil "~A::~A" (string-downcase (package-name pkg))
                 (string-downcase (symbol-name sym)))
         (string-downcase (symbol-name sym)))))
-
-(defun %replace-obj (template expr-string)
-  "Ersetzt jedes __OBJ__ im Template durch den geklammerten expr-string."
-  (let ((wrapped (format nil "(progn ~A)" expr-string))
-        (result (make-string-output-stream))
-        (pos 0))
-    (loop
-      (let ((idx (search "__OBJ__" template :start2 pos)))
-        (cond
-          (idx
-           (write-string (subseq template pos idx) result)
-           (write-string wrapped result)
-           (setf pos (+ idx 7)))
-          (t
-           (write-string (subseq template pos) result)
-           (return)))))
-    (get-output-stream-string result)))
 
 (defun %preview (val)
   "Kurze, einzeilige Druckdarstellung für Slot-/Element-Vorschauen.
@@ -124,18 +109,27 @@
         (and ll (let ((*print-case* :downcase)) (princ-to-string ll))))
     (error () nil)))
 
+(defvar +unbound+ (make-symbol "UNBOUND")
+  "Eindeutiger Marker für nicht gebundene Slots. Ein uninterniertes
+   Symbol, damit es sich mit keinem echten Wert verwechseln lässt.")
+
 (defun %inspect-describe (obj)
   "Beschreibt OBJ typspezifisch. Liefert (kind meta parts):
 
-     kind  — Kategorie-String, den der Client zum Rendern nutzt
-             (object struct list vector array hash-table string symbol
-              function number character pathname package atom)
+     kind  — Kategorie-String für den Client
      meta  — Liste von (schlüssel . wert) Strings, Kopfzeilen-Infos
-     parts — Liste von (label accessor preview); accessor enthält
-             __OBJ__ als Platzhalter für den Zugriffs-Ausdruck
+     parts — Liste von (label wert preview); WERT ist das echte
+             Lisp-Objekt, nicht mehr ein Zugriffs-Ausdruck
+
+   Der Wechsel von Ausdruck auf Objekt ist der Kern der Umstellung: die
+   frühere Fassung lieferte Strings wie \"(slot-value __OBJ__ 'x)\", die
+   der Client bei jedem Klick neu auswerten liess. Das erzeugte bei
+   Seiteneffekten neue Objekte statt in das vorhandene zu navigieren
+   und scheiterte an Werten, die sich nicht lesbar drucken lassen.
 
    Die Reihenfolge im typecase ist relevant: null vor symbol/list,
-   string vor vector, vector vor array."
+   string vor vector, vector vor array, und package/pathname/random-state
+   vor structure-object (in SBCL sind das defstructs)."
   (typecase obj
     (null
      (list "atom" (list (cons "hinweis" "nil — leere Liste und Symbol")) nil))
@@ -143,12 +137,10 @@
     (hash-table
      (let ((parts '()) (i 0) (truncated nil))
        (maphash (lambda (k v)
-                  (if (< i 200)
+                  (if (< i 1000)
                       (progn
-                        (push (list (%preview k)
-                                    (format nil "(gethash '~S __OBJ__)" k)
-                                    (%preview v))
-                              parts)
+                        ;; Label ist der Schlüssel, navigiert wird zum Wert.
+                        (push (list (%preview k) v (%preview v)) parts)
                         (incf i))
                       (setf truncated t)))
                 obj)
@@ -157,7 +149,7 @@
               (list (cons "count" (princ-to-string (hash-table-count obj)))
                     (cons "test" (string-downcase
                                   (princ-to-string (hash-table-test obj)))))
-              (when truncated (list (cons "anzeige" "erste 200"))))
+              (when truncated (list (cons "anzeige" "erste 1000"))))
              (nreverse parts))))
 
     (string
@@ -166,10 +158,6 @@
                  (cons "simple-p" (if (simple-string-p obj) "t" "nil")))
            nil))
 
-    ;; ACHTUNG Reihenfolge: in SBCL sind package, pathname und
-    ;; random-state als defstruct implementiert. Stünden sie hinter der
-    ;; structure-object-Klausel, wären sie toter Code — SBCL warnt dann
-    ;; mit "Clause X is shadowed by structure-object".
     (package
      (list "package"
            (list (cons "name" (package-name obj))
@@ -187,7 +175,7 @@
                  (cons "name" (format nil "~A" (pathname-name obj)))
                  (cons "type" (format nil "~A" (pathname-type obj)))
                  (cons "exists-p" (if (probe-file obj) "t" "nil")))
-           (list (list "directory" "(pathname-directory __OBJ__)"
+           (list (list "directory" (pathname-directory obj)
                        (%preview (pathname-directory obj))))))
 
     (random-state
@@ -201,12 +189,12 @@
                                    (princ-to-string (class-name class))))
                    (cons "slots" (princ-to-string (length slots))))
              (loop for slot in slots
-                   collect (list (string-downcase (symbol-name slot))
-                                 (format nil "(slot-value __OBJ__ '~A)"
-                                         (%package-qualified slot))
-                                 (if (slot-boundp obj slot)
-                                     (%preview (slot-value obj slot))
-                                     "#<unbound>"))))))
+                   collect (let ((bound (slot-boundp obj slot)))
+                             (list (string-downcase (symbol-name slot))
+                                   (if bound (slot-value obj slot) +unbound+)
+                                   (if bound
+                                       (%preview (slot-value obj slot))
+                                       "#<unbound>")))))))
 
     (structure-object
      (let ((slots (%struct-slot-names obj)))
@@ -215,24 +203,24 @@
                                   (princ-to-string (type-of obj))))
                    (cons "slots" (princ-to-string (length slots))))
              (loop for slot in slots
-                   collect (list (string-downcase (symbol-name slot))
-                                 (format nil "(slot-value __OBJ__ '~A)"
-                                         (%package-qualified slot))
-                                 (handler-case (%preview (slot-value obj slot))
-                                   (error () "#<unbound>")))))))
+                   collect (handler-case
+                               (let ((v (slot-value obj slot)))
+                                 (list (string-downcase (symbol-name slot))
+                                       v (%preview v)))
+                             (error ()
+                               (list (string-downcase (symbol-name slot))
+                                     +unbound+ "#<unbound>")))))))
 
     (cons
-     ;; Bounded traversal: verträgt auch dotted und zirkuläre Listen.
+     ;; Bounded traversal: verträgt dotted und zirkuläre Listen.
      (let ((parts '()) (i 0) (tail obj))
-       (loop while (and (consp tail) (< i 200))
-             do (push (list (princ-to-string i)
-                            (format nil "(nth ~A __OBJ__)" i)
-                            (%preview (car tail)))
+       (loop while (and (consp tail) (< i 1000))
+             do (push (list (princ-to-string i) (car tail) (%preview (car tail)))
                       parts)
                 (incf i)
                 (setf tail (cdr tail)))
        (when (and tail (not (consp tail)))
-         (push (list "· cdr" "(cdr (last __OBJ__))" (%preview tail)) parts))
+         (push (list "· cdr" tail (%preview tail)) parts))
        (list "list"
              (list (cons "length" (if (consp tail)
                                       (format nil "> ~A" i)
@@ -250,9 +238,8 @@
                        (if (array-has-fill-pointer-p obj)
                            (princ-to-string (fill-pointer obj))
                            "—")))
-           (loop for i from 0 below (min 200 (length obj))
-                 collect (list (princ-to-string i)
-                               (format nil "(aref __OBJ__ ~A)" i)
+           (loop for i from 0 below (min 1000 (length obj))
+                 collect (list (princ-to-string i) (aref obj i)
                                (%preview (aref obj i))))))
 
     (array
@@ -262,9 +249,8 @@
                  (cons "element-type"
                        (let ((*print-case* :downcase))
                          (princ-to-string (array-element-type obj)))))
-           (loop for i from 0 below (min 200 (array-total-size obj))
-                 collect (list (princ-to-string i)
-                               (format nil "(row-major-aref __OBJ__ ~A)" i)
+           (loop for i from 0 below (min 1000 (array-total-size obj))
+                 collect (list (princ-to-string i) (row-major-aref obj i)
                                (%preview (row-major-aref obj i))))))
 
     (symbol
@@ -281,13 +267,13 @@
               (when doc (list (cons "documentation" doc)))))
            (append
             (when (boundp obj)
-              (list (list "symbol-value" "(symbol-value __OBJ__)"
+              (list (list "symbol-value" (symbol-value obj)
                           (%preview (symbol-value obj)))))
             (when (fboundp obj)
-              (list (list "symbol-function" "(symbol-function __OBJ__)"
+              (list (list "symbol-function" (symbol-function obj)
                           (%preview (symbol-function obj)))))
             (when (symbol-plist obj)
-              (list (list "symbol-plist" "(symbol-plist __OBJ__)"
+              (list (list "symbol-plist" (symbol-plist obj)
                           (%preview (symbol-plist obj))))))))
 
     (function
@@ -339,8 +325,8 @@
      (list "number"
            (list (cons "realpart" (%preview (realpart obj)))
                  (cons "imagpart" (%preview (imagpart obj))))
-           (list (list "realpart" "(realpart __OBJ__)" (%preview (realpart obj)))
-                 (list "imagpart" "(imagpart __OBJ__)" (%preview (imagpart obj))))))
+           (list (list "realpart" (realpart obj) (%preview (realpart obj)))
+                 (list "imagpart" (imagpart obj) (%preview (imagpart obj))))))
 
     (character
      (list "character"
@@ -350,6 +336,139 @@
            nil))
 
     (t (list "atom" nil nil))))
+
+;;; ---------------------------------------------------------------------
+;;; Objekt-Tabelle
+;;;
+;;; Der Inspector navigiert über IDs statt über re-evaluierbare
+;;; Ausdrücke. Damit inspiziert man tatsächlich das vorhandene Objekt
+;;; statt bei jedem Klick eine Neuberechnung anzustoßen, die bei
+;;; Seiteneffekten ein anderes Objekt liefert.
+;;;
+;;; Lebensdauer: Einträge halten starke Referenzen, verhindern also GC.
+;;; Das ist beabsichtigt (ein angezeigtes Objekt darf nicht unter der
+;;; Hand verschwinden), aber bei laufendem Audio heikel — deshalb die
+;;; FIFO-Grenze und das explizite Freigeben beim Schließen des Panels.
+;;; ---------------------------------------------------------------------
+
+(defvar *inspect-table* (make-hash-table :test 'eql)
+  "id (fixnum) -> Objekt")
+(defvar *inspect-order* '()
+  "IDs in Einfügereihenfolge, jüngste zuerst — für die FIFO-Räumung.")
+(defvar *inspect-counter* 0)
+
+(defvar *inspect-parts-cache* (make-hash-table :test 'eql)
+  "id -> (kind meta parts), die zuletzt berechnete Beschreibung.
+
+   Ohne den Cache berechnete inspect-part-for-repl bei JEDEM Klick alle
+   Teile neu, nur um einen davon zu benutzen: bei einem ATS-Vektor mit
+   tausend Partials also tausend prin1-to-string-Aufrufe für Vorschauen,
+   von denen 999 weggeworfen werden.
+
+   Der ursprüngliche Grund dagegen — die Teile würden Objekte am GC
+   vorbei festhalten — war ein Denkfehler: die Teile eines Vektors hält
+   der Vektor ohnehin, und der Vektor steht bereits in *inspect-table*.
+   Der Cache kostet also keine zusätzliche Retention und wird zusammen
+   mit der Tabelle freigegeben.")
+
+(defparameter *inspect-capacity* 500
+  "Höchstzahl gehaltener Objekte. Darüber fliegen die ältesten raus.
+   Verhindert, dass eine lange Inspektionssitzung Audio-Buffer am GC
+   vorbei am Leben hält.")
+
+(defun %inspect-register (obj)
+  "Legt OBJ ab und liefert dessen ID."
+  (let ((id (incf *inspect-counter*)))
+    (setf (gethash id *inspect-table*) obj)
+    (push id *inspect-order*)
+    (when (> (hash-table-count *inspect-table*) *inspect-capacity*)
+      (let ((keep (subseq *inspect-order* 0 *inspect-capacity*)))
+        (dolist (old (nthcdr *inspect-capacity* *inspect-order*))
+          (remhash old *inspect-table*)
+          (remhash old *inspect-parts-cache*))
+        (setf *inspect-order* keep)))
+    id))
+
+(defun inspect-release-for-repl ()
+  "Gibt alle gehaltenen Objekte frei. Der Client ruft das beim Schließen
+   des Inspector-Panels."
+  (clrhash *inspect-table*)
+  (clrhash *inspect-parts-cache*)
+  (setf *inspect-order* '())
+  (list :ok))
+
+(defun %describe-registered (obj id)
+  "Baut die Antwort für ein bereits registriertes Objekt."
+  (let ((type-str (let ((*print-case* :downcase))
+                    (princ-to-string (type-of obj))))
+        (print-str (let ((*print-length* 100)
+                         (*print-level* 5)
+                         (*print-circle* t))
+                     (prin1-to-string obj))))
+    (destructuring-bind (kind meta parts) (%inspect-describe obj)
+      ;; Für die spätere Navigation aufheben.
+      (setf (gethash id *inspect-parts-cache*) parts)
+      (list :ok id type-str print-str
+            ;; (label index preview navigierbar-p)
+            (loop for p in parts
+                  for i from 0
+                  collect (list (first p) i (or (third p) "")
+                                (if (eq (second p) +unbound+) nil t)))
+            kind
+            (mapcar (lambda (m) (list (car m) (cdr m))) meta)))))
+
+(defun inspect-for-repl (expr-string package-name)
+  "Wertet EXPR-STRING aus, registriert das Ergebnis und beschreibt es.
+   Rückgabe: (:ok id type print parts kind meta) oder (:error msg ...)."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               (*read-eval* nil)
+               (form (read-from-string expr-string))
+               (obj (eval form)))
+          (%describe-registered obj (%inspect-register obj)))
+      (error (e)
+        (list :error (format nil "~A" e) "" nil "error" nil)))))
+
+(defun inspect-id-for-repl (id)
+  "Beschreibt das Objekt mit ID neu — für Refresh, wenn es sich
+   inzwischen geändert hat."
+  (handler-case
+      (multiple-value-bind (obj found) (gethash id *inspect-table*)
+        (if found
+            ;; Cache verwerfen: Refresh existiert gerade dafür, dass sich
+            ;; das Objekt inzwischen geändert haben kann.
+            (progn (remhash id *inspect-parts-cache*)
+                   (%describe-registered obj id))
+            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+                  "" nil "error" nil)))
+    (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
+
+(defun inspect-part-for-repl (id index)
+  "Navigiert vom Objekt ID zu dessen Teil INDEX.
+
+   Nutzt die beim Beschreiben abgelegte Teileliste. Fehlt sie (Cache
+   geräumt, Image neu gestartet), wird einmal neu berechnet — richtig
+   bleibt das Ergebnis in beiden Fällen, nur langsamer."
+  (handler-case
+      (multiple-value-bind (obj found) (gethash id *inspect-table*)
+        (if (not found)
+            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+                  "" nil "error" nil)
+            (let ((parts (or (gethash id *inspect-parts-cache*)
+                             (let ((d (%inspect-describe obj)))
+                               (setf (gethash id *inspect-parts-cache*)
+                                     (third d))))))
+              (let ((part (nth index parts)))
+                (cond
+                  ((null part)
+                   (list :error "Teil existiert nicht mehr" "" nil "error" nil))
+                  ((eq (second part) +unbound+)
+                   (list :error "Slot ist nicht gebunden" "" nil "error" nil))
+                  (t (let ((v (second part)))
+                       (%describe-registered v (%inspect-register v)))))))))
+    (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
 
 (defun %sym-kind (sym)
   "LSP CompletionItemKind. Die Zahlen sind LSP-Konstanten; die Auswahl
@@ -477,25 +596,42 @@
       (list :ok nil (list (list (format nil "; Completion-Fehler: ~A" e)
                                 1 "" ""))))))
 
+(defparameter *rt-packages* '(:incudine :clamps :incudine.util)
+  "Pakete, in denen nach den RT-Funktionen gesucht wird, in dieser
+   Reihenfolge. rt-status liegt in INCUDINE; CLAMPS steht mit drin,
+   falls dort eigene Wrapper hinzukommen.")
+
+(defun %rt-sym (name)
+  "Erstes fbound-Symbol NAME aus *rt-packages*. Liefert (values symbol
+   paketname) oder nil."
+  (dolist (pkg-name *rt-packages* nil)
+    (let ((pkg (find-package pkg-name)))
+      (when pkg
+        (let ((sym (find-symbol (string-upcase name) pkg)))
+          (when (and sym (fboundp sym))
+            (return (values sym (package-name pkg)))))))))
+
 (defun %incudine (name)
-  "Symbol aus :incudine, falls das Paket geladen ist. Ohne CLAMPS (etwa
-   im Testlauf gegen nacktes SBCL) existiert es nicht — dann nil."
-  (let ((pkg (find-package :incudine)))
-    (when pkg (find-symbol (string-upcase name) pkg))))
+  "Rückwärtskompatibler Alias — sucht inzwischen in allen *rt-packages*."
+  (%rt-sym name))
 
 (defun %rt-symbols ()
-  "Alle RT-*-Symbole aus :incudine — Diagnosehilfe, wenn keiner der
-   erwarteten Namen greift. Die Benennung schwankt zwischen Incudine-
-   Versionen (rt-status vs. rt-running-p), und statt zu raten, zeigen
-   wir dem Nutzer, was tatsächlich da ist."
-  (let ((pkg (find-package :incudine))
-        (out '()))
-    (when pkg
-      (do-external-symbols (sym pkg)
-        (let ((n (symbol-name sym)))
-          (when (and (> (length n) 3)
-                     (string= "RT-" (subseq n 0 3)))
-            (push (string-downcase n) out)))))
+  "Alle RT-*-Symbole aus *rt-packages* — Diagnosehilfe, wenn keiner der
+   erwarteten Namen greift."
+  (let ((out '()))
+    (dolist (pkg-name *rt-packages*)
+      (let ((pkg (find-package pkg-name)))
+        (when pkg
+          (do-symbols (sym pkg)
+            (let ((n (symbol-name sym)))
+              (when (and (> (length n) 3)
+                         (string= "RT-" (subseq n 0 3))
+                         (fboundp sym))
+                (pushnew (format nil "~A:~A"
+                                 (string-downcase
+                                  (package-name (symbol-package sym)))
+                                 (string-downcase n))
+                         out :test #'string=)))))))
     (sort out #'string<)))
 
 (defun rt-status-for-repl ()
@@ -506,25 +642,22 @@
    Connection ist dieser Aufruf im Bootstrap ein No-op, wodurch in
    VS Code jede Anzeige fehlt, ob DSP läuft.
 
-   Die Abfrage probiert mehrere Funktionsnamen durch, weil sie sich
-   zwischen Incudine-Versionen unterscheiden. Findet sie keinen, meldet
-   sie das explizit und listet die vorhandenen RT-Symbole, statt still
-   \"aus\" zu behaupten.
-
    Rückgabe: (:ok running-p ((schlüssel . wert) ...)), Werte als Strings."
   (handler-case
-      (if (not (find-package :incudine))
-          (list :ok nil (list (cons "incudine" "Paket nicht geladen")))
+      (if (notany #'find-package *rt-packages*)
+          (list :ok nil (list (cons "pakete" "weder incudine noch clamps geladen")))
           (let ((running :unbekannt)
                 (info '()))
 
             ;; 1) rt-status — liefert typischerweise :started / :stopped
-            (let ((sym (%incudine "RT-STATUS")))
-              (when (and sym (fboundp sym))
+            (multiple-value-bind (sym where) (%rt-sym "RT-STATUS")
+              (when sym
                 (handler-case
                     (let ((v (funcall sym)))
                       (push (cons "rt-status"
-                                  (string-downcase (princ-to-string v)))
+                                  (format nil "~A (aus ~A)"
+                                          (string-downcase (princ-to-string v))
+                                          (string-downcase where)))
                             info)
                       (setf running
                             (and (member v '(:started :running :on)) t)))
@@ -532,9 +665,15 @@
 
             ;; 2) Fallback: rt-running-p (ältere/andere Versionen)
             (when (eq running :unbekannt)
-              (let ((sym (%incudine "RT-RUNNING-P")))
-                (when (and sym (fboundp sym))
-                  (handler-case (setf running (and (funcall sym) t))
+              (multiple-value-bind (sym where) (%rt-sym "RT-RUNNING-P")
+                (when sym
+                  (handler-case
+                      (progn
+                        (setf running (and (funcall sym) t))
+                        (push (cons "quelle"
+                                    (format nil "rt-running-p aus ~A"
+                                            (string-downcase where)))
+                              info))
                     (error () nil)))))
 
             ;; 3) Nichts gefunden: nicht raten, sondern zeigen was da ist.
@@ -545,17 +684,16 @@
                             (if syms
                                 (format nil "kein rt-status/rt-running-p; vorhanden: ~{~A~^, ~}"
                                         (subseq syms 0 (min 8 (length syms))))
-                                "keine RT-Symbole in :incudine gefunden"))
+                                "keine RT-Symbole gefunden"))
                       info)))
 
-            ;; Zusatzinfos für den Tooltip; jede einzeln abgesichert,
-            ;; da versionsabhängig.
+            ;; Zusatzinfos für den Tooltip; jede einzeln abgesichert.
             (dolist (probe '(("sample-rate" . "RT-SAMPLE-RATE")
                              ("block-size"  . "BLOCK-SIZE")
                              ("client"      . "RT-CLIENT-NAME")
                              ("xruns"       . "RT-XRUNS")))
-              (let ((sym (%incudine (cdr probe))))
-                (when (and sym (fboundp sym))
+              (let ((sym (%rt-sym (cdr probe))))
+                (when sym
                   (handler-case
                       (push (cons (car probe)
                                   (princ-to-string (funcall sym)))
@@ -565,42 +703,6 @@
             (list :ok running (nreverse info))))
     (error (e)
       (list :ok nil (list (cons "fehler" (princ-to-string e)))))))
-
-(defun inspect-for-repl (expr-string package-name)
-  "Wertet EXPR-STRING aus und beschreibt das Ergebnis-Objekt typspezifisch.
-   Gibt zurück:
-   (:ok type print ((label accessor preview) ...) package kind
-        ((meta-key . meta-value) ...))
-   accessor enthält __OBJ__ als Platzhalter für EXPR-STRING.
-   kind und meta sind neu — ältere Clients ignorieren sie einfach."
-  (let ((pkg (or (find-package (string-upcase package-name))
-                 (find-package :common-lisp-user))))
-    (handler-case
-        (let* ((*package* pkg)
-               (*read-eval* nil)
-               (form (read-from-string expr-string))
-               (obj (eval form))
-               (type-str (let ((*print-case* :downcase))
-                           (princ-to-string (type-of obj))))
-               (print-str (let ((*print-length* 100)
-                                (*print-level* 5)
-                                (*print-circle* t))
-                            (prin1-to-string obj)))
-               (described (%inspect-describe obj)))
-          (destructuring-bind (kind meta parts) described
-            (list :ok type-str print-str
-                  (mapcar (lambda (p)
-                            ;; (label accessor preview) — __OBJ__ ersetzen
-                            (list (first p)
-                                  (%replace-obj (second p) expr-string)
-                                  (or (third p) "")))
-                          parts)
-                  (package-name pkg)
-                  kind
-                  (mapcar (lambda (m) (list (car m) (cdr m))) meta))))
-      (error (e)
-        (list :error (format nil "~A" e) "" nil (package-name pkg)
-              "error" nil)))))
 
 (defun %offset->line-col (filepath offset)
   "Zählt Zeilen/Spalten bis OFFSET (0-indexiert für LSP). Läuft im

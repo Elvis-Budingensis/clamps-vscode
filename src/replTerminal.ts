@@ -6,6 +6,74 @@ interface EvalResult {
   package: string;
 }
 
+
+/**
+ * Grober Lisp-Reader-Zustand eines Eingabepuffers.
+ *
+ * Nötig, weil die REPL vorher jede Enter-Taste als vollständigen Ausdruck
+ * an das Image geschickt hat. Bei "(dsp! si" lief der Reader dort ins
+ * Dateiende — Fehlermeldung statt Fortsetzung. Wir entscheiden deshalb
+ * schon hier, ob der Ausdruck fertig ist.
+ *
+ * Berücksichtigt Strings mit Escapes, Zeichenliterale (#\( zählt nicht
+ * als Klammer), Zeilenkommentare und verschachtelte Blockkommentare.
+ */
+interface ReadState {
+  /** Offene Klammern; > 0 heißt unvollständig. */
+  depth: number;
+  /** Mehr ) als ( — der Ausdruck ist kaputt, nicht unvollständig. */
+  tooManyClosers: boolean;
+  inString: boolean;
+  inBlockComment: boolean;
+}
+
+export function readState(text: string): ReadState {
+  let depth = 0;
+  let tooManyClosers = false;
+  let inString = false;
+  let blockDepth = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const c = text[i];
+
+    if (inString) {
+      if (c === '\\') i += 2;
+      else {
+        if (c === '"') inString = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (blockDepth > 0) {
+      if (c === '|' && text[i + 1] === '#') { blockDepth--; i += 2; continue; }
+      if (c === '#' && text[i + 1] === '|') { blockDepth++; i += 2; continue; }
+      i++;
+      continue;
+    }
+
+    // Zeichenliteral: #\( darf die Bilanz nicht verschieben
+    if (c === '#' && text[i + 1] === '\\') { i += 3; continue; }
+    if (c === '#' && text[i + 1] === '|') { blockDepth++; i += 2; continue; }
+    if (c === ';') {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '"') { inString = true; i++; continue; }
+    if (c === '(') { depth++; i++; continue; }
+    if (c === ')') {
+      depth--;
+      if (depth < 0) { tooManyClosers = true; depth = 0; }
+      i++;
+      continue;
+    }
+    i++;
+  }
+
+  return { depth, tooManyClosers, inString, inBlockComment: blockDepth > 0 };
+}
+
 export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private static instance: ClampsReplTerminal | undefined;
   private static terminal: vscode.Terminal | undefined;
@@ -22,6 +90,21 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private historyIndex = 0;
   private packageName = 'COMMON-LISP-USER';
   private busy = false;
+
+  /**
+   * Terminalbreite in Spalten. Ohne sie lässt sich nicht ausrechnen, wie
+   * viele BILDSCHIRMzeilen eine Eingabe belegt: eine Lisp-Zeile ist
+   * regelmäßig breiter als das Panel und wird umbrochen. Die frühere
+   * Fassung zählte Pufferzeilen und liess beim Neuzeichnen jede
+   * umbrochene Zeile stehen — pro Tastendruck eine Kopie mehr.
+   */
+  private cols = 80;
+
+  /** Bildschirmzeilen, die die letzte Eingabe belegt hat. */
+  private renderedRows = 1;
+
+  /** open() gelaufen? setDimensions kommt teils davor. */
+  private opened = false;
 
   static show(getClient: () => LanguageClient | undefined): ClampsReplTerminal {
     if (!this.instance || !this.terminal) {
@@ -74,10 +157,15 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
 
   private constructor(private readonly getClient: () => LanguageClient | undefined) {}
 
-  open(): void {
+  open(initialDimensions?: vscode.TerminalDimensions): void {
+    // Breite gleich beim Öffnen übernehmen, sonst rechnet der erste
+    // Redraw mit dem 80-Spalten-Default.
+    if (initialDimensions) this.cols = Math.max(20, initialDimensions.columns);
     this.write('\x1b[1mCLAMPS REPL\x1b[0m\r\n');
     this.write('Dieselbe laufende SBCL-/Swank-Session wie der Editor.\r\n');
-    this.write('Enter: auswerten · Ctrl+J: neue Zeile · Ctrl+L: leeren · ↑/↓: Verlauf\r\n\r\n');
+    this.write('Enter: auswerten (unvollständige Formen laufen weiter) · Ctrl+J: neue Zeile\r\n');
+    this.write('Ctrl+L: leeren · Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n\r\n');
+    this.opened = true;
     this.renderInput();
   }
 
@@ -186,14 +274,38 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private async submit(): Promise<void> {
     if (this.busy) return;
     const code = this.buffer.trim();
-    this.clearInputLine();
-    this.write('\r\n');
-    this.buffer = '';
-    this.cursor = 0;
+
     if (!code) {
+      this.clearInputLine();
+      this.write('\r\n');
+      this.buffer = '';
+      this.cursor = 0;
       this.renderInput();
       return;
     }
+
+    // Unvollständig? Dann nicht abschicken, sondern weitertippen lassen.
+    // Fluchtweg: endet der Puffer schon auf einer Leerzeile, hat der
+    // Nutzer zweimal Enter gedrückt — dann doch abschicken, damit man
+    // bei einem echten Tippfehler nicht in der Fortsetzung festhängt.
+    const state = readState(this.buffer);
+    const incomplete =
+      (state.depth > 0 || state.inString || state.inBlockComment) &&
+      !state.tooManyClosers;
+    if (incomplete && !/\n[ \t]*$/.test(this.buffer)) {
+      this.insert('\n');
+      this.renderInput();
+      return;
+    }
+
+    this.clearInputLine();
+    // Das Eingetippte stehen lassen: sonst ist nach einer Fehlermeldung
+    // nicht mehr zu sehen, worauf sie sich bezieht.
+    this.write(
+      `\x1b[36m${this.packageName}>\x1b[0m ${this.normalizeNewlines(code)}\r\n`
+    );
+    this.buffer = '';
+    this.cursor = 0;
 
     if (this.history[this.history.length - 1] !== code) this.history.push(code);
     this.historyIndex = this.history.length;
@@ -267,16 +379,92 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.renderInput();
   }
 
+  /**
+   * Wie viele Bildschirmzeilen die letzte Eingabe belegt hat. Ohne das
+   * lässt sich eine mehrzeilige Eingabe nicht wieder wegräumen — die
+   * frühere Fassung löschte immer nur die aktuelle Zeile und liess bei
+   * Fortsetzungen Reste stehen.
+   */
+
+  /**
+   * Von VS Code beim Öffnen und bei jeder Größenänderung aufgerufen.
+   */
+  setDimensions(dimensions: vscode.TerminalDimensions): void {
+    const cols = Math.max(20, dimensions.columns);
+    if (cols === this.cols) return;
+    this.cols = cols;
+    // Nach einer Größenänderung stimmt die alte Zeilenrechnung nicht
+    // mehr; nicht versuchen aufzuräumen, sondern frisch anfangen.
+    this.renderedRows = 1;
+    if (this.opened) {
+      this.write('\r\n');
+      this.renderInput();
+    }
+  }
+
+  /** Prompt-Breite in Spalten (ohne die ANSI-Sequenzen, die 0 breit sind). */
+  private get promptWidth(): number {
+    return this.packageName.length + 2;
+  }
+
+  /** Bildschirmzeilen, die eine Pufferzeile bei aktueller Breite belegt. */
+  private rowsFor(lineLength: number): number {
+    return Math.max(1, Math.ceil((this.promptWidth + lineLength) / this.cols));
+  }
+
   private renderInput(): void {
+    this.clearInputLine();
+
     const prompt = `\x1b[36m${this.packageName}>\x1b[0m `;
-    const visibleBuffer = this.normalizeNewlines(this.buffer);
-    this.write(`\r\x1b[2K${prompt}${visibleBuffer}`);
-    const charsAfterCursor = this.buffer.length - this.cursor;
-    if (charsAfterCursor > 0) this.write(`\x1b[${charsAfterCursor}D`);
+    // Fortsetzungszeilen: gleiche Breite wie der Prompt, damit die
+    // Einrückung des Ausdrucks erhalten bleibt.
+    const contPrompt = `\x1b[36m${'.'.repeat(this.packageName.length)}>\x1b[0m `;
+
+    const lines = this.buffer.split('\n');
+    this.write(
+      lines.map((l, i) => (i === 0 ? prompt : contPrompt) + l).join('\r\n')
+    );
+
+    // Bildschirmzeilen zählen, nicht Pufferzeilen.
+    const rowsPerLine = lines.map(l => this.rowsFor(l.length));
+    const totalRows = rowsPerLine.reduce((a, b) => a + b, 0);
+    this.renderedRows = totalRows;
+
+    // Cursorposition im Puffer -> Bildschirmzeile/-spalte
+    const before = this.buffer.slice(0, this.cursor).split('\n');
+    const cursorLine = before.length - 1;
+    const cursorColInLine = before[before.length - 1].length;
+    const flat = this.promptWidth + cursorColInLine;
+    const lineOffset = rowsPerLine
+      .slice(0, cursorLine)
+      .reduce((a, b) => a + b, 0);
+
+    let cursorRow: number;
+    let cursorCol: number;
+    if (flat > 0 && flat % this.cols === 0) {
+      // Genau auf der Umbruchgrenze. xterm.js bricht verzögert um: der
+      // Cursor bleibt am ENDE der vollen Zeile stehen, nicht am Anfang
+      // der nächsten. Ohne diesen Zweig käme hier eine Zeile zu viel
+      // heraus und die Cursorbewegung würde negativ.
+      cursorRow = lineOffset + flat / this.cols - 1;
+      cursorCol = this.cols - 1;
+    } else {
+      cursorRow = lineOffset + Math.floor(flat / this.cols);
+      cursorCol = flat % this.cols;
+    }
+
+    // Nach dem Schreiben steht der Cursor in der letzten Bildschirmzeile.
+    const up = Math.max(0, totalRows - 1 - cursorRow);
+    if (up > 0) this.write(`\x1b[${up}A`);
+    this.write('\r');
+    if (cursorCol > 0) this.write(`\x1b[${cursorCol}C`);
   }
 
   private clearInputLine(): void {
-    this.write('\r\x1b[2K');
+    // An den Anfang der Eingabe hoch, dann alles darunter löschen.
+    if (this.renderedRows > 1) this.write(`\x1b[${this.renderedRows - 1}A`);
+    this.write('\r\x1b[0J');
+    this.renderedRows = 1;
   }
 
   private normalizeNewlines(value: string): string {

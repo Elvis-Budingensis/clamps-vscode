@@ -24,6 +24,10 @@
 (defun %rpc (name &rest args)
   (apply (find-symbol (string-upcase name) :clamps-bridge-rpc) args))
 
+(defun %inspect-register-test (obj)
+  "Registriert OBJ direkt, ohne Umweg über einen Ausdruck."
+  (funcall (find-symbol "%INSPECT-REGISTER" :clamps-bridge-rpc) obj))
+
 (defparameter *ht* (make-hash-table :test 'equal))
 (setf (gethash "a" *ht*) 1
       (gethash "b" *ht*) '(1 2 3))
@@ -37,9 +41,9 @@
     (format t "~&~%~A~%  expr   ~A~%" label expr)
     (case (first r)
       (:ok
-       (destructuring-bind (ok type print parts pkg &optional kind meta) r
-         (declare (ignore ok pkg))
-         (format t "  kind   ~A~%  type   ~A~%" kind type)
+       (destructuring-bind (ok id type print parts kind meta) r
+         (declare (ignore ok))
+         (format t "  id     #~A~%  kind   ~A~%  type   ~A~%" id kind type)
          (when meta
            (format t "  meta~%")
            (dolist (m meta)
@@ -47,11 +51,14 @@
          (format t "  parts  ~A~:[~; (erste 4)~]~%"
                  (length parts) (> (length parts) 4))
          (loop for p in parts repeat 4
-               do (format t "    ~16A = ~A~%" (first p) (third p)))
+               do (destructuring-bind (lbl idx preview navigable) p
+                    (format t "    [~2A] ~16A = ~A~:[  (nicht betretbar)~;~]~%"
+                            idx lbl preview navigable)))
          (when (null parts)
-           (format t "    print: ~A~%" print))))
-      (:crash (format t "  ABSTURZ ~A~%" (second r)))
-      (t      (format t "  FEHLER  ~A~%" (second r))))))
+           (format t "    print: ~A~%" print))
+         id))
+      (:crash (format t "  ABSTURZ ~A~%" (second r)) nil)
+      (t      (format t "  FEHLER  ~A~%" (second r)) nil))))
 
 (format t "~&~%===== typspezifisches Rendering =====~%")
 
@@ -72,6 +79,70 @@
 (show "PATHNAME"    "#p\"/tmp/x.txt\"")
 (show "PACKAGE"     "*package*")
 (show "NIL"         "nil")
+
+(format t "~&~%===== Objekt-Tabelle =====~%")
+
+;; Der Kernpunkt der Umstellung: Navigation darf das Objekt nicht neu
+;; berechnen. Ein Zähler im Konstruktor macht das sichtbar.
+(defparameter *ctr* 0)
+(defclass zaehler () ((n :initform (incf *ctr*)) (inner :initform (list 1 2))))
+
+(let* ((vorher *ctr*)
+       (id (show "SEITENEFFEKT" "(make-instance 'zaehler)")))
+  (format t "~&  *ctr* nach erster Inspektion: ~A (war ~A)~%" *ctr* vorher)
+  ;; In Slot 1 (inner) navigieren — darf KEINE neue Instanz erzeugen.
+  (let ((r (%rpc "inspect-part-for-repl" id 1)))
+    (format t "  nach navigate: *ctr*=~A  -> ~A kind=~A parts=~A~%"
+            *ctr* (first r) (sixth r) (length (fifth r)))
+    (format t "  ~:[FEHLER: Objekt wurde neu berechnet!~;ok: kein Neuaufbau~]~%"
+            (= *ctr* (1+ vorher)))))
+
+;; Nicht lesbar druckbare Hash-Schlüssel: früher unnavigierbar.
+(let ((h (make-hash-table :test 'eq)))
+  (setf (gethash (make-instance 'zaehler) h) :wert-dahinter)
+  (let* ((id (%inspect-register-test h))
+         (r (%rpc "inspect-part-for-repl" id 0)))
+    (format t "~&CLOS-SCHLUESSEL  -> ~A print=~A~%" (first r) (fourth r))))
+
+;; Unbound-Slot darf nicht betretbar sein.
+(let* ((id (%inspect-register-test (make-instance 'foo)))
+       (r (%rpc "inspect-part-for-repl" id 1)))
+  (format t "~&UNBOUND betreten -> ~A ~A~%" (first r) (second r)))
+
+;; Freigabe
+(%rpc "inspect-release-for-repl")
+(format t "~&NACH RELEASE     -> ~A~%"
+        (second (%rpc "inspect-id-for-repl" 1)))
+
+(format t "~&~%===== Teile-Cache =====~%")
+
+;; Messbar machen: %preview zählen. Ohne Cache berechnet jeder Klick
+;; alle Vorschauen neu.
+(defparameter *gross* (make-array 2000 :initial-element 7))
+
+(let* ((id (%inspect-register-test *gross*))
+       (t0 (get-internal-real-time)))
+  ;; erste Beschreibung füllt den Cache
+  (%rpc "inspect-id-for-repl" id)
+  (let ((t1 (get-internal-real-time)))
+    ;; 20 Navigationen, sollten den Cache nutzen
+    (dotimes (k 20) (%rpc "inspect-part-for-repl" id k))
+    (let ((t2 (get-internal-real-time)))
+      (format t "~&VEKTOR 2000   beschreiben: ~,1F ms   20x navigieren: ~,1F ms~%"
+              (/ (- t1 t0) (/ internal-time-units-per-second 1000.0))
+              (/ (- t2 t1) (/ internal-time-units-per-second 1000.0)))
+      (format t "  ~:[LANGSAM: Cache greift nicht~;ok: Navigation deutlich billiger~]~%"
+              (< (- t2 t1) (* 3 (max 1 (- t1 t0))))))))
+
+;; Refresh muss den Cache verwerfen, sonst zeigt er alte Werte.
+(let* ((v (vector :alt))
+       (id (%inspect-register-test v)))
+  (%rpc "inspect-id-for-repl" id)
+  (setf (aref v 0) :neu)
+  (let* ((r (%rpc "inspect-id-for-repl" id))
+         (p (first (fifth r))))
+    (format t "~&REFRESH       Vorschau nach Änderung: ~A ~:[FEHLER: veraltet~;ok~]~%"
+            (third p) (search "NEU" (string-upcase (third p))))))
 
 (format t "~&~%===== Kanten =====~%")
 

@@ -229,13 +229,13 @@
 ;;; ---------------------------------------------------------------------
 
 (handler-case
-    (when (find-package :incudine)
+    (when (or (find-package :incudine) (find-package :clamps))
       (let ((running (clamps-bridge-rpc:rt-status-for-repl)))
         ;; (:ok running-p info)
         (if (second running)
             (log-msg "Incudine RT-Server läuft bereits")
-            (let ((start-sym (find-symbol "RT-START" :incudine)))
-              (if (and start-sym (fboundp start-sym))
+            (let ((start-sym (clamps-bridge-rpc::%rt-sym "RT-START")))
+              (if start-sym
                   (progn (funcall start-sym)
                          (log-msg "Incudine RT-Server gestartet"))
                   (log-msg "WARNUNG: incudine:rt-start nicht gefunden"))))))
