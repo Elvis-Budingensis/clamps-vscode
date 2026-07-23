@@ -11,6 +11,8 @@ interface InspectPart {
   preview?: string;
   /** Nicht gebundene Slots lassen sich nicht betreten. */
   navigable?: boolean;
+  /** Schreibbar? Zahlen, Pathnames und Funktionszellen sind es nicht. */
+  settable?: boolean;
 }
 interface InspectMeta {
   key: string;
@@ -110,6 +112,9 @@ export class ClampsInspector {
         case 'refresh':
           await this.refresh();
           break;
+        case 'set':
+          await this.setPart(Number(msg.index), String(msg.value ?? ''));
+          break;
       }
     });
   }
@@ -162,6 +167,23 @@ export class ClampsInspector {
     await this.request(
       'clamps/inspectRefresh',
       { id: cur.id },
+      cur.label,
+      'replace'
+    );
+  }
+
+  /**
+   * Setzt einen Teil des aktuellen Objekts. Das Image wertet die Eingabe
+   * aus, man kann also "(list 1 2)" oder "*foo*" eintippen und nicht nur
+   * Literale. Anschließend kommt das Objekt neu beschrieben zurück —
+   * durch das Setzen können sich auch Kopfzeilen ändern.
+   */
+  private static async setPart(index: number, value: string): Promise<void> {
+    const cur = this.current;
+    if (!cur) return;
+    await this.request(
+      'clamps/inspectSet',
+      { id: cur.id, index, value, package: this.pkg },
       cur.label,
       'replace'
     );
@@ -261,6 +283,39 @@ export class ClampsInspector {
             });
           });
         }
+        // Inline-Editor: Doppelklick ersetzt die Zelle durch ein Feld,
+        // Enter schickt ab, Escape verwirft. Der bisherige Text steht als
+        // Vorgabe drin, weil die Druckdarstellung meist wieder lesbar ist.
+        for (const cell of document.querySelectorAll('[data-set]')) {
+          cell.addEventListener('dblclick', () => {
+            if (cell.querySelector('input')) return;
+            const original = cell.textContent;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'editor';
+            input.value = original.trim();
+            cell.textContent = '';
+            cell.appendChild(input);
+            input.focus();
+            input.select();
+            const cancel = () => { cell.textContent = original; };
+            input.addEventListener('keydown', ev => {
+              if (ev.key === 'Enter') {
+                ev.preventDefault();
+                vscode.postMessage({
+                  command: 'set',
+                  index: Number(cell.dataset.set),
+                  value: input.value
+                });
+              } else if (ev.key === 'Escape') {
+                ev.preventDefault();
+                cancel();
+              }
+            });
+            input.addEventListener('blur', cancel);
+          });
+        }
+
         const filter = document.getElementById('filter');
         if (filter) {
           filter.addEventListener('input', () => {
@@ -378,6 +433,14 @@ export class ClampsInspector {
     return `<a class="${cls}" href="#" data-index="${p.index}" data-label="${label}">${label}</a>`;
   }
 
+  /** Wertzelle; bei schreibbaren Teilen per Doppelklick editierbar. */
+  private static valueCell(p: InspectPart): string {
+    const v = esc(p.preview ?? '');
+    if (!p.settable) return `<span class="v">${v}</span>`;
+    return `<span class="v editable" data-set="${p.index}"
+                  title="Doppelklick zum Ändern">${v}</span>`;
+  }
+
   private static renderPairs(
     parts: InspectPart[],
     leftHead: string,
@@ -387,9 +450,7 @@ export class ClampsInspector {
     const rows = parts
       .map(
         p =>
-          `<div class="row">${this.link(p, 'k')}<span class="v">${esc(
-            p.preview ?? ''
-          )}</span></div>`
+          `<div class="row">${this.link(p, 'k')}${this.valueCell(p)}</div>`
       )
       .join('');
     return `
@@ -406,9 +467,7 @@ export class ClampsInspector {
     const rows = parts
       .map(
         p =>
-          `<div class="row">${this.link(p, 'idx')}<span class="v">${esc(
-            p.preview ?? ''
-          )}</span></div>`
+          `<div class="row">${this.link(p, 'idx')}${this.valueCell(p)}</div>`
       )
       .join('');
     return `
@@ -507,6 +566,15 @@ export class ClampsInspector {
       a { color: var(--vscode-textLink-foreground); text-decoration: none; }
       a:hover { text-decoration: underline; }
       .dead { color: var(--vscode-descriptionForeground); opacity: 0.6; }
+      .editable { cursor: text; }
+      .editable:hover { outline: 1px dotted var(--vscode-panel-border);
+                        outline-offset: 2px; }
+      .editor { font: inherit; width: 100%; box-sizing: border-box;
+                padding: 1px 4px;
+                background: var(--vscode-input-background);
+                color: var(--vscode-input-foreground);
+                border: 1px solid var(--vscode-focusBorder);
+                border-radius: 2px; }
       .v { white-space: pre-wrap; word-break: break-all; }
       .empty { color: var(--vscode-descriptionForeground); }
     `;

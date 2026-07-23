@@ -36,7 +36,7 @@
            #:trace-toggle-for-repl #:untrace-all-for-repl
            #:rt-status-for-repl #:completions-for-repl
            #:inspect-id-for-repl #:inspect-part-for-repl
-           #:inspect-release-for-repl))
+           #:inspect-release-for-repl #:inspect-set-part-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -118,14 +118,16 @@
 
      kind  — Kategorie-String für den Client
      meta  — Liste von (schlüssel . wert) Strings, Kopfzeilen-Infos
-     parts — Liste von (label wert preview); WERT ist das echte
-             Lisp-Objekt, nicht mehr ein Zugriffs-Ausdruck
+     parts — Liste von (label wert preview setter)
 
-   Der Wechsel von Ausdruck auf Objekt ist der Kern der Umstellung: die
-   frühere Fassung lieferte Strings wie \"(slot-value __OBJ__ 'x)\", die
-   der Client bei jedem Klick neu auswerten liess. Das erzeugte bei
-   Seiteneffekten neue Objekte statt in das vorhandene zu navigieren
-   und scheiterte an Werten, die sich nicht lesbar drucken lassen.
+   WERT ist das echte Lisp-Objekt, nicht ein Zugriffs-Ausdruck; darüber
+   navigiert der Inspector, ohne beim Klick etwas neu zu berechnen.
+
+   SETTER ist eine Funktion (lambda (neuer-wert) ...) oder nil, wenn der
+   Teil nicht schreibbar ist. Die Alternative wäre gewesen, das Setzen in
+   einer zweiten Funktion nochmal nach Typ zu unterscheiden — dann gäbe
+   es zwei typecase-Kaskaden, die auseinanderlaufen können. So steht die
+   Zuordnung Teil -> Schreibweg an genau einer Stelle.
 
    Die Reihenfolge im typecase ist relevant: null vor symbol/list,
    string vor vector, vector vor array, und package/pathname/random-state
@@ -139,8 +141,11 @@
        (maphash (lambda (k v)
                   (if (< i 1000)
                       (progn
-                        ;; Label ist der Schlüssel, navigiert wird zum Wert.
-                        (push (list (%preview k) v (%preview v)) parts)
+                        ;; k ist pro Aufruf frisch gebunden, die Closure
+                        ;; fängt also den richtigen Schlüssel ein.
+                        (push (list (%preview k) v (%preview v)
+                                    (lambda (new) (setf (gethash k obj) new)))
+                              parts)
                         (incf i))
                       (setf truncated t)))
                 obj)
@@ -169,6 +174,7 @@
            nil))
 
     (pathname
+     ;; Pathnames sind unveränderlich — kein Setter.
      (list "pathname"
            (list (cons "namestring" (handler-case (namestring obj)
                                       (error () "—")))
@@ -176,7 +182,7 @@
                  (cons "type" (format nil "~A" (pathname-type obj)))
                  (cons "exists-p" (if (probe-file obj) "t" "nil")))
            (list (list "directory" (pathname-directory obj)
-                       (%preview (pathname-directory obj))))))
+                       (%preview (pathname-directory obj)) nil))))
 
     (random-state
      (list "atom" (list (cons "typ" "random-state")) nil))
@@ -189,12 +195,15 @@
                                    (princ-to-string (class-name class))))
                    (cons "slots" (princ-to-string (length slots))))
              (loop for slot in slots
-                   collect (let ((bound (slot-boundp obj slot)))
-                             (list (string-downcase (symbol-name slot))
-                                   (if bound (slot-value obj slot) +unbound+)
+                   collect (let* ((sl slot)
+                                  (bound (slot-boundp obj sl)))
+                             (list (string-downcase (symbol-name sl))
+                                   (if bound (slot-value obj sl) +unbound+)
                                    (if bound
-                                       (%preview (slot-value obj slot))
-                                       "#<unbound>")))))))
+                                       (%preview (slot-value obj sl))
+                                       "#<unbound>")
+                                   (lambda (new)
+                                     (setf (slot-value obj sl) new))))))))
 
     (structure-object
      (let ((slots (%struct-slot-names obj)))
@@ -203,24 +212,35 @@
                                   (princ-to-string (type-of obj))))
                    (cons "slots" (princ-to-string (length slots))))
              (loop for slot in slots
-                   collect (handler-case
-                               (let ((v (slot-value obj slot)))
-                                 (list (string-downcase (symbol-name slot))
-                                       v (%preview v)))
-                             (error ()
-                               (list (string-downcase (symbol-name slot))
-                                     +unbound+ "#<unbound>")))))))
+                   collect (let ((sl slot))
+                             (handler-case
+                                 (let ((v (slot-value obj sl)))
+                                   (list (string-downcase (symbol-name sl))
+                                         v (%preview v)
+                                         (lambda (new)
+                                           (setf (slot-value obj sl) new))))
+                               (error ()
+                                 (list (string-downcase (symbol-name sl))
+                                       +unbound+ "#<unbound>"
+                                       (lambda (new)
+                                         (setf (slot-value obj sl) new))))))))))
 
     (cons
      ;; Bounded traversal: verträgt dotted und zirkuläre Listen.
      (let ((parts '()) (i 0) (tail obj))
        (loop while (and (consp tail) (< i 1000))
-             do (push (list (princ-to-string i) (car tail) (%preview (car tail)))
-                      parts)
+             do (let ((cell tail))   ; frische Bindung für die Closure
+                  (push (list (princ-to-string i) (car cell)
+                              (%preview (car cell))
+                              (lambda (new) (setf (car cell) new)))
+                        parts))
                 (incf i)
                 (setf tail (cdr tail)))
        (when (and tail (not (consp tail)))
-         (push (list "· cdr" tail (%preview tail)) parts))
+         (let ((lastcell (last obj)))
+           (push (list "· cdr" tail (%preview tail)
+                       (lambda (new) (setf (cdr lastcell) new)))
+                 parts)))
        (list "list"
              (list (cons "length" (if (consp tail)
                                       (format nil "> ~A" i)
@@ -239,8 +259,10 @@
                            (princ-to-string (fill-pointer obj))
                            "—")))
            (loop for i from 0 below (min 1000 (length obj))
-                 collect (list (princ-to-string i) (aref obj i)
-                               (%preview (aref obj i))))))
+                 collect (let ((idx i))
+                           (list (princ-to-string idx) (aref obj idx)
+                                 (%preview (aref obj idx))
+                                 (lambda (new) (setf (aref obj idx) new)))))))
 
     (array
      (list "array"
@@ -250,8 +272,11 @@
                        (let ((*print-case* :downcase))
                          (princ-to-string (array-element-type obj)))))
            (loop for i from 0 below (min 1000 (array-total-size obj))
-                 collect (list (princ-to-string i) (row-major-aref obj i)
-                               (%preview (row-major-aref obj i))))))
+                 collect (let ((idx i))
+                           (list (princ-to-string idx) (row-major-aref obj idx)
+                                 (%preview (row-major-aref obj idx))
+                                 (lambda (new)
+                                   (setf (row-major-aref obj idx) new)))))))
 
     (symbol
      (list "symbol"
@@ -268,13 +293,17 @@
            (append
             (when (boundp obj)
               (list (list "symbol-value" (symbol-value obj)
-                          (%preview (symbol-value obj)))))
+                          (%preview (symbol-value obj))
+                          (lambda (new) (setf (symbol-value obj) new)))))
             (when (fboundp obj)
+              ;; Bewusst kein Setter: eine Funktionsdefinition versehentlich
+              ;; über ein Eingabefeld zu überschreiben, wäre zu leicht.
               (list (list "symbol-function" (symbol-function obj)
-                          (%preview (symbol-function obj)))))
+                          (%preview (symbol-function obj)) nil)))
             (when (symbol-plist obj)
               (list (list "symbol-plist" (symbol-plist obj)
-                          (%preview (symbol-plist obj))))))))
+                          (%preview (symbol-plist obj))
+                          (lambda (new) (setf (symbol-plist obj) new))))))))
 
     (function
      (list "function"
@@ -322,11 +351,12 @@
            nil))
 
     (complex
+     ;; Zahlen sind unveränderlich — real- und imagpart nur lesbar.
      (list "number"
            (list (cons "realpart" (%preview (realpart obj)))
                  (cons "imagpart" (%preview (imagpart obj))))
-           (list (list "realpart" (realpart obj) (%preview (realpart obj)))
-                 (list "imagpart" (imagpart obj) (%preview (imagpart obj))))))
+           (list (list "realpart" (realpart obj) (%preview (realpart obj)) nil)
+                 (list "imagpart" (imagpart obj) (%preview (imagpart obj)) nil))))
 
     (character
      (list "character"
@@ -409,11 +439,12 @@
       ;; Für die spätere Navigation aufheben.
       (setf (gethash id *inspect-parts-cache*) parts)
       (list :ok id type-str print-str
-            ;; (label index preview navigierbar-p)
+            ;; (label index preview navigierbar-p schreibbar-p)
             (loop for p in parts
                   for i from 0
                   collect (list (first p) i (or (third p) "")
-                                (if (eq (second p) +unbound+) nil t)))
+                                (if (eq (second p) +unbound+) nil t)
+                                (if (fourth p) t nil)))
             kind
             (mapcar (lambda (m) (list (car m) (cdr m))) meta)))))
 
@@ -703,6 +734,41 @@
             (list :ok running (nreverse info))))
     (error (e)
       (list :ok nil (list (cons "fehler" (princ-to-string e)))))))
+
+(defun inspect-set-part-for-repl (id index value-string package-name)
+  "Setzt Teil INDEX des Objekts ID auf das Ergebnis von VALUE-STRING.
+
+   VALUE-STRING wird im Kontext von PACKAGE-NAME gelesen UND ausgewertet
+   — man soll \"(list 1 2)\" oder \"*foo*\" eintippen können, nicht nur
+   Literale. *read-eval* bleibt aus, damit #. nicht zusätzlich greift.
+
+   Danach wird das Objekt neu beschrieben, weil sich durch das Setzen
+   auch Kopfzeilen ändern können (etwa hash-table count)."
+  (handler-case
+      (multiple-value-bind (obj found) (gethash id *inspect-table*)
+        (if (not found)
+            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+                  "" nil "error" nil)
+            (let* ((parts (or (gethash id *inspect-parts-cache*)
+                              (third (%inspect-describe obj))))
+                   (part (nth index parts))
+                   (setter (and part (fourth part))))
+              (cond
+                ((null part)
+                 (list :error "Teil existiert nicht mehr" "" nil "error" nil))
+                ((null setter)
+                 (list :error "Dieser Teil ist nicht schreibbar"
+                       "" nil "error" nil))
+                (t
+                 (let* ((pkg (or (find-package (string-upcase package-name))
+                                 (find-package :common-lisp-user)))
+                        (new (let ((*package* pkg) (*read-eval* nil))
+                               (eval (read-from-string value-string)))))
+                   (funcall setter new)
+                   ;; Cache verwerfen: Vorschauen und Kopfzeilen sind alt.
+                   (remhash id *inspect-parts-cache*)
+                   (%describe-registered obj id)))))))
+    (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
 
 (defun %offset->line-col (filepath offset)
   "Zählt Zeilen/Spalten bis OFFSET (0-indexiert für LSP). Läuft im

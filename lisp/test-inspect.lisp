@@ -50,10 +50,13 @@
              (format t "    ~14A ~A~%" (first m) (second m))))
          (format t "  parts  ~A~:[~; (erste 4)~]~%"
                  (length parts) (> (length parts) 4))
+         ;; Positionszugriff statt destructuring-bind: kommt in der
+         ;; Teileliste ein Feld dazu, bricht der Test sonst mit einem
+         ;; ARG-COUNT-ERROR ab, statt die Erweiterung einfach zu ignorieren.
          (loop for p in parts repeat 4
-               do (destructuring-bind (lbl idx preview navigable) p
-                    (format t "    [~2A] ~16A = ~A~:[  (nicht betretbar)~;~]~%"
-                            idx lbl preview navigable)))
+               do (format t "    [~2A] ~16A = ~A~:[  (nicht betretbar)~;~]~:[~;  [schreibbar]~]~%"
+                          (second p) (first p) (third p)
+                          (fourth p) (fifth p)))
          (when (null parts)
            (format t "    print: ~A~%" print))
          id))
@@ -114,6 +117,64 @@
 (format t "~&NACH RELEASE     -> ~A~%"
         (second (%rpc "inspect-id-for-repl" 1)))
 
+(format t "~&~%===== Slots setzen =====~%")
+
+(defun setpart (label obj index value &optional (pkg "COMMON-LISP-USER"))
+  (let* ((id (%inspect-register-test obj))
+         (r (handler-case (%rpc "inspect-set-part-for-repl" id index value pkg)
+              (error (e) (list :crash (princ-to-string e))))))
+    (format t "~&~20A ~A" label (first r))
+    (if (eq (first r) :ok)
+        (format t "   -> ~A~%" (third r))
+        (format t "   ~A~%" (second r)))
+    r))
+
+;; CLOS-Slot
+(let ((o (make-instance 'foo)))
+  (setpart "CLOS-Slot" o 0 "99")
+  (format t "  x ist jetzt: ~A~%" (slot-value o 'x)))
+
+;; Unbound-Slot binden — Setzen muss auch das können
+(let ((o (make-instance 'foo)))
+  (setpart "unbound binden" o 1 ":jetzt-da")
+  (format t "  y gebunden: ~A wert=~A~%"
+          (slot-boundp o 'y) (and (slot-boundp o 'y) (slot-value o 'y))))
+
+;; Struct
+(let ((b (make-bar :a 1 :b 2)))
+  (setpart "Struct-Slot" b 0 "\"neu\"")
+  (format t "  a ist jetzt: ~S~%" (bar-a b)))
+
+;; Vektor
+(let ((v (vector 1 2 3)))
+  (setpart "Vektor" v 1 "(list :x)")
+  (format t "  v = ~S~%" v))
+
+;; Liste — der Setter muss die richtige Zelle treffen
+(let ((l (list :a :b :c)))
+  (setpart "Liste Index 1" l 1 ":geaendert")
+  (format t "  l = ~S~%" l))
+
+;; Hash-Table — der Setter muss den richtigen Schlüssel treffen
+(let ((h (make-hash-table :test 'equal)))
+  (setf (gethash "k1" h) 1 (gethash "k2" h) 2)
+  (setpart "Hash-Wert" h 1 "42")
+  (format t "  k1=~A k2=~A~%" (gethash "k1" h) (gethash "k2" h)))
+
+;; Symbol-Wert
+(defparameter *sollgeaendert* :alt)
+(setpart "symbol-value" '*sollgeaendert* 0 ":neu")
+(format t "  *sollgeaendert* = ~A~%" *sollgeaendert*)
+
+;; Nicht schreibbare Teile müssen sauber ablehnen
+(setpart "Komplexzahl (ro)" #c(1 2) 0 "5")
+(setpart "symbol-function (ro)" 'car 0 "#'cdr")
+
+;; Fehlerhafte Eingabe darf nicht durchschlagen
+(setpart "Syntaxfehler" (vector 1 2) 0 "(((")
+(setpart "Typfehler" (make-array 2 :element-type 'double-float
+                                   :initial-element 0d0) 0 ":kein-float")
+
 (format t "~&~%===== Teile-Cache =====~%")
 
 ;; Messbar machen: %preview zählen. Ohne Cache berechnet jeder Klick
@@ -172,9 +233,9 @@
           (format t "~&~%~A  prefix=~S paket=~A~%  ~A Treffer~:[~; (gekappt)~]~%"
                   label prefix pkg (length items) truncated)
           (loop for it in items repeat 5
-                do (destructuring-bind (lbl kind detail doc) it
-                     (format t "    ~24A kind=~2A ~A~@[  — ~A~]~%"
-                             lbl kind detail
+                do (format t "    ~24A kind=~2A ~A~@[  — ~A~]~%"
+                           (first it) (second it) (third it)
+                           (let ((doc (or (fourth it) "")))
                              (when (string/= doc "")
                                (subseq doc 0 (min 40 (length doc))))))))
         (format t "~&~A  ABSTURZ ~A~%" label (second r)))))

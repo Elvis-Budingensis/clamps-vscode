@@ -619,13 +619,15 @@
                                                "value" (second m)))
                                   meta)
                           'vector)
-           ;; parts: (label index preview navigierbar-p)
+           ;; parts: (label index preview navigierbar-p schreibbar-p)
            "parts" (coerce (mapcar (lambda (p)
                                      (make-jobj "label" (first p)
                                                 "index" (second p)
                                                 "preview" (or (third p) "")
                                                 "navigable"
-                                                (if (fourth p) :true :false)))
+                                                (if (fourth p) :true :false)
+                                                "settable"
+                                                (if (fifth p) :true :false)))
                                    parts)
                            'vector)
            "package" fallback-pkg)))
@@ -689,6 +691,26 @@
    (lambda (status value)
      (declare (ignore status value))
      (send-response id (make-jobj "ok" :true)))))
+
+(defun handle-inspect-set (id params)
+  "clamps/inspectSet — setzt einen Teil des Objekts auf einen neuen Wert.
+   Client schickt {id, index, value, package}."
+  (let ((obj-id (gethash "id" params))
+        (index (gethash "index" params))
+        (value (gethash "value" params))
+        (pkg (or (gethash "package" params) *swank-package*)))
+    (if (or (null value) (string= value ""))
+        (send-response id (make-jobj "id" (or obj-id 0) "kind" "error"
+                                     "type" "error"
+                                     "print" "Leere Eingabe"
+                                     "meta" (vector) "parts" (vector)
+                                     "package" pkg))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:inspect-set-part-for-repl ~D ~D ~S ~S)"
+                 (or obj-id 0) (or index 0) value pkg)
+         :callback
+         (lambda (status value2)
+           (send-inspect-result id (if (eq status :ok) value2 nil) pkg))))))
 
 (defun handle-rt-status (id params)
   "clamps/rtStatus — Zustand des Incudine-Realtime-Servers.
@@ -769,6 +791,7 @@
           ((string= method "clamps/inspect") (handle-inspect id params))
           ((string= method "clamps/inspectPart") (handle-inspect-part id params))
           ((string= method "clamps/inspectRefresh") (handle-inspect-refresh id params))
+          ((string= method "clamps/inspectSet") (handle-inspect-set id params))
           ((string= method "clamps/inspectRelease") (handle-inspect-release id params))
           ((string= method "clamps/rtStatus") (handle-rt-status id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
