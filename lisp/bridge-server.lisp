@@ -553,26 +553,41 @@
 (defun handle-inspect (id params)
   "clamps/inspect — inspiziert das Ergebnis eines Ausdrucks.
    Client schickt {expr, package}, erwartet
-   {type, print, parts: [{label, accessor}], package}."
+   {kind, type, print, meta: [{key,value}],
+    parts: [{label, accessor, preview}], package}."
   (let* ((expr (gethash "expr" params))
          (pkg (or (gethash "package" params) *swank-package*)))
     (if (or (null expr) (string= (string-trim '(#\Space #\Tab #\Newline #\Return) expr) ""))
-        (send-response id (make-jobj "type" "" "print" "" "parts" (vector) "package" pkg))
+        (send-response id (make-jobj "kind" "atom" "type" "" "print" ""
+                                     "meta" (vector) "parts" (vector)
+                                     "package" pkg))
         (swank-rex
          (format nil "(clamps-bridge-rpc:inspect-for-repl ~S ~S)" expr pkg)
          :callback
          (lambda (status value)
            (if (and (eq status :ok) (consp value) (eq (first value) :ok))
-               (destructuring-bind (ok type print parts result-pkg) value
+               ;; kind/meta sind optional, damit ein altes Image (ohne die
+               ;; neuen Rückgabewerte) die Bridge nicht sprengt.
+               (destructuring-bind (ok type print parts result-pkg
+                                    &optional kind meta)
+                   value
                  (declare (ignore ok))
                  (send-response id
                    (make-jobj
+                    "kind" (or kind "atom")
                     "type" (or type "")
                     "print" (or print "")
+                    "meta" (coerce
+                            (mapcar (lambda (m)
+                                      (make-jobj "key" (first m)
+                                                 "value" (second m)))
+                                    meta)
+                            'vector)
                     "parts" (coerce
                              (mapcar (lambda (p)
                                        (make-jobj "label" (first p)
-                                                  "accessor" (second p)))
+                                                  "accessor" (second p)
+                                                  "preview" (or (third p) "")))
                                      parts)
                              'vector)
                     "package" (or result-pkg pkg))))
@@ -581,8 +596,9 @@
                                  (second value)
                                  (format nil "~A" value))))
                  (send-response id
-                   (make-jobj "type" "error" "print" errmsg
-                              "parts" (vector) "package" pkg)))))))))
+                   (make-jobj "kind" "error" "type" "error" "print" errmsg
+                              "meta" (vector) "parts" (vector)
+                              "package" pkg)))))))))
 
 (defun handle-trace-toggle (id params)
   "clamps/toggleTrace — Trace für Funktion an/aus.
