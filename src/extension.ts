@@ -23,12 +23,14 @@ import { ClampsReplTerminal } from './replTerminal';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
+import { ClampsRtStatus } from './rtStatus';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
 let outputChannel: vscode.OutputChannel;
 let clientStartPromise: Promise<void> | undefined;
 let lifecycleQueue: Promise<void> = Promise.resolve();
+let rtStatus: ClampsRtStatus | undefined;
 
 function enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
   const queued = lifecycleQueue.then(operation, operation);
@@ -56,6 +58,8 @@ export async function activate(context: vscode.ExtensionContext) {
   const bridgePath = context.asAbsolutePath(path.join('lisp', 'bridge-server.lisp'));
 
   processManager = new ClampsProcessManager(workspaceRoot, bootstrapPath);
+  rtStatus = new ClampsRtStatus(() => client);
+  context.subscriptions.push(rtStatus);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('clamps.start', () =>
@@ -148,6 +152,9 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       vscode.window.setStatusBarMessage(`CLAMPS: ${result.output}`, 5000);
     }),
+    vscode.commands.registerCommand('clamps.rtStatusDetails', () =>
+      rtStatus?.showDetails()
+    ),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel
   );
@@ -186,6 +193,7 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         outputChannel.appendLine(`Session bereit auf Port ${session.port}.`);
 
         await startLanguageClient(bridgePath);
+        rtStatus?.start();
         vscode.window.showInformationMessage(`CLAMPS läuft (Swank-Port ${session.port}).`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -286,12 +294,16 @@ async function stopLanguageClient(): Promise<void> {
 }
 
 async function stopClamps(): Promise<void> {
+  // Zuerst das Polling anhalten: sonst laufen Requests gegen einen
+  // Client, der gerade abgebaut wird.
+  rtStatus?.stop();
   await stopLanguageClient();
   await processManager?.stop();
   outputChannel.appendLine('CLAMPS gestoppt.');
 }
 
 export async function deactivate(): Promise<void> {
+  rtStatus?.stop();
   // Bewusst NICHT den Bootstrap-Prozess (SBCL/Incudine) mitkillen —
   // der soll den Editor überleben. Nur der LanguageClient/Bridge-Prozess
   // wird beendet, den startet die nächste Session einfach neu.

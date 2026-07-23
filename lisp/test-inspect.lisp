@@ -90,6 +90,32 @@
   (format t "~&UNBOUND-SLOT  ~A~%"
           (find "y" (third d) :key #'first :test #'string=)))
 
+(format t "~&~%===== Completion =====~%")
+
+(defun cshow (label prefix pkg)
+  (let ((r (handler-case (%rpc "completions-for-repl" prefix pkg)
+             (error (e) (list :crash (princ-to-string e))))))
+    (if (eq (first r) :ok)
+        (destructuring-bind (ok truncated items) r
+          (declare (ignore ok))
+          (format t "~&~%~A  prefix=~S paket=~A~%  ~A Treffer~:[~; (gekappt)~]~%"
+                  label prefix pkg (length items) truncated)
+          (loop for it in items repeat 5
+                do (destructuring-bind (lbl kind detail doc) it
+                     (format t "    ~24A kind=~2A ~A~@[  — ~A~]~%"
+                             lbl kind detail
+                             (when (string/= doc "")
+                               (subseq doc 0 (min 40 (length doc))))))))
+        (format t "~&~A  ABSTURZ ~A~%" label (second r)))))
+
+(cshow "CL-Funktion"     "mapc"        "COMMON-LISP-USER")
+(cshow "Makro"           "with-op"     "COMMON-LISP-USER")
+(cshow "qualifiziert"    "cl:list-"    "COMMON-LISP-USER")
+(cshow "intern (::)"     "sb-kernel::%fun" "COMMON-LISP-USER")
+(cshow "Keyword"         ":dir"        "COMMON-LISP-USER")
+(cshow "unbekanntes Pkt" "gibtsnicht:x" "COMMON-LISP-USER")
+(cshow "leer"            ""            "COMMON-LISP-USER")
+
 (format t "~&~%===== SBCL-Interna (dürfen NIL liefern, aber nicht knallen) =====~%")
 (format t "~&%fn-name        ~S~%" (%rpc "%fn-name" #'car))
 (format t "~&%fn-lambda-list ~S~%" (%rpc "%fn-lambda-list" #'car))

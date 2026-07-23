@@ -354,7 +354,11 @@
      "capabilities" (make-jobj
                      "textDocumentSync" 1 ; Full-Sync, einfachste Variante
                      "hoverProvider" :true
-                     "completionProvider" (make-jobj "triggerCharacters" (vector))
+                     ;; ":" als Trigger, damit "incudine:" sofort die
+                     ;; externen Symbole des Pakets anbietet, ohne dass
+                     ;; man erst einen Buchstaben tippen muss.
+                     "completionProvider" (make-jobj
+                                           "triggerCharacters" (vector ":"))
                      "definitionProvider" :true)
      "serverInfo" (make-jobj "name" "clamps-bridge" "version" "0.1.0"))))
 
@@ -387,16 +391,64 @@
                (send-response id (make-jobj "contents" (make-jobj "kind" "markdown" "value" (or value ""))))
                (send-response id :null)))))))
 
+(defun prefix-before-point (text line character)
+  "Nur die Zeichen VOR dem Cursor. symbol-at liest in beide Richtungen —
+   bei \"rt-st|art\" käme dort \"rt-start\" heraus und die Completion
+   würde nach dem vollständigen Namen filtern statt nach dem Getippten."
+  (let ((line-text (nth-line text line)))
+    (when line-text
+      (let* ((end (min character (length line-text)))
+             (start end))
+        (loop while (and (> start 0)
+                         (symbol-constituent-p (char line-text (1- start))))
+              do (decf start))
+        (subseq line-text start end)))))
+
 (defun handle-completion (id params)
-  (let ((prefix (or (position-symbol params) "")))
-    (swank-rex
-     (format nil "(swank:simple-completions ~S ~S)" prefix *swank-package*)
-     :callback
-     (lambda (status value)
-       (send-response id
-         (if (and (eq status :ok) (consp value) (consp (first value)))
-             (map 'vector (lambda (label) (make-jobj "label" label "kind" 12)) (first value))
-             (vector)))))))
+  "textDocument/completion — Symbolvervollständigung.
+
+   Zwei Dinge, die die frühere Fassung falsch machte: sie nahm
+   *swank-package* (das Paket der REPL) statt des in der Datei gültigen
+   in-package, und sie schickte auch die Zeichen hinter dem Cursor mit."
+  (let* ((doc (gethash "textDocument" params))
+         (pos (gethash "position" params))
+         (text (and doc (gethash (gethash "uri" doc) *documents*)))
+         (line (and pos (gethash "line" pos)))
+         (character (and pos (gethash "character" pos)))
+         (prefix (or (and text (prefix-before-point text line character)) ""))
+         (pkg (if text
+                  (package-at-position text line character)
+                  *swank-package*)))
+    (if (string= prefix "")
+        ;; Ohne Präfix nicht das ganze Image schicken.
+        (send-response id (make-jobj "isIncomplete" :true "items" (vector)))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S)" prefix pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+               (destructuring-bind (ok truncated items) value
+                 (declare (ignore ok))
+                 (send-response id
+                   (make-jobj
+                    "isIncomplete" (if truncated :true :false)
+                    "items"
+                    (coerce
+                     (mapcar
+                      (lambda (it)
+                        (destructuring-bind (label kind detail docu) it
+                          (let ((obj (make-jobj "label" label "kind" kind)))
+                            ;; Leere Felder weglassen: VS Code zeigt sonst
+                            ;; eine leere Detailzeile neben jedem Eintrag.
+                            (when (and detail (string/= detail ""))
+                              (setf (gethash "detail" obj) detail))
+                            (when (and docu (string/= docu ""))
+                              (setf (gethash "documentation" obj) docu))
+                            obj)))
+                      items)
+                     'vector))))
+               (send-response id
+                 (make-jobj "isIncomplete" :false "items" (vector)))))))))
 
 (defun package-at-position (text line character)
   "Findet das für die Position gültige Paket: die letzte
@@ -600,6 +652,33 @@
                               "meta" (vector) "parts" (vector)
                               "package" pkg)))))))))
 
+(defun handle-rt-status (id params)
+  "clamps/rtStatus — Zustand des Incudine-Realtime-Servers.
+   Erwartet keine Parameter, liefert {running, info: [{key,value}]}.
+   Wird von der Statusleiste gepollt, muss also billig und robust sein:
+   im Fehlerfall lieber running=false melden als die Bridge blockieren."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:rt-status-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+         (destructuring-bind (ok running info) value
+           (declare (ignore ok))
+           (send-response id
+             (make-jobj
+              "running" (if running :true :false)
+              "info" (coerce
+                      (mapcar (lambda (p)
+                                (make-jobj "key" (car p) "value" (cdr p)))
+                              info)
+                      'vector))))
+         (send-response id
+           (make-jobj "running" :false
+                      "info" (vector
+                              (make-jobj "key" "fehler"
+                                         "value" (format nil "~A" value)))))))))
+
 (defun handle-trace-toggle (id params)
   "clamps/toggleTrace — Trace für Funktion an/aus.
    Client schickt {symbol, package}, erwartet {output, traced}."
@@ -650,6 +729,7 @@
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))
           ((string= method "clamps/inspect") (handle-inspect id params))
+          ((string= method "clamps/rtStatus") (handle-rt-status id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))

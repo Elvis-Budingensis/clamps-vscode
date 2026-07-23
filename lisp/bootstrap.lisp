@@ -221,14 +221,24 @@
 ;;; ---------------------------------------------------------------------
 ;;; Incudine-Realtime-Server sicherstellen
 ;;; (falls CLAMPS ihn beim Laden nicht schon selbst hochfährt)
+;;;
+;;; Die frühere Fassung prüfte fest auf incudine:rt-running-p. Den Namen
+;;; gibt es in aktuellen Incudine-Versionen nicht — durch das fboundp
+;;; davor gab es zwar keinen Fehler, der Block lief aber schlicht nie.
+;;; Deshalb hier dieselbe Mehrfach-Prüfung wie in rt-status-for-repl.
 ;;; ---------------------------------------------------------------------
 
 (handler-case
-    (when (and (find-package :incudine)
-               (fboundp (find-symbol "RT-RUNNING-P" :incudine))
-               (not (funcall (find-symbol "RT-RUNNING-P" :incudine))))
-      (funcall (find-symbol "RT-START" :incudine))
-      (log-msg "Incudine RT-Server gestartet"))
+    (when (find-package :incudine)
+      (let ((running (clamps-bridge-rpc:rt-status-for-repl)))
+        ;; (:ok running-p info)
+        (if (second running)
+            (log-msg "Incudine RT-Server läuft bereits")
+            (let ((start-sym (find-symbol "RT-START" :incudine)))
+              (if (and start-sym (fboundp start-sym))
+                  (progn (funcall start-sym)
+                         (log-msg "Incudine RT-Server gestartet"))
+                  (log-msg "WARNUNG: incudine:rt-start nicht gefunden"))))))
   (error (e)
     (log-msg "WARNUNG: Incudine RT-Start fehlgeschlagen: ~A" e)))
 

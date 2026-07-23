@@ -85,6 +85,10 @@
       {
         "command": "clamps.untraceAll",
         "title": "CLAMPS: Untrace All (alle Traces aus)"
+      },
+      {
+        "command": "clamps.rtStatusDetails",
+        "title": "CLAMPS: DSP-Status anzeigen"
       }
     ],
     "languages": [
@@ -160,6 +164,11 @@
           "type": "number",
           "default": 54619,
           "description": "Port des CLAMPS-GUI-Webservers (clamps-start :port). Default 54619."
+        },
+        "clamps.rtPollInterval": {
+          "type": "number",
+          "default": 3000,
+          "description": "Abstand in Millisekunden, in dem der DSP-Status in der Statusleiste aktualisiert wird. 0 schaltet das Polling ab."
         }
       }
     }

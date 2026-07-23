@@ -33,7 +33,8 @@
   (:use :cl)
   (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
            #:find-definitions-for-repl #:inspect-for-repl
-           #:trace-toggle-for-repl #:untrace-all-for-repl))
+           #:trace-toggle-for-repl #:untrace-all-for-repl
+           #:rt-status-for-repl #:completions-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -349,6 +350,221 @@
            nil))
 
     (t (list "atom" nil nil))))
+
+(defun %sym-kind (sym)
+  "LSP CompletionItemKind. Die Zahlen sind LSP-Konstanten; die Auswahl
+   bestimmt nur, welches Icon VS Code zeigt. Makros bekommen bewusst ein
+   anderes Icon als Funktionen — beim Lesen fremden CLAMPS-Codes ist der
+   Unterschied wichtiger als in den meisten Sprachen."
+  (cond
+    ((keywordp sym) 20)                                   ; EnumMember
+    ((macro-function sym) 14)                             ; Keyword
+    ((and (fboundp sym)
+          (typep (ignore-errors (fdefinition sym))
+                 'standard-generic-function)) 2)          ; Method
+    ((fboundp sym) 3)                                     ; Function
+    ((find-class sym nil)
+     (if (subtypep sym 'structure-object) 22 7))          ; Struct / Class
+    ((constantp sym) 21)                                  ; Constant
+    ((boundp sym) 6)                                      ; Variable
+    (t 12)))                                              ; Value
+
+(defun %arglist (sym)
+  "Lambda-Liste als String, oder nil. sb-introspect kennt auch Makros."
+  (handler-case
+      (let ((f (find-symbol "FUNCTION-LAMBDA-LIST" :sb-introspect)))
+        (when (and f (fboundp sym))
+          (let ((ll (funcall f sym)))
+            ;; Bei parameterlosen Funktionen ist die Lambda-Liste NIL;
+            ;; princ-to-string macht daraus "nil", was in der Detail-
+            ;; spalte wie ein Wert aussieht statt wie eine leere Liste.
+            (if (null ll)
+                "()"
+                (let ((*print-case* :downcase) (*print-pretty* nil))
+                  (princ-to-string ll))))))
+    (error () nil)))
+
+(defun %short-doc (sym)
+  "Erste Zeile der Dokumentation, gekappt — die Completion-Liste ist
+   kein Ort für dreißigzeilige Docstrings."
+  (handler-case
+      (let ((d (or (documentation sym 'function)
+                   (documentation sym 'variable)
+                   (documentation sym 'type))))
+        (when d
+          (let* ((nl (position #\Newline d))
+                 (line (if nl (subseq d 0 nl) d)))
+            (if (> (length line) 120) (subseq line 0 117) line))))
+    (error () nil)))
+
+(defun %split-prefix (prefix)
+  "Zerlegt PREFIX in (paketname symbolteil internal-p). Paketname nil
+   bedeutet: im aktuellen Paket suchen.
+     \"rt-\"             -> (nil \"rt-\" nil)
+     \"incudine:rt-\"    -> (\"INCUDINE\" \"rt-\" nil)
+     \"incudine::rt-\"   -> (\"INCUDINE\" \"rt-\" t)
+     \":foo\"            -> (\"KEYWORD\" \"foo\" nil)"
+  (let ((c (position #\: prefix)))
+    (cond
+      ((null c) (list nil prefix nil))
+      ((= c 0)  (list "KEYWORD" (string-left-trim ":" prefix) nil))
+      ((and (< (1+ c) (length prefix)) (char= (char prefix (1+ c)) #\:))
+       (list (string-upcase (subseq prefix 0 c)) (subseq prefix (+ c 2)) t))
+      (t (list (string-upcase (subseq prefix 0 c)) (subseq prefix (1+ c)) nil)))))
+
+(defun %prefix-match-p (name pattern)
+  (and (<= (length pattern) (length name))
+       (string-equal pattern name :end2 (length pattern))))
+
+(defparameter *completion-limit* 300
+  "Obergrenze für Kandidaten. Wird sie erreicht, meldet die Bridge
+   isIncomplete=t und VS Code fragt beim nächsten Zeichen erneut an —
+   sonst müssten wir bei leerem Präfix zehntausende Symbole schicken.")
+
+(defun completions-for-repl (prefix package-name)
+  "Symbolvervollständigung für PREFIX im Kontext von PACKAGE-NAME.
+
+   Bewusst nicht swank:simple-completions: das liefert nur Namen. Hier
+   kommen Art (Funktion/Makro/Variable/Klasse), Lambda-Liste und erste
+   Doku-Zeile in einem einzigen Roundtrip mit — bei Incudine-DSP- und
+   CLAMPS-Funktionen ist die Arglist beim Tippen der eigentliche Nutzen.
+
+   Rückgabe: (:ok truncated-p ((label kind detail doc) ...))"
+  (handler-case
+      (destructuring-bind (pkg-part sym-part internal-p) (%split-prefix prefix)
+        (let* ((home (or (find-package (string-upcase package-name))
+                         (find-package :common-lisp-user)))
+               (target (if pkg-part (find-package pkg-part) home))
+               (seen (make-hash-table :test 'eq))
+               (out '())
+               (count 0)
+               (truncated nil))
+          (when target
+            (flet ((consider (sym)
+                     (unless (or (gethash sym seen)
+                                 (>= count *completion-limit*))
+                       (setf (gethash sym seen) t)
+                       (let ((name (symbol-name sym)))
+                         (when (%prefix-match-p name sym-part)
+                           (incf count)
+                           (push (list
+                                  ;; Label mit Qualifier, falls der Nutzer
+                                  ;; einen getippt hat — sonst ersetzt
+                                  ;; VS Code den Paketteil nicht mit.
+                                  (let ((n (string-downcase name)))
+                                    (cond ((string= pkg-part "KEYWORD")
+                                           (concatenate 'string ":" n))
+                                          (pkg-part
+                                           (concatenate 'string
+                                                        (string-downcase pkg-part)
+                                                        (if internal-p "::" ":") n))
+                                          (t n)))
+                                  (%sym-kind sym)
+                                  (or (%arglist sym) "")
+                                  (or (%short-doc sym) ""))
+                                 out))))))
+              ;; Ohne Qualifier: alles im aktuellen Paket Sichtbare.
+              ;; Mit einfachem Doppelpunkt: nur externe Symbole — genau
+              ;; die, die das Paket als Schnittstelle anbietet.
+              (if (and pkg-part (not internal-p)
+                       (not (string= pkg-part "KEYWORD")))
+                  (do-external-symbols (sym target) (consider sym))
+                  (do-symbols (sym target) (consider sym)))
+              (when (>= count *completion-limit*) (setf truncated t))))
+          (list :ok truncated
+                (sort (nreverse out) #'string< :key #'first))))
+    (error (e)
+      (list :ok nil (list (list (format nil "; Completion-Fehler: ~A" e)
+                                1 "" ""))))))
+
+(defun %incudine (name)
+  "Symbol aus :incudine, falls das Paket geladen ist. Ohne CLAMPS (etwa
+   im Testlauf gegen nacktes SBCL) existiert es nicht — dann nil."
+  (let ((pkg (find-package :incudine)))
+    (when pkg (find-symbol (string-upcase name) pkg))))
+
+(defun %rt-symbols ()
+  "Alle RT-*-Symbole aus :incudine — Diagnosehilfe, wenn keiner der
+   erwarteten Namen greift. Die Benennung schwankt zwischen Incudine-
+   Versionen (rt-status vs. rt-running-p), und statt zu raten, zeigen
+   wir dem Nutzer, was tatsächlich da ist."
+  (let ((pkg (find-package :incudine))
+        (out '()))
+    (when pkg
+      (do-external-symbols (sym pkg)
+        (let ((n (symbol-name sym)))
+          (when (and (> (length n) 3)
+                     (string= "RT-" (subseq n 0 3)))
+            (push (string-downcase n) out)))))
+    (sort out #'string<)))
+
+(defun rt-status-for-repl ()
+  "Zustand des Incudine-Realtime-Servers für die Statusleiste.
+
+   Hintergrund: CLAMPS setzt in rts-start/rts-stop per
+   slynk:eval-in-emacs ein Modeline-Label (\"DSP ✓\"). Ohne Emacs-
+   Connection ist dieser Aufruf im Bootstrap ein No-op, wodurch in
+   VS Code jede Anzeige fehlt, ob DSP läuft.
+
+   Die Abfrage probiert mehrere Funktionsnamen durch, weil sie sich
+   zwischen Incudine-Versionen unterscheiden. Findet sie keinen, meldet
+   sie das explizit und listet die vorhandenen RT-Symbole, statt still
+   \"aus\" zu behaupten.
+
+   Rückgabe: (:ok running-p ((schlüssel . wert) ...)), Werte als Strings."
+  (handler-case
+      (if (not (find-package :incudine))
+          (list :ok nil (list (cons "incudine" "Paket nicht geladen")))
+          (let ((running :unbekannt)
+                (info '()))
+
+            ;; 1) rt-status — liefert typischerweise :started / :stopped
+            (let ((sym (%incudine "RT-STATUS")))
+              (when (and sym (fboundp sym))
+                (handler-case
+                    (let ((v (funcall sym)))
+                      (push (cons "rt-status"
+                                  (string-downcase (princ-to-string v)))
+                            info)
+                      (setf running
+                            (and (member v '(:started :running :on)) t)))
+                  (error () nil))))
+
+            ;; 2) Fallback: rt-running-p (ältere/andere Versionen)
+            (when (eq running :unbekannt)
+              (let ((sym (%incudine "RT-RUNNING-P")))
+                (when (and sym (fboundp sym))
+                  (handler-case (setf running (and (funcall sym) t))
+                    (error () nil)))))
+
+            ;; 3) Nichts gefunden: nicht raten, sondern zeigen was da ist.
+            (when (eq running :unbekannt)
+              (setf running nil)
+              (let ((syms (%rt-symbols)))
+                (push (cons "hinweis"
+                            (if syms
+                                (format nil "kein rt-status/rt-running-p; vorhanden: ~{~A~^, ~}"
+                                        (subseq syms 0 (min 8 (length syms))))
+                                "keine RT-Symbole in :incudine gefunden"))
+                      info)))
+
+            ;; Zusatzinfos für den Tooltip; jede einzeln abgesichert,
+            ;; da versionsabhängig.
+            (dolist (probe '(("sample-rate" . "RT-SAMPLE-RATE")
+                             ("block-size"  . "BLOCK-SIZE")
+                             ("client"      . "RT-CLIENT-NAME")
+                             ("xruns"       . "RT-XRUNS")))
+              (let ((sym (%incudine (cdr probe))))
+                (when (and sym (fboundp sym))
+                  (handler-case
+                      (push (cons (car probe)
+                                  (princ-to-string (funcall sym)))
+                            info)
+                    (error () nil)))))
+
+            (list :ok running (nreverse info))))
+    (error (e)
+      (list :ok nil (list (cons "fehler" (princ-to-string e)))))))
 
 (defun inspect-for-repl (expr-string package-name)
   "Wertet EXPR-STRING aus und beschreibt das Ergebnis-Objekt typspezifisch.
