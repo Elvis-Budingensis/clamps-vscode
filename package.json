@@ -199,8 +199,13 @@
         },
         "clamps.replUsesDebugger": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Wertet REPL-Eingaben über die Verbindung des Debug-Adapters aus, damit Fehler den Lisp-Debugger öffnen. Experimentell — ohne angehängten Debugger ohne Wirkung."
+        },
+        "clamps.autoAttachDebugger": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hängt den Lisp-Debugger automatisch an, sobald CLAMPS startet, damit Fehler ohne manuelles Einhängen im Debugger landen."
         }
       }
     },

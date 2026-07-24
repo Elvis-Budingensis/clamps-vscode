@@ -61,6 +61,17 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   private supportsInvalidated = false;
 
   /**
+   * Swank-Request-ID der laufenden REPL-Auswertung und der zugehörige
+   * DAP-Request. Wird gesetzt, solange eine replEval-Auswertung offen
+   * ist, damit onDebug (a) gezielt NUR ihre Frist löscht und (b) den
+   * DAP-Request sofort beantwortet, statt die Kette REPL→DAP→Swank→
+   * Restart offen zu halten.
+   */
+  private inflightRepl:
+    | { swankId: number; req: DapRequest; pkg: string; answered: boolean }
+    | undefined;
+
+  /**
    * Stelligkeit von swank:eval-string-in-frame in DIESEM Image.
    *
    * Sie schwankt zwischen SLIME-Versionen: mal (string frame), mal
@@ -230,7 +241,6 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
           supportsEvaluateForHovers: true,
           supportsExceptionInfoRequest: true,
           supportsRestartFrame: true,
-          supportsTerminateThreadsRequest: true,
           supportsDelayedStackTraceLoading: true,
           // Kein supportsStepBack, kein Stepping: siehe Kopfkommentar.
           exceptionBreakpointFilters: [],
@@ -249,7 +259,6 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       case 'continue':        return this.continue(req);
       case 'pause':           return this.pause(req, a.threadId);
       case 'restartFrame':    return this.restartFrame(req, a.frameId);
-      case 'terminateThreads': return this.terminateThreads(req, a.threadIds ?? []);
       case 'exceptionInfo':   return this.exceptionInfo(req);
 
       case 'next':
@@ -479,9 +488,27 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     // `stopped` dieselbe meinen.
     this.stoppedThreadId = typeof m[1] === 'number' ? (m[1] as number) : 1;
 
-    // Der auslösende Eval bleibt bis zum Restart unbeantwortet — das ist
-    // gewollt, also keine Frist mehr darauf anwenden.
-    this.swank.clearTimeouts();
+    // Nur der auslösenden REPL-Anfrage die Frist nehmen — sie bleibt bis
+    // zum Restart offen. Alle anderen Anfragen (Threads, Frames, Hover)
+    // behalten ihre Frist. Das pauschale Löschen aller Fristen war ein
+    // Fehler: es liess unbeteiligte Anfragen bei ausbleibender Antwort
+    // für immer offen.
+    if (this.inflightRepl) {
+      this.swank.clearRequestTimeout(this.inflightRepl.swankId);
+
+      // Den DAP-Request SOFORT beantworten, statt die Kette
+      // REPL→DAP→Swank→Restart offen zu halten. Sonst bleibt das REPL-
+      // Terminal busy, während der Debugger auf einen Restart wartet,
+      // der wiederum über denselben blockierten Kanal ausgelöst würde.
+      if (!this.inflightRepl.answered) {
+        this.inflightRepl.answered = true;
+        this.respond(this.inflightRepl.req, {
+          status: 'debugging',
+          output: '; Lisp-Debugger offen — Restart im Debug-Bereich wählen.',
+          package: this.inflightRepl.pkg,
+        });
+      }
+    }
 
     this.event('output', {
       output:
@@ -524,6 +551,9 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       });
     } else {
       this.event('continued', { threadId: this.stoppedThreadId, allThreadsContinued: false });
+      // Alle Ebenen verlassen: eine noch registrierte REPL-Auswertung
+      // ist damit erledigt.
+      if (this.inflightRepl?.answered) this.inflightRepl = undefined;
     }
   }
 
@@ -790,12 +820,21 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         // ignore-errors liefert bei einem Fehler nil UND das
         // Condition-Objekt, was im Tooltip als
         // "nil, #<unbound-variable rpc …>" landete.
-        const single =
-          context === 'hover' ? `(values (ignore-errors ${raw}))` : raw;
-        const one =
-          state && frameId !== undefined
-            ? this.frameEvalForm(single, frameId)
-            : `(swank:eval-and-grab-output ${JSON.stringify(single)})`;
+        // Hover NIE im Frame auswerten.
+        //
+        // ignore-errors nützt im Frame nichts: eval-string-in-frame läuft
+        // mit aktivem SLDB-Debugger-Hook, sodass Swank bei einer Condition
+        // in den Debugger springt, BEVOR der Handler sie fangen kann. Ein
+        // Hover über ein unbekanntes Wort (etwa "n" in der REPL-Anleitung)
+        // öffnete so bei ausgewähltem Frame eine neue Ebene je Mausbewegung.
+        // Auf oberster Ebene (eval-and-grab-output) fängt ignore-errors
+        // dagegen zuverlässig.
+        const asHover = context === 'hover';
+        const single = asHover ? `(values (ignore-errors ${raw}))` : raw;
+        const useFrame = state && frameId !== undefined && !asHover;
+        const one = useFrame
+          ? this.frameEvalForm(single, frameId!)
+          : `(swank:eval-and-grab-output ${JSON.stringify(single)})`;
         this.lastForm = one;
         // WICHTIG: nur eine Auswertung IM FRAME geht an den angehaltenen
         // Thread. Alles andere bekommt einen frischen Worker (Thread-
@@ -806,8 +845,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         // Arity-Fehler und öffnet eine weitere Debugger-Ebene. Genau so
         // kam die Kette Ebene 2, 3, 4 zustande — und am Ende hing das
         // Image, weil sich die Ebenen stapelten.
-        const target =
-          state && frameId !== undefined ? this.thread : new Sym('t');
+        const target = useFrame ? this.thread : new Sym('t');
         const r = await this.swank.rex(one, this.swank.packageName, target);
         const p = asList(r);
         const shown =
@@ -992,27 +1030,64 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       this.respond(req, { status: 'ok', output: '', package: pkg });
       return;
     }
+    // Nur eine REPL-Auswertung gleichzeitig. Läuft schon eine (im
+    // Debugger wartend), diese ablehnen statt die Verfolgung zu verlieren.
+    if (this.inflightRepl && !this.inflightRepl.answered) {
+      this.respond(req, {
+        status: 'busy',
+        output: '; Vorherige Auswertung steht noch im Debugger. Erst Restart wählen.',
+        package: pkg,
+      });
+      return;
+    }
+
+    const entry = { swankId: -1, req, pkg, answered: false };
+    this.inflightRepl = entry;
     try {
-      // Frist NICHT abschalten: öffnet sich der Debugger, wird sie in
-      // onDebug ohnehin gelöscht (clearTimeouts) und die Anfrage darf
-      // beliebig lange offen bleiben. Bleibt dagegen eine Antwort ohne
-      // Debugger aus — etwa weil die Funktion im laufenden Image fehlt —
-      // hängt sonst die REPL stumm.
+      // Frist bleibt gesetzt: öffnet sich der Debugger, wird sie in
+      // onDebug gezielt für DIESE Anfrage gelöscht. Bleibt dagegen eine
+      // Antwort ohne Debugger aus (Funktion fehlt im Image), greift der
+      // Timeout und die REPL hängt nicht stumm.
       const r = await this.swank.rex(
         `(clamps-bridge-rpc:eval-for-repl-debuggable ${JSON.stringify(code)} ${JSON.stringify(pkg)})`,
-        pkg, new Sym('t'), 15000
+        pkg, new Sym('t'), 15000,
+        id => { entry.swankId = id; }
       );
+      // Kam eine echte Antwort (kein Debugger), normal beantworten —
+      // sofern onDebug den Request nicht schon gelöst hat.
       const parts = asList(r);
-      this.respond(req, {
-        status: 'ok',
-        output: text(parts[1]),
-        package: text(parts[2]) || pkg,
-      });
+      if (!entry.answered) {
+        entry.answered = true;
+        this.respond(req, {
+          status: 'ok',
+          output: text(parts[1]),
+          package: text(parts[2]) || pkg,
+        });
+      } else {
+        // Der Debugger hatte den Request bereits beantwortet; die
+        // Auswertung ist danach doch noch normal zu Ende gelaufen (etwa
+        // nach [continue]). Ergebnis als Ausgabe nachschieben.
+        this.event('output', {
+          output: `${text(parts[1])}\n`,
+          category: 'stdout',
+        });
+      }
     } catch (e) {
+      if (entry.answered) {
+        // Schon beantwortet (Debugger); ein danach eintreffender
+        // (:abort …) ist der normale Ausgang eines Restarts.
+        if (!/:abort/i.test(String(e))) {
+          this.event('output', {
+            output: `; REPL-Auswertung: ${e}\n`, category: 'stderr',
+          });
+        }
+        return;
+      }
       // Ein Restart, der abbricht, beendet die Auswertung mit (:abort …).
       const msg = String(e);
       const aborted = /:abort/i.test(msg);
       const timedOut = /Keine Antwort von Swank/.test(msg);
+      entry.answered = true;
       this.respond(req, {
         status: aborted ? 'aborted' : 'error',
         output: aborted
@@ -1025,6 +1100,10 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
             : msg,
         package: pkg,
       });
+    } finally {
+      if (this.inflightRepl === entry && entry.answered) {
+        this.inflightRepl = undefined;
+      }
     }
   }
 
@@ -1067,16 +1146,16 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
   }
 
-  private terminateThreads(req: DapRequest, ids: number[]): void {
-    try {
-      for (const id of ids) {
-        void this.swank.rex(`(swank:kill-nth-thread ${id})`).catch(() => undefined);
-      }
-      this.respond(req);
-    } catch (e) {
-      this.fail(req, 1014, String(e));
-    }
-  }
+  // terminateThreads bewusst NICHT angeboten.
+  //
+  // swank:kill-nth-thread erwartet einen INDEX in Swanks Threadliste,
+  // während wir gegenüber VS Code die Thread-IDs aus der :debug-Nachricht
+  // führen. Beides zu verwechseln heisst, einen beliebigen Thread zu
+  // killen — trifft es den Control- oder Reader-Thread, ist das ganze
+  // Image weg, ohne dass irgendwo ein Fehler protokolliert würde. Und
+  // VS Code bietet "Thread beenden" im Kontextmenü der Aufrufliste an,
+  // sobald man die Fähigkeit meldet. Threads zu töten gehört ohnehin
+  // nicht in eine Debugger-Oberfläche; dafür gibt es die Restarts.
 
   private exceptionInfo(req: DapRequest): void {
     const s = this.top;

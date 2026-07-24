@@ -316,13 +316,26 @@ export class SwankClient extends EventEmitter {
    * bekommt eine eigene ID — feste IDs (wie im Prototyp) kollidieren,
    * sobald zwei Anfragen gleichzeitig offen sind.
    */
+  /**
+   * Schickt ein Formular und wartet auf die Antwort.
+   *
+   * onId wird mit der vergebenen Request-ID aufgerufen, bevor gesendet
+   * wird — so kann der Aufrufer GENAU diese Anfrage später von ihrer
+   * Frist befreien (clearTimeout(id)), statt pauschal alle Fristen zu
+   * löschen. Das pauschale Löschen war ein echter Fehler: es machte auch
+   * unbeteiligte, gleichzeitig offene Anfragen (Threads, Stackframes,
+   * Hover) timeoutlos, sodass eine ausbleibende Antwort sie für immer in
+   * pending hängen liess.
+   */
   rex(
     form: string,
     pkg = this.packageName,
     thread: SExpr = new Sym('t'),
-    timeoutMs = 20000
+    timeoutMs = 20000,
+    onId?: (id: number) => void
   ): Promise<SExpr> {
     const id = this.nextId++;
+    if (onId) onId(id);
     return new Promise((resolve, reject) => {
       // Ohne Frist bleibt eine Anfrage, die nie beantwortet wird, für
       // immer offen — und der Aufrufer sieht schlicht nichts. Genau das
@@ -363,12 +376,18 @@ export class SwankClient extends EventEmitter {
    * Restart aufgerufen wird. Ohne diesen Aufruf meldet der Timeout dann
    * fälschlich einen Fehler, obwohl alles seinen Gang geht.
    */
-  clearTimeouts(): void {
-    for (const p of this.pending.values()) {
-      if (p.timer) {
-        clearTimeout(p.timer);
-        p.timer = undefined;
-      }
+  /**
+   * Nimmt EINER Anfrage ihre Frist — der, die den Debugger ausgelöst hat.
+   * Swank antwortet auf sie erst nach einem Restart; ohne Fristentzug
+   * meldete der Timeout fälschlich einen Fehler. Alle anderen Anfragen
+   * behalten ihre Frist, damit ausbleibende Antworten nicht ewig offen
+   * bleiben.
+   */
+  clearRequestTimeout(id: number): void {
+    const p = this.pending.get(id);
+    if (p?.timer) {
+      clearTimeout(p.timer);
+      p.timer = undefined;
     }
   }
 

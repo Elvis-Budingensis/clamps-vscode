@@ -267,6 +267,26 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         await startLanguageClient(bridgePath);
         rtStatus?.start();
         vscode.window.showInformationMessage(`CLAMPS läuft (Swank-Port ${session.port}).`);
+
+        // Debugger automatisch anhängen, sofern nicht abgeschaltet.
+        // Damit ist der Lisp-Debugger sofort da, ohne dass man ihn jedes
+        // Mal von Hand einhängen muss — so nah an Slys Verhalten, wie es
+        // VS Codes DAP-Modell zulässt (eine Debug-Session muss dort immer
+        // bewusst existieren; ein Debugger, der ganz ohne Session
+        // aufspringt, ist in VS Code nicht vorgesehen).
+        if (vscode.workspace.getConfiguration('clamps').get<boolean>('autoAttachDebugger', true)) {
+          // Kleiner Verzug, damit die Bridge zuerst ihre Verbindung
+          // aufbaut und die beiden Swank-Verbindungen sich nicht ins
+          // Gehege kommen.
+          setTimeout(() => {
+            if (!vscode.debug.activeDebugSession) {
+              void vscode.debug.startDebugging(undefined, {
+                type: 'clamps', request: 'attach',
+                name: 'CLAMPS: Debugger anhängen',
+              });
+            }
+          }, 800);
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         outputChannel.appendLine(`FEHLER: ${message}`);

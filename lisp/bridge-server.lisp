@@ -272,6 +272,26 @@
     (send-swank-text (format nil "(:emacs-rex ~A ~S t ~D)" form-string package id))
     id))
 
+(defpackage :clamps-bridge-swank-read
+  (:use)
+  (:documentation
+   "Auffangpaket fürs Lesen von Swank-Nachrichten. Alle Symbole aus der
+    Nachricht werden hier interniert, damit unbekannte Quellpakete (etwa
+    cffi-features) den Reader nicht sprengen."))
+
+(defvar *swank-readtable*
+  (let ((rt (copy-readtable nil)))
+    ;; Den Doppelpunkt zu einem gewöhnlichen Konstituenten machen. Damit
+    ;; behandelt der Reader "cffi-features:foo" als EIN Token und schlägt
+    ;; nicht mehr fehl, weil das Paket cffi-features nicht existiert. Die
+    ;; Nachricht wird zwar leicht verfälscht (das Symbol heisst dann
+    ;; |cffi-features:foo| statt cffi-features::foo), aber für den
+    ;; Dispatch zählen nur die führenden Keywords, und die verarbeiten wir
+    ;; separat über read-keyword unten.
+    (set-syntax-from-char #\: #\a rt)
+    rt)
+  "Readtable, der Paket-Doppelpunkte als normale Zeichen liest.")
+
 (defun read-swank-message (stream)
   (let ((len-str (make-string 6)))
     (let ((n (read-sequence len-str stream)))
@@ -280,12 +300,38 @@
            (buf (make-string len)))
       (read-sequence buf stream)
       (handler-case
-          (let ((*read-eval* nil)) ; niemals #.-Forms remote auswerten
+          ;; Erst der normale, korrekte Reader. Der versteht Keywords
+          ;; richtig und ist für die allermeisten Nachrichten der Fall.
+          (let ((*read-eval* nil))
             (read-from-string buf))
-        (error (e)
-          (log-msg "Konnte Swank-Antwort nicht lesen (~A): ~A" e
-                    (subseq buf 0 (min 200 (length buf))))
-          :unreadable)))))
+        (error ()
+          ;; Nur wenn der normale Reader scheitert (unbekanntes Paket in
+          ;; einer Notification), der nachsichtige Zweite Versuch: mit
+          ;; entwertetem Doppelpunkt und im Auffangpaket. Das verfälscht
+          ;; Nicht-Keyword-Symbole, aber solche Nachrichten (new-features,
+          ;; indentation-update) werten wir ohnehin nicht aus — es geht
+          ;; nur darum, den Stream nicht zu verlieren.
+          (handler-case
+              (let ((*read-eval* nil)
+                    (*readtable* *swank-readtable*)
+                    (*package* (find-package :clamps-bridge-swank-read)))
+                (%fixup-leading-keyword (read-from-string buf)))
+            (error (e)
+              (log-msg "Konnte Swank-Antwort nicht lesen (~A): ~A" e
+                        (subseq buf 0 (min 200 (length buf))))
+              :unreadable)))))))
+
+(defun %fixup-leading-keyword (form)
+  "Der nachsichtige Reader liest das führende :return/:debug/… als
+   normales Symbol |:return| im Auffangpaket. Für den Dispatch machen wir
+   daraus wieder ein echtes Keyword, sofern der Name mit : beginnt."
+  (if (and (consp form) (symbolp (first form)))
+      (let ((name (symbol-name (first form))))
+        (if (and (> (length name) 0) (char= (char name 0) #\:))
+            (cons (intern (string-upcase (subseq name 1)) :keyword)
+                  (rest form))
+            form))
+      form))
 
 (defun handle-swank-message (msg)
   (cond
