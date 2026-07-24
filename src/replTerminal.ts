@@ -164,7 +164,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.write('\x1b[1mCLAMPS REPL\x1b[0m\r\n');
     this.write('Dieselbe laufende SBCL-/Swank-Session wie der Editor.\r\n');
     this.write('Enter: auswerten (unvollständige Formen laufen weiter) · Ctrl+J: neue Zeile\r\n');
-    this.write('Ctrl+L: leeren · Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n\r\n');
+    this.write('Ctrl+L: leeren · Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n');
+    this.write('Bei angehängtem Debugger öffnen Fehler den Lisp-Debugger.\r\n\r\n');
     this.opened = true;
     this.renderInput();
   }
@@ -313,22 +314,59 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.renderInput();
   }
 
+  /**
+   * Läuft eine CLAMPS-Debug-Session, wird über deren Swank-Verbindung
+   * ausgewertet statt über die Bridge.
+   *
+   * Der Grund: Fehler in der REPL sollen den Debugger öffnen. Die Bridge
+   * kann das nicht — eval-for-repl fängt dort jede Condition ab, und ein
+   * :debug-Ereignis liesse sich über den Anfrage/Antwort-Kanal ohnehin
+   * nicht weiterreichen. Über den Debug-Socket kommt es an.
+   *
+   * Ohne angehängten Debugger bleibt alles wie bisher: Fehler werden zu
+   * Text, die REPL läuft weiter.
+   */
+  private get debugSession(): vscode.DebugSession | undefined {
+    const s = vscode.debug.activeDebugSession;
+    return s && s.type === 'clamps' ? s : undefined;
+  }
+
   private async requestEval(code: string): Promise<void> {
+    const session = this.debugSession;
     const client = this.getClient();
-    if (!client || client.state !== State.Running) {
+    if (!session && (!client || client.state !== State.Running)) {
       this.write('\x1b[31mCLAMPS ist nicht verbunden. Führe „CLAMPS: Start“ aus.\x1b[0m\r\n');
       return;
     }
 
     this.busy = true;
     try {
-      const result = await client.sendRequest<EvalResult>('clamps/eval', {
-        code,
-        package: this.packageName,
-      });
-      if (result.package) this.packageName = result.package;
-      const output = result.output ?? '';
-      if (output.length > 0) this.write(`${this.normalizeNewlines(output)}${output.endsWith('\n') ? '' : '\r\n'}`);
+      if (session) {
+        const r = await session.customRequest('clamps/replEval', {
+          code,
+          package: this.packageName,
+        });
+        if (r?.package) this.packageName = r.package;
+        const output = String(r?.output ?? '');
+        if (output.length > 0) {
+          const colour = r?.status === 'error' ? '\x1b[31m' : '';
+          const reset = colour ? '\x1b[0m' : '';
+          this.write(
+            `${colour}${this.normalizeNewlines(output)}${reset}` +
+            (output.endsWith('\n') ? '' : '\r\n')
+          );
+        }
+      } else {
+        const result = await client!.sendRequest<EvalResult>('clamps/eval', {
+          code,
+          package: this.packageName,
+        });
+        if (result.package) this.packageName = result.package;
+        const output = result.output ?? '';
+        if (output.length > 0) {
+          this.write(`${this.normalizeNewlines(output)}${output.endsWith('\n') ? '' : '\r\n'}`);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.write(`\x1b[31m${this.normalizeNewlines(message)}\x1b[0m\r\n`);

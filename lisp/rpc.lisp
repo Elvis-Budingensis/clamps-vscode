@@ -36,7 +36,8 @@
            #:trace-toggle-for-repl #:untrace-all-for-repl
            #:rt-status-for-repl #:completions-for-repl
            #:inspect-id-for-repl #:inspect-part-for-repl
-           #:inspect-release-for-repl #:inspect-set-part-for-repl))
+           #:inspect-release-for-repl #:inspect-set-part-for-repl
+           #:eval-for-repl-debuggable))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -1010,6 +1011,49 @@
                   (list :ok text (package-name pkg))))))
       (error (e)
         (list :error (format nil "~A" e) (package-name pkg))))))
+
+(defun eval-for-repl-debuggable (code-string package-name)
+  "Wie eval-for-repl, aber OHNE handler-case.
+
+   Der Unterschied ist der ganze Zweck: eval-for-repl fängt jede
+   Condition ab und macht Text daraus. Swank tritt dadurch nie in seinen
+   Debugger ein, und die REPL kann keinen auslösen. Diese Fassung lässt
+   die Condition durch, damit Swank ein :debug-Ereignis schickt.
+
+   Deshalb darf sie NUR über die Verbindung des Debug-Adapters gerufen
+   werden — der kann das Ereignis empfangen und Restarts zurückschicken.
+   Über die Bridge gerufen würde der Aufruf hängen, weil dort niemand
+   antwortet.
+
+   *debug-io* und *query-io* bleiben hier bewusst UNGEBUNDEN: über sie
+   verhandelt Swank mit dem Debugger. Nur die Ausgabeströme werden
+   umgeleitet."
+  (let* ((pkg (or (find-package (string-upcase package-name))
+                  (find-package :common-lisp-user)))
+         (out (make-string-output-stream)))
+    (let* ((*package* pkg)
+           (*standard-output* out)
+           (*error-output* out)
+           (*trace-output* out)
+           (values-strings '()))
+      (with-input-from-string (in code-string)
+        (loop
+          (let ((form (read in nil :eof)))
+            (when (eq form :eof) (return))
+            (let ((results (multiple-value-list (eval form))))
+              (setf values-strings
+                    (append values-strings
+                            (mapcar #'prin1-to-string results)))))))
+      (let* ((printed (get-output-stream-string out))
+             (value-text (format nil "~{~A~^~%~}" values-strings))
+             (combined (concatenate 'string printed
+                                    (if (and (> (length printed) 0)
+                                             (> (length value-text) 0))
+                                        (string #\Newline) "")
+                                    value-text)))
+        ;; *package* auslesen, nicht pkg: ein (in-package ...) im Code
+        ;; hat es innerhalb dieser Bindung verändert.
+        (list :ok combined (package-name *package*))))))
 
 (defun eval-for-repl (code-string package-name)
   "Wertet CODE-STRING im Paket PACKAGE-NAME aus. Fängt Standard-Output

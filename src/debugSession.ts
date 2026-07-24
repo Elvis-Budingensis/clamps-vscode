@@ -282,6 +282,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         return this.invokeRestart(req, Number(a.index));
       case 'clamps/abortAll':
         return this.abortAll(req);
+      case 'clamps/replEval':
+        return this.replEval(req, String(a.code ?? ''), String(a.package ?? 'COMMON-LISP-USER'));
       case 'clamps/bindForInspector':
         return this.bindForInspector(req, String(a.expression ?? ''), a.frameId);
       case 'clamps/bindCondition':
@@ -352,50 +354,77 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
   }
 
+  /** Parameternamen von eval-string-in-frame in DIESEM Image. */
+  private frameEvalParams: string[] = ['string', 'frame', 'package'];
+
   /**
-   * Fragt die Lambda-Liste von eval-string-in-frame ab und zählt die
-   * Pflichtargumente. operator-arglist ist eine reine Auskunft und kann
-   * selbst nicht in den Debugger laufen.
+   * Ermittelt die echte Lambda-Liste von eval-string-in-frame.
+   *
+   * Nicht über swank:operator-arglist — das ist für die Anzeige gedacht
+   * und lässt &optional weg, wodurch fünf Pflichtargumente vorgetäuscht
+   * werden. sb-introspect liefert die tatsächliche Liste.
    */
   private async probeFrameEvalArity(): Promise<void> {
     try {
       const r = await this.swank.rex(
-        '(swank:operator-arglist "swank:eval-string-in-frame" "COMMON-LISP-USER")',
+        '(swank:eval-and-grab-output ' +
+          '"(sb-introspect:function-lambda-list (quote swank:eval-string-in-frame))")',
         this.swank.packageName, new Sym('t'), 8000
       );
-      const arglist = text(r);
-      if (arglist) {
-        // z.B. "(eval-string-in-frame string frame package)" oder
-        // "(eval-string-in-frame string frame)"
-        const inner = arglist.replace(/^\(|\)$/g, '').trim().split(/\s+/);
-        const params = inner.slice(1).filter(p => !p.startsWith('&'));
-        // Obergrenze grosszügig: SLIME 2.32 hat hier fünf Parameter
-        // (string frame package lines width). Eine zu enge Grenze liess
-        // die Probe auf den Vorgabewert zurückfallen — also genau auf
-        // die Zahl, die den Arity-Fehler erzeugte.
-        if (params.length >= 2 && params.length <= 8) {
-          this.frameEvalArity = params.length;
-        }
-        this.event('output', {
-          output: `eval-string-in-frame ${arglist} — ${this.frameEvalArity} Argumente\n`,
-          category: 'console',
-        });
+      // (ausgabe wert) — der Wert ist die gedruckte Lambda-Liste
+      const parts = asList(r);
+      // ACHTUNG: function-lambda-list liefert ZWEI Werte (Liste und ein
+      // Flag), und eval-and-grab-output druckt beide untereinander. Ohne
+      // die erste Zeile herauszuschneiden zählt das angehängte NIL als
+      // zusätzlicher Parameter mit.
+      const raw = (text(parts[1]) || text(r)).trim();
+      const arglist = raw.split(/[\r\n]+/)[0].trim();
+      if (!arglist) return;
+
+      const tokens = arglist.replace(/^\(|\)$/g, '').trim().split(/\s+/);
+      const required: string[] = [];
+      for (const t of tokens) {
+        if (t.startsWith('&')) break; // &optional / &rest / &key
+        if (!t) continue;
+        // Paketpräfix abstreifen: swank::frame -> frame
+        required.push(t.toLowerCase().replace(/^[^:]*::?/, ''));
       }
+      if (required.length >= 2) {
+        this.frameEvalParams = required;
+        this.frameEvalArity = required.length;
+      }
+      this.event('output', {
+        output:
+          `eval-string-in-frame ${arglist} — ` +
+          `${this.frameEvalArity} Pflichtargumente (${this.frameEvalParams.join(', ')})\n`,
+        category: 'console',
+      });
     } catch (e) {
       this.event('output', {
-        output: `Stelligkeit von eval-string-in-frame nicht ermittelbar (${e}); nehme 3 an.\n`,
+        output: `Lambda-Liste von eval-string-in-frame nicht ermittelbar (${e}); nehme 3 an.\n`,
         category: 'stderr',
       });
     }
   }
 
-  /** Aufrufform für eine Auswertung im Frame, passend zur Stelligkeit. */
+  /**
+   * Aufrufform für eine Auswertung im Frame.
+   *
+   * Nach Parameternamen befüllt, nicht nach Position: lines und width
+   * sind Druckparameter und wollen Zahlen. Mit nil aufgefüllt quittierte
+   * Lisp mit "The value nil is not of type number".
+   */
   private frameEvalForm(expression: string, frameId: number): string {
-    // Die ersten drei Argumente sind über die Versionen hinweg gleich;
-    // was darüber hinaus verlangt wird (lines, width), bekommt nil.
-    const args: string[] = [JSON.stringify(expression), String(frameId)];
-    if (this.frameEvalArity >= 3) args.push(JSON.stringify(this.swank.packageName));
-    while (args.length < this.frameEvalArity) args.push('nil');
+    const byName: Record<string, string> = {
+      string: JSON.stringify(expression),
+      frame: String(frameId),
+      package: JSON.stringify(this.swank.packageName),
+      lines: '10',
+      width: '80',
+      'print-right-margin': '80',
+      'print-lines': '10',
+    };
+    const args = this.frameEvalParams.map(p => byName[p] ?? 'nil');
     return `(swank:eval-string-in-frame ${args.join(' ')})`;
   }
 
@@ -749,7 +778,15 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       const forms =
         state && frameId !== undefined ? [expression] : splitTopLevelForms(expression);
       const chunks: string[] = [];
-      for (const single of forms.length > 1 ? forms : [expression]) {
+      for (const raw of forms.length > 1 ? forms : [expression]) {
+        // Hover-Auswertungen in ignore-errors kapseln.
+        //
+        // VS Code schickt bei eingeschaltetem supportsEvaluateForHovers
+        // ALLES, worüber die Maus fährt — auch Dateinamen und Kommentar-
+        // wörter. Jeder Fehlschlag öffnete eine neue Debugger-Ebene;
+        // beim Überfahren von swank.lisp stapelten sich so binnen
+        // Sekunden mehrere Ebenen, bis das Image nicht mehr antwortete.
+        const single = context === 'hover' ? `(ignore-errors ${raw})` : raw;
         const one =
           state && frameId !== undefined
             ? this.frameEvalForm(single, frameId)
@@ -779,11 +816,29 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       this.respond(req, {
         // Leeres Ergebnis sichtbar machen: sonst ist "erfolgreich, aber
         // kein Wert" von "gar keine Antwort" nicht zu unterscheiden.
-        result: rendered === '' ? '; kein Wert' : rendered,
+        // Beim Hover bleibt es leer, sonst klebt an jedem Wort ein
+        // Tooltip mit "kein Wert".
+        result: rendered === '' ? (context === 'hover' ? '' : '; kein Wert') : rendered,
         variablesReference: 0,
         presentationHint: context === 'hover' ? { kind: 'property' } : undefined,
       });
     } catch (e) {
+      // Ein aufgerufener Restart bricht die laufende Auswertung ab —
+      // Swank antwortet dann mit (:abort …). Das ist der gewollte
+      // Ausgang und keine Störung.
+      if (/:abort/i.test(String(e))) {
+        this.respond(req, {
+          result: '; Auswertung durch Restart abgebrochen',
+          variablesReference: 0,
+        });
+        return;
+      }
+      if (context === 'hover') {
+        // Ein fehlgeschlagener Hover ist kein Ereignis, über das der
+        // Nutzer informiert werden will.
+        this.respond(req, { result: '', variablesReference: 0 });
+        return;
+      }
       // Die gesendete Form gehört in die Meldung — ohne sie bleibt bei
       // einem Protokollproblem nur Raten.
       this.fail(req, 1003, `${e}\n  gesendet: ${this.lastForm}`);
@@ -912,6 +967,60 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       return;
     }
     return this.invokeRestart(req, idx);
+  }
+
+  /**
+   * Auswertung für das CLAMPS-REPL-Terminal über DIESE Verbindung.
+   *
+   * Der Sinn: Fehler aus der REPL sollen den Debugger öffnen. Über die
+   * Bridge geht das nicht — dort fängt eval-for-repl jede Condition ab,
+   * und selbst ohne das könnte die Bridge ein :debug-Ereignis nicht
+   * weiterreichen. Läuft die Auswertung dagegen über den Debug-Socket,
+   * kommt das Ereignis hier an und VS Code öffnet den Debugger.
+   *
+   * Ohne Frist: tritt der Debugger auf den Plan, antwortet Swank erst,
+   * wenn ein Restart gewählt wurde. Das kann beliebig lange dauern und
+   * ist kein Fehler.
+   */
+  private async replEval(req: DapRequest, code: string, pkg: string): Promise<void> {
+    if (!code.trim()) {
+      this.respond(req, { status: 'ok', output: '', package: pkg });
+      return;
+    }
+    try {
+      // Frist NICHT abschalten: öffnet sich der Debugger, wird sie in
+      // onDebug ohnehin gelöscht (clearTimeouts) und die Anfrage darf
+      // beliebig lange offen bleiben. Bleibt dagegen eine Antwort ohne
+      // Debugger aus — etwa weil die Funktion im laufenden Image fehlt —
+      // hängt sonst die REPL stumm.
+      const r = await this.swank.rex(
+        `(clamps-bridge-rpc:eval-for-repl-debuggable ${JSON.stringify(code)} ${JSON.stringify(pkg)})`,
+        pkg, new Sym('t'), 15000
+      );
+      const parts = asList(r);
+      this.respond(req, {
+        status: 'ok',
+        output: text(parts[1]),
+        package: text(parts[2]) || pkg,
+      });
+    } catch (e) {
+      // Ein Restart, der abbricht, beendet die Auswertung mit (:abort …).
+      const msg = String(e);
+      const aborted = /:abort/i.test(msg);
+      const timedOut = /Keine Antwort von Swank/.test(msg);
+      this.respond(req, {
+        status: aborted ? 'aborted' : 'error',
+        output: aborted
+          ? '; durch Restart abgebrochen'
+          : timedOut
+            ? msg +
+              '\n; Prüfe, ob das laufende Image die Funktion kennt:\n' +
+              ";   (fboundp 'clamps-bridge-rpc::eval-for-repl-debuggable)\n" +
+              '; Kommt NIL, hilft „CLAMPS: Restart“.'
+            : msg,
+        package: pkg,
+      });
+    }
   }
 
   private pause(req: DapRequest, threadId: number): void {
