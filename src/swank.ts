@@ -200,6 +200,66 @@ export function plistGet(list: SExpr | undefined, key: string): SExpr | undefine
 export const asList = (x: SExpr | undefined): SExpr[] =>
   Array.isArray(x) ? x : [];
 
+/**
+ * Zerlegt einen Text in seine Top-Level-Formen.
+ *
+ * Nötig, weil swank:eval-and-grab-output nur die ERSTE Form liest.
+ * Schickt man zwei Formen als einen Block, läuft stillschweigend nur
+ * die erste — ein Fehler, der wie "es passiert nichts" aussieht.
+ * Berücksichtigt Strings, Zeichenliterale (#\( zählt nicht), Zeilen-
+ * und Blockkommentare.
+ */
+export function splitTopLevelForms(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0, start = -1, i = 0;
+  let inString = false, blockDepth = 0;
+
+  const flush = (end: number) => {
+    if (start >= 0) {
+      const piece = text.slice(start, end).trim();
+      if (piece) out.push(piece);
+    }
+    start = -1;
+  };
+
+  while (i < text.length) {
+    const c = text[i];
+
+    if (inString) {
+      if (c === '\\') i += 2;
+      else { if (c === '"') inString = false; i++; }
+      continue;
+    }
+    if (blockDepth > 0) {
+      if (c === '|' && text[i + 1] === '#') { blockDepth--; i += 2; continue; }
+      if (c === '#' && text[i + 1] === '|') { blockDepth++; i += 2; continue; }
+      i++;
+      continue;
+    }
+    if (c === '#' && text[i + 1] === '\\') {
+      if (start < 0) start = i;
+      i += 3;
+      continue;
+    }
+    if (c === '#' && text[i + 1] === '|') { blockDepth++; i += 2; continue; }
+    if (c === ';') { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (/\s/.test(c)) { if (depth === 0 && start >= 0) flush(i); i++; continue; }
+
+    if (start < 0) start = i;
+    if (c === '"') { inString = true; i++; continue; }
+    if (c === '(') { depth++; i++; continue; }
+    if (c === ')') {
+      depth--;
+      i++;
+      if (depth <= 0) { depth = 0; flush(i); }
+      continue;
+    }
+    i++;
+  }
+  flush(text.length);
+  return out;
+}
+
 // ---------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------
@@ -213,6 +273,7 @@ export class SwankError extends Error {
 interface Pending {
   resolve: (x: SExpr) => void;
   reject: (e: unknown) => void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export class SwankClient extends EventEmitter {
@@ -279,10 +340,11 @@ export class SwankClient extends EventEmitter {
         : undefined;
 
       const done = (fn: (x: any) => void) => (x: any) => {
-        if (timer) clearTimeout(timer);
+        const p = this.pending.get(id);
+        if (p?.timer) clearTimeout(p.timer);
         fn(x);
       };
-      this.pending.set(id, { resolve: done(resolve), reject: done(reject) });
+      this.pending.set(id, { resolve: done(resolve), reject: done(reject), timer });
       try {
         this.send(`(:emacs-rex ${form} ${JSON.stringify(pkg)} ${printSexpr(thread)} ${id})`);
       } catch (e) {
@@ -291,6 +353,30 @@ export class SwankClient extends EventEmitter {
         reject(e);
       }
     });
+  }
+
+  /**
+   * Alle laufenden Fristen abschalten.
+   *
+   * Sobald der Lisp-Debugger offen ist, antwortet Swank auf die
+   * auslösende Anfrage absichtlich nicht — sie bleibt hängen, bis ein
+   * Restart aufgerufen wird. Ohne diesen Aufruf meldet der Timeout dann
+   * fälschlich einen Fehler, obwohl alles seinen Gang geht.
+   */
+  clearTimeouts(): void {
+    for (const p of this.pending.values()) {
+      if (p.timer) {
+        clearTimeout(p.timer);
+        p.timer = undefined;
+      }
+    }
+  }
+
+  /** Antwort auf ein :read-string — sonst wartet das Image ewig. */
+  emacsReturnString(thread: SExpr, tag: SExpr | undefined, value: string): void {
+    this.send(
+      `(:emacs-return-string ${printSexpr(thread)} ${printSexpr(tag ?? 1)} ${JSON.stringify(value)})`
+    );
   }
 
   interrupt(thread: SExpr = new Sym('t')): void {
