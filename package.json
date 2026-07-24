@@ -196,6 +196,11 @@
           "type": "boolean",
           "default": false,
           "description": "Schreibt den rohen Swank-Verkehr der Debug-Session in die Debug-Konsole. Nur zur Fehlersuche."
+        },
+        "clamps.replUsesDebugger": {
+          "type": "boolean",
+          "default": false,
+          "description": "Wertet REPL-Eingaben über die Verbindung des Debug-Adapters aus, damit Fehler den Lisp-Debugger öffnen. Experimentell — ohne angehängten Debugger ohne Wirkung."
         }
       }
     },

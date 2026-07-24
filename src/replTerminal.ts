@@ -165,7 +165,11 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.write('Dieselbe laufende SBCL-/Swank-Session wie der Editor.\r\n');
     this.write('Enter: auswerten (unvollständige Formen laufen weiter) · Ctrl+J: neue Zeile\r\n');
     this.write('Ctrl+L: leeren · Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n');
-    this.write('Bei angehängtem Debugger öffnen Fehler den Lisp-Debugger.\r\n\r\n');
+    if (vscode.workspace.getConfiguration('clamps').get<boolean>('replUsesDebugger', false)) {
+      this.write('Bei angehängtem Debugger öffnen Fehler den Lisp-Debugger.\r\n\r\n');
+    } else {
+      this.write('\r\n');
+    }
     this.opened = true;
     this.renderInput();
   }
@@ -327,6 +331,13 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
    * Text, die REPL läuft weiter.
    */
   private get debugSession(): vscode.DebugSession | undefined {
+    // Standardmäßig AUS. Die Umleitung ist der jüngste und am wenigsten
+    // erprobte Teil; sie soll den stabilen Rest nicht mitreißen können.
+    // Einschalten über clamps.replUsesDebugger.
+    const enabled = vscode.workspace
+      .getConfiguration('clamps')
+      .get<boolean>('replUsesDebugger', false);
+    if (!enabled) return undefined;
     const s = vscode.debug.activeDebugSession;
     return s && s.type === 'clamps' ? s : undefined;
   }

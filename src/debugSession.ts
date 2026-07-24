@@ -786,7 +786,12 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         // wörter. Jeder Fehlschlag öffnete eine neue Debugger-Ebene;
         // beim Überfahren von swank.lisp stapelten sich so binnen
         // Sekunden mehrere Ebenen, bis das Image nicht mehr antwortete.
-        const single = context === 'hover' ? `(ignore-errors ${raw})` : raw;
+        // (values ...) drumherum kappt den zweiten Rückgabewert:
+        // ignore-errors liefert bei einem Fehler nil UND das
+        // Condition-Objekt, was im Tooltip als
+        // "nil, #<unbound-variable rpc …>" landete.
+        const single =
+          context === 'hover' ? `(values (ignore-errors ${raw}))` : raw;
         const one =
           state && frameId !== undefined
             ? this.frameEvalForm(single, frameId)

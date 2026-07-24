@@ -311,7 +311,24 @@ async function startLanguageClient(bridgePath: string): Promise<void> {
     // automatischen Neustart.
     errorHandler: {
       error: () => ({ action: ErrorAction.Continue }),
-      closed: () => ({ action: CloseAction.DoNotRestart }),
+      closed: () => {
+        // Kein automatischer Neustart: das läuft über clamps.restart.
+        // Die Standardmeldung des Clients ("Server will not be
+        // restarted") verrät aber nicht, was passiert ist und was hilft
+        // — und passiert regelmäßig, weil die Bridge sich beendet,
+        // sobald das Lisp-Image weg ist.
+        void vscode.window
+          .showWarningMessage(
+            'Die CLAMPS-Bridge wurde beendet — meist, weil das Lisp-Image ' +
+              'nicht mehr läuft. Completion, Go-to-Definition, Inspector und ' +
+              'DSP-Anzeige sind damit inaktiv.',
+            'CLAMPS neu starten'
+          )
+          .then(choice => {
+            if (choice) void vscode.commands.executeCommand('clamps.restart');
+          });
+        return { action: CloseAction.DoNotRestart };
+      },
     },
   };
 
