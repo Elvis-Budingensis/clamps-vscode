@@ -26,7 +26,11 @@
     "onCommand:clamps.debugAttach",
     "onView:clamps.incudineNodes",
     "onCommand:clamps.incudineRefresh",
-    "onCommand:clamps.incudineInspectNode"
+    "onCommand:clamps.incudineInspectNode",
+    "onView:clamps.packages",
+    "onView:clamps.classes",
+    "onView:clamps.threads",
+    "onCommand:clamps.compileDiagnostics"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -42,6 +46,11 @@
       {
         "command": "clamps.restart",
         "title": "CLAMPS: Restart"
+      },
+      {
+        "command": "clamps.openLog",
+        "title": "CLAMPS: Protokoll öffnen (SBCL-Ausgabe)",
+        "category": "CLAMPS"
       },
       {
         "command": "clamps.openRepl",
@@ -135,6 +144,29 @@
       {
         "command": "clamps.checkBalance",
         "title": "CLAMPS: Klammern prüfen"
+      },
+      {
+        "command": "clamps.packagesRefresh",
+        "title": "CLAMPS: Pakete aktualisieren",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.classesRefresh",
+        "title": "CLAMPS: Klassen aktualisieren",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.threadsRefresh",
+        "title": "CLAMPS: Threads aktualisieren",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.inspectBrowserItem",
+        "title": "CLAMPS: Browser-Eintrag inspizieren"
+      },
+      {
+        "command": "clamps.compileDiagnostics",
+        "title": "CLAMPS: Compiler-Diagnostics aktualisieren"
       }
     ],
     "languages": [
@@ -241,6 +273,11 @@
           "type": "boolean",
           "default": true,
           "description": "Öffnet das CLAMPS-REPL-Terminal automatisch, sobald CLAMPS gestartet ist."
+        },
+        "clamps.compilerDiagnosticsOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Kompiliert gespeicherte Lisp-Dateien über Swank und zeigt Compiler-Notes als Problems/Diagnostics an."
         }
       }
     },
@@ -288,12 +325,32 @@
           "command": "clamps.incudineRefresh",
           "when": "view == clamps.incudineNodes",
           "group": "navigation"
+        },
+        {
+          "command": "clamps.packagesRefresh",
+          "when": "view == clamps.packages",
+          "group": "navigation"
+        },
+        {
+          "command": "clamps.classesRefresh",
+          "when": "view == clamps.classes",
+          "group": "navigation"
+        },
+        {
+          "command": "clamps.threadsRefresh",
+          "when": "view == clamps.threads",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
         {
           "command": "clamps.incudineInspectNode",
           "when": "view == clamps.incudineNodes && viewItem == incudineNode"
+        },
+        {
+          "command": "clamps.inspectBrowserItem",
+          "when": "viewItem == clampsInspectable",
+          "group": "navigation"
         }
       ]
     },
@@ -311,6 +368,18 @@
         {
           "id": "clamps.incudineNodes",
           "name": "Incudine Nodes"
+        },
+        {
+          "id": "clamps.packages",
+          "name": "Pakete"
+        },
+        {
+          "id": "clamps.classes",
+          "name": "Klassen"
+        },
+        {
+          "id": "clamps.threads",
+          "name": "Threads"
         }
       ]
     }
@@ -318,7 +387,10 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "check": "python3 lisp/check.py",
+    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js",
+    "gates": "npm run check && npm run compile && npm test"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

@@ -22,3 +22,15 @@ keinen zweiten Queue-Eintrag aus einem bereits laufenden Queue-Eintrag ein.
 Außerdem wird ein LanguageClient im Zustand `Starting` erst nach Abschluss des
 Startversuchs gestoppt. Damit wird der Fehler
 `Client is not running and can't be stopped ... state is: starting` vermieden.
+
+## Neue Image-Werkzeuge
+
+- **Stepping:** VS Codes Step Into/Over/Out ruft `swank:sldb-step`,
+  `swank:sldb-next` und `swank:sldb-out` auf. Der betreffende Lisp-Code
+  muss mit hoher Debug-Qualitaet kompiliert sein, etwa mit
+  `(declaim (optimize (debug 3) (speed 0) (safety 3)))`.
+- **Compiler-Diagnostics:** Beim Speichern einer Lisp-Datei werden Swanks
+  Compiler-Notes in VS Codes Problems-Ansicht uebernommen. Abschaltbar
+  mit `clamps.compilerDiagnosticsOnSave`.
+- **Image-Browser:** Die CLAMPS-Seitenleiste enthaelt nun Pakete, Klassen
+  und Threads. Ein Klick uebergibt den Eintrag an den Objekt-Inspector.

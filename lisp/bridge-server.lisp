@@ -862,6 +862,90 @@
          (send-response id (make-jobj
                             "output" (format nil "Untrace fehlgeschlagen: ~A" value)))))))
 
+
+
+(defun browser-entry-json (entry)
+  (make-jobj "label" (or (getf entry :label) "")
+             "description" (or (getf entry :description) "")
+             "tooltip" (or (getf entry :tooltip) "")
+             "icon" (or (getf entry :icon) "symbol-misc")
+             "inspect" (or (getf entry :inspect) "")
+             "children" (coerce (mapcar #'browser-entry-json (or (getf entry :children) nil)) 'vector)))
+
+(defun handle-image-browser (id form)
+  (swank-rex form :callback
+    (lambda (status value)
+      (if (and (eq status :ok) (consp value))
+          (let ((ok (eq (first value) :ok))
+                (payload (second value)))
+            (send-response id
+              (make-jobj "available" (if ok :true :false)
+                         "error" (if ok "" (or payload "Nicht verfügbar."))
+                         "entries" (if ok
+                                       (coerce (mapcar #'browser-entry-json (or payload nil)) 'vector)
+                                       (vector)))))
+          (send-response id (make-jobj "available" :false "error" (format nil "~A" value) "entries" (vector)))))))
+
+(defun handle-packages (id params) (declare (ignore params))
+  (handle-image-browser id "(clamps-bridge-rpc:packages-for-repl)"))
+(defun handle-classes (id params) (declare (ignore params))
+  (handle-image-browser id "(clamps-bridge-rpc:classes-for-repl)"))
+(defun handle-threads-browser (id params) (declare (ignore params))
+  (handle-image-browser id "(clamps-bridge-rpc:threads-for-repl)"))
+
+(defun plist-value (plist key &optional default)
+  (let ((tail (member key plist :test #'eq))) (if tail (second tail) default)))
+
+(defun location-line-character (location)
+  "Best effort für Swank-Locations. Unbekannte Formen bleiben bei 0:0."
+  (let ((line 0) (character 0))
+    (labels ((walk (x)
+               (when (consp x)
+                 (cond
+                   ((eq (car x) :line)
+                    (let ((v (cdr x)))
+                      (when (numberp (first v)) (setf line (max 0 (1- (first v)))))
+                      (when (numberp (second v)) (setf character (max 0 (second v))))))
+                   ((eq (car x) :position)
+                    ;; Positionsangaben sind Zeichenoffsets; ohne Textbezug
+                    ;; ist 0:0 ehrlicher als eine falsche Zeile.
+                    nil))
+                 (dolist (e x) (walk e)))))
+      (walk location))
+    (values line character)))
+
+(defun handle-compiler-notes (id params)
+  (let* ((text (or (gethash "text" params) ""))
+         (file (or (gethash "file" params) "buffer.lisp"))
+         (uri (or (gethash "uri" params) file))
+         (pkg "COMMON-LISP-USER")
+         (form (format nil
+                       "(let ((*package* (or (find-package :common-lisp-user) *package*))) (swank:compile-string-for-emacs ~S ~S '((:position 0) (:line 1 0)) ~S nil))"
+                       text uri file)))
+    (swank-rex form :package pkg :callback
+      (lambda (status value)
+        (if (and (eq status :ok) (consp value))
+            (let* ((notes (or (plist-value value :notes) nil))
+                   (success (plist-value value :successp))
+                   (duration (or (plist-value value :duration) 0.0)))
+              (send-response id
+                (make-jobj "success" (if success :true :false)
+                           "duration" duration
+                           "notes"
+                           (coerce
+                            (mapcar
+                             (lambda (note)
+                               (multiple-value-bind (line character)
+                                   (location-line-character (plist-value note :location))
+                                 (make-jobj "message" (or (plist-value note :message) "Compiler-Hinweis")
+                                            "severity" (string-downcase (string (or (plist-value note :severity) :note)))
+                                            "line" line "character" character)))
+                             notes)
+                            'vector))))
+            (send-response id
+              (make-jobj "success" :false "duration" 0 "notes" (vector)
+                         "error" (format nil "~A" value))))))))
+
 (defun handle-request (msg)
   (let ((method (gethash "method" msg))
         (id (gethash "id" msg))
@@ -886,6 +970,10 @@
           ((string= method "clamps/inspectRelease") (handle-inspect-release id params))
           ((string= method "clamps/rtStatus") (handle-rt-status id params))
           ((string= method "clamps/incudineNodes") (handle-incudine-nodes id params))
+          ((string= method "clamps/packages") (handle-packages id params))
+          ((string= method "clamps/classes") (handle-classes id params))
+          ((string= method "clamps/threads") (handle-threads-browser id params))
+          ((string= method "clamps/compilerNotes") (handle-compiler-notes id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))

@@ -4,11 +4,18 @@
 // damit VS Codes eingebaute Oberfläche (Aufrufliste, Variablen, Threads)
 // benutzt werden kann, statt sie als Webview nachzubauen.
 //
-// Bewusste Auslassung: Stepping. SBCL-Stepping über :swank-stepper
-// verlangt hoch gesetzte Debug-Qualität beim Kompilieren und ein
-// Contrib, das in einem CLAMPS-Image typischerweise nicht geladen ist.
-// Ein Schrittknopf, der still nichts tut, ist schlechter als keiner —
-// die Step-Anfragen werden daher mit klarer Begründung abgelehnt.
+// Stepping: angeboten, aber nur wo es möglich ist. Ob geschritten werden
+// kann, verrät die Restart-Liste der Ebene — ohne CONTINUE-Restart
+// weigert sich swank:sldb-step, und weil der Aufruf im angehaltenen
+// Thread läuft, würde daraus eine neue Debugger-Ebene statt einer
+// Fehlermeldung (canStep). Schlägt der Schritt trotzdem fehl, etwa weil
+// der Code mit debug 0 kompiliert ist, holt resyncStopped die
+// Oberfläche zurück in den angehaltenen Zustand, statt sie auf "läuft"
+// stehen zu lassen.
+//
+// Zustand wird PRO THREAD geführt: bei Stil :spawn hat jede Auswertung
+// ihren eigenen Worker, und mehrere können gleichzeitig in je eigenen
+// SLDB-Ebenen stehen. Siehe `stacks`.
 //
 // Ebenfalls bewusst: der Inspector wird NICHT hier nachgebaut. Ein Wert
 // wird an ein frisch erzeugtes Symbol in CL-USER gebunden, und der
@@ -16,9 +23,10 @@
 // ein Inspector-Modell statt zwei, und die Objektidentität bleibt.
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import {
   SwankClient, SExpr, Sym, text, isSym, isNil, asList, plistGet, printSexpr,
-  splitTopLevelForms,
+  splitTopLevelForms, lispString, hoverCandidate,
 } from './swank';
 
 export interface DapRequest {
@@ -34,15 +42,34 @@ interface Restart {
   description: string;
 }
 
-/** Ein Debugger-Level. Verschachtelte Debugger stapeln sich. */
+interface FrameSource {
+  path?: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * Ein Debugger-Level.
+ *
+ * Frame-IDs, Quellorte und Variablen-Referenzen gehören AN die Ebene,
+ * nicht an die Session: bei Kommunikationsstil :spawn bekommt jede
+ * Auswertung einen eigenen Worker, also stehen mehrere Threads
+ * gleichzeitig in je eigenen SLDB-Ebenen — und deren Frame-IDs zählen
+ * unabhängig voneinander ab 0. Global gehalten überschreiben sie sich
+ * gegenseitig.
+ */
 interface DebugLevel {
   thread: SExpr;
+  /** Numerische ID, die gegenüber VS Code für diesen Thread gilt. */
+  threadId: number;
   level: number;
   condition: string;
   conditionType: string;
   restarts: Restart[];
   frames: SExpr[];
   selectedFrame: number;
+  frameSources: Map<number, FrameSource>;
+  varRefs: number[];
 }
 
 export class ClampsDebugSession implements vscode.DebugAdapter {
@@ -83,12 +110,37 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   private frameEvalArity = 3;
 
   /**
-   * Stapel der Debugger-Ebenen. Der Prototyp hatte nur einen Zustand;
-   * ein Fehler im Debugger (rekursiver Debugger) hätte den äußeren
-   * überschrieben und beim Verlassen einen inkonsistenten Zustand
-   * hinterlassen.
+   * Debugger-Ebenen, gestapelt PRO THREAD.
+   *
+   * Ein einzelner Stapel war falsch. Bei Kommunikationsstil :spawn —
+   * dem Normalfall in einem CLAMPS-Image — bearbeitet jede Auswertung
+   * ein eigener Worker-Thread, und jeder kann unabhängig in SLDB
+   * stehen. Drei gleichzeitig offene Debugger in drei Threads sind
+   * nichts Ungewöhnliches, sondern der Alltag, wenn man in der REPL
+   * mehrere Fehler nacheinander auslöst, ohne sie abzuräumen.
+   *
+   * Mit einem Stapel überschrieb der jüngste Debugger die anderen, und
+   * `:debug-return` eines Threads räumte die Ebenen aller anderen
+   * gleich mit weg. Genau das ist passiert.
+   *
+   * Schlüssel ist die gedruckte Thread-Bezeichnung, weil Swank sie in
+   * jeder Nachricht so mitschickt.
    */
-  private levels: DebugLevel[] = [];
+  private readonly stacks = new Map<string, DebugLevel[]>();
+
+  /**
+   * Thread, auf den sich frameId-behaftete Anfragen beziehen.
+   *
+   * DAP nennt bei `scopes` und `evaluate` nur eine frameId, keinen
+   * Thread. VS Code fragt aber immer erst `stackTrace` für den Thread,
+   * den es anzeigt — dort wird dieser Zeiger gesetzt.
+   */
+  private activeThread = '';
+
+  /** Zuordnung numerische DAP-Thread-ID -> Schlüssel in stacks. */
+  private readonly threadKeys = new Map<number, string>();
+  /** Vergeben für Threads, deren Bezeichner keine Zahl ist. */
+  private nextSyntheticThreadId = 900001;
 
   private variableSets = new Map<number, vscode.DebugProtocolMessage[]>();
   private nextVarRef = 1;
@@ -97,17 +149,6 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   /** Hinweis auf den offenen Debugger nur einmal pro Ebene zeigen. */
   private warnedAboutOpenDebugger = false;
   private threadMap = new Map<number, SExpr>();
-
-  /**
-   * Thread-ID, die gegenüber VS Code als angehalten gemeldet wird.
-   *
-   * Muss zwingend in der Antwort auf `threads` vorkommen — sonst findet
-   * VS Code den angehaltenen Thread nicht und zeigt gar keine
-   * Aufrufliste. Genau das war der Grund, warum sich der Backtrace nicht
-   * aufklappen liess: hier stand fest 1, während `threads` die echten
-   * Lisp-IDs lieferte.
-   */
-  private stoppedThreadId = 1;
 
   constructor(
     private readonly port: number,
@@ -167,12 +208,128 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     });
   }
 
+  // ------------------------------------------------------------------
+  // Zugriff auf die Thread-Stapel
+  // ------------------------------------------------------------------
+
+  /** Ebenen des Threads, auf den sich die laufende Anfrage bezieht. */
+  private get levels(): DebugLevel[] {
+    return this.stacks.get(this.activeThread) ?? [];
+  }
+
+  /** Innerste Ebene dieses Threads. */
   private get top(): DebugLevel | undefined {
-    return this.levels[this.levels.length - 1];
+    const s = this.levels;
+    return s[s.length - 1];
   }
 
   private get thread(): SExpr {
     return this.top?.thread ?? new Sym('t');
+  }
+
+  /** Thread-ID, die gegenüber VS Code als angehalten gemeldet wird. */
+  private get stoppedThreadId(): number {
+    return this.top?.threadId ?? 1;
+  }
+
+  /** Steht IRGENDEIN Thread im Debugger? */
+  private get anyLevel(): boolean {
+    for (const s of this.stacks.values()) if (s.length > 0) return true;
+    return false;
+  }
+
+  /**
+   * Numerische DAP-ID für eine Thread-Bezeichnung.
+   *
+   * Bei :spawn ist der Bezeichner eine Zahl und wird direkt genommen —
+   * so meinen `threads` und `stopped` denselben Thread. Nur für den
+   * Sonderfall `t` (Stil :sigio, ein Thread) wird eine ID erfunden.
+   */
+  private threadIdFor(thread: SExpr, key: string): number {
+    if (typeof thread === 'number') {
+      this.threadKeys.set(thread, key);
+      return thread;
+    }
+    for (const [id, k] of this.threadKeys) if (k === key) return id;
+    const id = this.nextSyntheticThreadId++;
+    this.threadKeys.set(id, key);
+    return id;
+  }
+
+  /**
+   * Setzt activeThread auf den Thread mit dieser DAP-ID. Rückgabe sagt,
+   * ob dort überhaupt ein Debugger steht.
+   */
+  private focusThread(threadId: number | undefined): boolean {
+    if (threadId === undefined) return this.levels.length > 0;
+    const key = this.threadKeys.get(threadId);
+    if (key !== undefined && (this.stacks.get(key)?.length ?? 0) > 0) {
+      this.activeThread = key;
+      return true;
+    }
+    return this.levels.length > 0;
+  }
+
+  /** Nach dem Verlassen eines Stapels auf einen noch offenen umschalten. */
+  private focusAnyOpen(): void {
+    if (this.levels.length > 0) return;
+    for (const [key, s] of this.stacks) {
+      if (s.length > 0) {
+        this.activeThread = key;
+        return;
+      }
+    }
+  }
+
+  /** Variablen-Referenzen einer verlassenen Ebene freigeben. */
+  private dropLevel(level: DebugLevel): void {
+    for (const ref of level.varRefs) this.variableSets.delete(ref);
+    level.frameSources.clear();
+  }
+
+  // --- Frame-IDs ------------------------------------------------------
+  //
+  // DAP verlangt Frame-IDs, die über ALLE Threads eindeutig sind. Lisp
+  // zählt sie dagegen pro Thread ab 0. Ohne Kodierung bezeichnete
+  // frameId 0 drei verschiedene Frames, und `scopes` hätte nur über die
+  // Aufrufreihenfolge (stackTrace zuerst) erraten können, welcher
+  // gemeint ist — was bei zwei aufgeklappten Threads schiefgeht.
+
+  private readonly threadSlots = new Map<string, number>();
+  private nextSlot = 1;
+  private static readonly FRAME_SPAN = 100000;
+
+  private slotFor(key: string): number {
+    let slot = this.threadSlots.get(key);
+    if (slot === undefined) {
+      slot = this.nextSlot++;
+      this.threadSlots.set(key, slot);
+    }
+    return slot;
+  }
+
+  private encodeFrame(key: string, frame: number): number {
+    return this.slotFor(key) * ClampsDebugSession.FRAME_SPAN + frame;
+  }
+
+  /**
+   * Zerlegt eine DAP-Frame-ID und setzt activeThread auf den zugehörigen
+   * Thread. Rückgabe ist die echte Lisp-Frame-Nummer.
+   */
+  private decodeFrame(dapFrameId: number | undefined): number | undefined {
+    if (dapFrameId === undefined || !Number.isFinite(dapFrameId)) return undefined;
+    const span = ClampsDebugSession.FRAME_SPAN;
+    const slot = Math.floor(dapFrameId / span);
+    const frame = dapFrameId % span;
+    if (slot > 0) {
+      for (const [key, s] of this.threadSlots) {
+        if (s === slot && (this.stacks.get(key)?.length ?? 0) > 0) {
+          this.activeThread = key;
+          break;
+        }
+      }
+    }
+    return frame;
   }
 
   // ------------------------------------------------------------------
@@ -242,7 +399,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
           supportsExceptionInfoRequest: true,
           supportsRestartFrame: true,
           supportsDelayedStackTraceLoading: true,
-          // Kein supportsStepBack, kein Stepping: siehe Kopfkommentar.
+          supportsStepInTargetsRequest: false,
+          supportsSteppingGranularity: false,
           exceptionBreakpointFilters: [],
         });
         this.event('initialized');
@@ -252,24 +410,23 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       case 'configurationDone': this.respond(req); return;
       case 'disconnect':      return this.disconnect(req);
       case 'threads':         return this.threads(req);
-      case 'stackTrace':      return this.stackTrace(req, a.startFrame ?? 0, a.levels ?? 200);
+      case 'stackTrace':      return this.stackTrace(req, a.threadId, a.startFrame ?? 0, a.levels ?? 200);
       case 'scopes':          return this.scopes(req, a.frameId);
       case 'variables':       this.respond(req, { variables: this.variableSets.get(a.variablesReference) ?? [] }); return;
-      case 'evaluate':        return this.evaluate(req, String(a.expression ?? ''), a.frameId, a.context);
+      // frameId wird hier dekodiert: alles dahinter rechnet mit echten
+      // Lisp-Frame-Nummern, und das Dekodieren richtet gleich den
+      // Thread-Fokus auf den Frame, den VS Code meint.
+      case 'evaluate':        return this.evaluate(
+                                req, String(a.expression ?? ''),
+                                this.decodeFrame(a.frameId), a.context);
       case 'continue':        return this.continue(req);
       case 'pause':           return this.pause(req, a.threadId);
-      case 'restartFrame':    return this.restartFrame(req, a.frameId);
+      case 'restartFrame':    return this.restartFrame(req, this.decodeFrame(a.frameId));
       case 'exceptionInfo':   return this.exceptionInfo(req);
 
-      case 'next':
-      case 'stepIn':
-      case 'stepOut':
-        this.fail(req, 1008,
-          'Schrittweises Ausführen ist nicht angebunden: SBCL-Stepping ' +
-          'braucht das Contrib :swank-stepper und Code, der mit hoher ' +
-          'Debug-Qualität kompiliert wurde. Nutze stattdessen die ' +
-          'Restarts oder werte Ausdrücke im Frame aus.');
-        return;
+      case 'next':            return this.step(req, 'swank:sldb-next');
+      case 'stepIn':          return this.step(req, 'swank:sldb-step');
+      case 'stepOut':         return this.step(req, 'swank:sldb-out');
 
       case 'setBreakpoints':
         this.respond(req, {
@@ -294,13 +451,18 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       case 'clamps/replEval':
         return this.replEval(req, String(a.code ?? ''), String(a.package ?? 'COMMON-LISP-USER'));
       case 'clamps/bindForInspector':
-        return this.bindForInspector(req, String(a.expression ?? ''), a.frameId);
+        return this.bindForInspector(req, String(a.expression ?? ''), this.decodeFrame(a.frameId));
       case 'clamps/bindCondition':
         return this.bindCondition(req);
       case 'clamps/returnFromFrame':
-        return this.returnFromFrame(req, Number(a.frameId ?? this.top?.selectedFrame ?? 0), String(a.expression ?? 'nil'));
+        return this.returnFromFrame(
+          req,
+          this.decodeFrame(a.frameId) ?? this.top?.selectedFrame ?? 0,
+          String(a.expression ?? 'nil'));
       case 'clamps/disassembleFrame':
-        return this.simpleFrameCall(req, 'swank:disassemble-frame', Number(a.frameId ?? this.top?.selectedFrame ?? 0));
+        return this.simpleFrameCall(
+          req, 'swank:disassemble-frame',
+          this.decodeFrame(a.frameId) ?? this.top?.selectedFrame ?? 0);
 
       default:
         this.respond(req);
@@ -439,18 +601,31 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
 
   private async disconnect(req: DapRequest): Promise<void> {
     // Steckt das Image noch im Debugger, würde ein blosses Trennen es
-    // dort stehen lassen — also vorher abbrechen.
-    const abort = this.top?.restarts.find(r => r.name.toUpperCase() === 'ABORT');
-    if (this.top && abort) {
+    // dort stehen lassen — also vorher abbrechen. Und zwar JEDEN Thread
+    // und mit *ABORT: die vorige Fassung nahm nur die oberste Ebene des
+    // aktiven Threads und den gewöhnlichen ABORT, sodass bei gestapelten
+    // Ebenen oder mehreren angehaltenen Threads das Image nach dem
+    // Trennen weiter in SLDB stand — sichtbar erst beim nächsten
+    // Anhängen, wo dann connection-info nicht mehr antwortet.
+    for (const stack of this.stacks.values()) {
+      const inner = stack[stack.length - 1];
+      if (!inner) continue;
+      // *ABORT geht auf die oberste Ebene zurück, ABORT nur eine Ebene.
+      const idx = inner.restarts.findIndex(r => r.name.toUpperCase() === '*ABORT');
+      const use = idx >= 0
+        ? idx
+        : inner.restarts.findIndex(r => r.name.toUpperCase() === 'ABORT');
+      if (use < 0) continue;
       try {
         await this.swank.rex(
-          `(swank:invoke-nth-restart-for-emacs ${this.top.level} ${abort.index})`,
-          this.swank.packageName, this.thread
+          `(swank:invoke-nth-restart-for-emacs ${inner.level} ${use})`,
+          this.swank.packageName, inner.thread, 3000
         );
       } catch {
         // Beim Trennen nicht weiter stören.
       }
     }
+    this.stacks.clear();
     this.swank.close();
     this.respond(req);
   }
@@ -463,9 +638,13 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     const m = asList(msg);
     // (:debug thread level condition restarts frames continuations)
     const condRaw = asList(m[3]);
+    const thread = m[1] ?? new Sym('t');
+    const key = printSexpr(thread);
+    const stack = this.stacks.get(key) ?? [];
     const level: DebugLevel = {
-      thread: m[1] ?? new Sym('t'),
-      level: Number(m[2] ?? this.levels.length + 1),
+      thread,
+      threadId: this.threadIdFor(thread, key),
+      level: Number(m[2] ?? stack.length + 1),
       condition: text(condRaw[0]),
       conditionType: text(condRaw[1]) || 'LISP-CONDITION',
       restarts: asList(m[4]).map((r, index) => {
@@ -478,15 +657,17 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       }),
       frames: asList(m[5]),
       selectedFrame: 0,
+      frameSources: new Map(),
+      varRefs: [],
     };
-    this.levels.push(level);
-    this.variableSets.clear();
-    this.frameSources.clear();
+    stack.push(level);
+    this.stacks.set(key, stack);
+    // Der neue Debugger bekommt den Fokus — aber die Ebenen der anderen
+    // Threads bleiben unangetastet. Frühere Fassung: variableSets und
+    // frameSources global geleert, wodurch ein Fehler in Thread B die
+    // schon geholten Frames von Thread A entwertete.
+    this.activeThread = key;
     this.warnedAboutOpenDebugger = false;
-
-    // Die ID aus der Debug-Nachricht übernehmen, damit `threads` und
-    // `stopped` dieselbe meinen.
-    this.stoppedThreadId = typeof m[1] === 'number' ? (m[1] as number) : 1;
 
     // Nur der auslösenden REPL-Anfrage die Frist nehmen — sie bleibt bis
     // zum Restart offen. Alle anderen Anfragen (Threads, Frames, Hover)
@@ -530,30 +711,56 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   }
 
   private onDebugReturn(msg: SExpr): void {
+    // (:debug-return thread level stepping)
     const m = asList(msg);
+    const thread = m[1] ?? new Sym('t');
+    const key = printSexpr(thread);
     const level = Number(m[2] ?? 0);
-    // Genau die verlassene Ebene entfernen, nicht blind leeren — sonst
-    // verliert ein rekursiver Debugger beim Verlassen der inneren Ebene
-    // auch die äußere.
-    const at = this.levels.findIndex(l => l.level === level);
-    if (at >= 0) this.levels.splice(at);
-    else this.levels.pop();
-    this.variableSets.clear();
-    this.frameSources.clear();
 
-    if (this.levels.length > 0) {
-      // Zurück in den äußeren Debugger: erneut als gestoppt melden.
-      const outer = this.top!;
+    // NUR den Stapel dieses Threads anfassen. Die frühere Fassung suchte
+    // in einem globalen Stapel nach der Ebenennummer — und weil jeder
+    // Thread bei 1 anfängt, traf `splice` regelmäßig die Ebenen fremder
+    // Threads und löschte sie mit.
+    const stack = this.stacks.get(key);
+    if (!stack || stack.length === 0) {
+      // Unbekannter Thread: nichts zu tun, aber melden, dass er läuft.
+      this.event('continued', {
+        threadId: typeof thread === 'number' ? thread : 1,
+        allThreadsContinued: false,
+      });
+      return;
+    }
+
+    const at = stack.findIndex(l => l.level === level);
+    const removed = at >= 0 ? stack.splice(at) : stack.splice(stack.length - 1);
+    for (const l of removed) this.dropLevel(l);
+
+    const threadId = removed[0]?.threadId ?? this.threadIdFor(thread, key);
+
+    if (stack.length > 0) {
+      // Zurück in den äußeren Debugger DIESES Threads.
+      const outer = stack[stack.length - 1];
+      this.activeThread = key;
       this.event('stopped', {
-        reason: 'exception', threadId: this.stoppedThreadId,
+        reason: 'exception', threadId: outer.threadId,
         text: outer.condition, description: outer.conditionType,
         allThreadsStopped: false,
       });
-    } else {
-      this.event('continued', { threadId: this.stoppedThreadId, allThreadsContinued: false });
-      // Alle Ebenen verlassen: eine noch registrierte REPL-Auswertung
-      // ist damit erledigt.
-      if (this.inflightRepl?.answered) this.inflightRepl = undefined;
+      return;
+    }
+
+    this.stacks.delete(key);
+    this.threadKeys.delete(threadId);
+    this.event('continued', { threadId, allThreadsContinued: false });
+    // Steht noch ein anderer Thread im Debugger, den Fokus dorthin
+    // ziehen — sonst zeigen frameId-Anfragen ins Leere.
+    if (this.activeThread === key) this.activeThread = '';
+    this.focusAnyOpen();
+
+    // Erst wenn KEIN Thread mehr im Debugger steht, ist eine registrierte
+    // REPL-Auswertung erledigt.
+    if (!this.anyLevel && this.inflightRepl?.answered) {
+      this.inflightRepl = undefined;
     }
   }
 
@@ -578,14 +785,20 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       // list-threads ist Beiwerk; die Aufrufliste darf nicht daran hängen.
     }
 
-    // Der angehaltene Thread MUSS dabei sein, sonst zeigt VS Code keine
-    // Aufrufliste — auch dann, wenn list-threads ihn nicht auflistet
-    // oder ganz fehlschlägt.
-    if (this.top && !threads.some(t => t.id === this.stoppedThreadId)) {
-      threads.unshift({
-        id: this.stoppedThreadId,
-        name: `Lisp (angehalten, Ebene ${this.top.level})`,
-      });
+    // JEDER angehaltene Thread MUSS dabei sein, sonst zeigt VS Code für
+    // ihn keine Aufrufliste — auch dann, wenn list-threads ihn nicht
+    // auflistet oder ganz fehlschlägt. Bei :spawn sind das mehrere
+    // gleichzeitig, jeder mit eigenem SLDB.
+    for (const [key, stack] of this.stacks) {
+      if (stack.length === 0) continue;
+      const inner = stack[stack.length - 1];
+      const label =
+        stack.length > 1
+          ? `Lisp ${key} (angehalten, Ebene ${inner.level} von ${stack.length})`
+          : `Lisp ${key} (angehalten, Ebene ${inner.level})`;
+      const at = threads.findIndex(t => t.id === inner.threadId);
+      if (at >= 0) threads[at].name = label;
+      else threads.unshift({ id: inner.threadId, name: label });
     }
     if (threads.length === 0) {
       threads.push({ id: this.stoppedThreadId, name: 'CLAMPS / Lisp' });
@@ -593,7 +806,15 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     this.respond(req, { threads });
   }
 
-  private async stackTrace(req: DapRequest, start: number, levels: number): Promise<void> {
+  private async stackTrace(
+    req: DapRequest, threadId: number | undefined, start: number, levels: number
+  ): Promise<void> {
+    // Hier — und nur hier — nennt VS Code den Thread, den es anzeigt.
+    // Der Zeiger muss gesetzt werden, BEVOR scopes/evaluate mit einer
+    // nackten frameId hereinkommen. Vorher wurde a.threadId ignoriert,
+    // sodass bei mehreren angehaltenen Threads immer die Frames des
+    // jüngsten geliefert wurden — auch wenn man einen anderen anklickte.
+    this.focusThread(threadId);
     const state = this.top;
     if (!state) {
       this.respond(req, { stackFrames: [], totalFrames: 0 });
@@ -624,13 +845,14 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       }
     }
 
+    const key = this.activeThread;
     const slice = frames.slice(start, start + levels);
     const out = slice.map((f, i) => {
       const x = asList(f);
       const id = typeof x[0] === 'number' ? (x[0] as number) : start + i;
-      const src = this.frameSources.get(id);
+      const src = state.frameSources.get(id);
       return {
-        id,
+        id: this.encodeFrame(key, id),
         name: text(x[1]) || `Frame ${id}`,
         line: src?.line ?? 0,
         column: src?.column ?? 0,
@@ -652,24 +874,23 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     // Quellorte im Hintergrund nachladen, nur für die obersten Frames.
     // Kommt etwas zurück, meldet ein 'invalidated'-Ereignis VS Code,
     // dass die Aufrufliste neu geholt werden soll.
-    void this.enrichSources(slice.slice(0, 5), start);
+    void this.enrichSources(state, slice.slice(0, 5), start);
   }
 
-  /** frameId -> Quellort, einmal ermittelt und gemerkt. */
-  private frameSources = new Map<number, { path?: string; line: number; column: number }>();
-
-  private async enrichSources(frames: SExpr[], start: number): Promise<void> {
+  private async enrichSources(
+    level: DebugLevel, frames: SExpr[], start: number
+  ): Promise<void> {
     let changed = false;
     for (let i = 0; i < frames.length; i++) {
       const x = asList(frames[i]);
       const id = typeof x[0] === 'number' ? (x[0] as number) : start + i;
-      if (this.frameSources.has(id)) continue;
+      if (level.frameSources.has(id)) continue;
       try {
         // Nacheinander, nicht parallel: der Debugger-Thread verarbeitet
         // ohnehin seriell, und ein Schwall Anfragen bringt nichts.
-        const src = await this.frameSource(id);
+        const src = await this.frameSource(level, id);
         if (src) {
-          this.frameSources.set(id, src);
+          level.frameSources.set(id, src);
           changed = true;
         }
       } catch {
@@ -683,28 +904,100 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
   }
 
-  private async frameSource(
-    frameId: number
-  ): Promise<{ path?: string; line: number; column: number } | undefined> {
-    const x = await this.swank.rex(
-      `(swank:frame-source-location ${frameId})`,
-      this.swank.packageName, this.thread, 4000
-    );
-    const list = asList(x);
-    // (:location (:file "…") (:position N) …) oder (:error "…")
-    if (isSym(list[0], ':error')) return undefined;
-    const flat = printSexpr(x);
-    const file = /:file\s+"([^"]+)"/i.exec(flat)?.[1];
-    const line = /:line\s+(\d+)/i.exec(flat)?.[1];
-    const col = /:column\s+(\d+)/i.exec(flat)?.[1];
-    if (!file) return undefined;
-    const path = file.startsWith('/') ? file : `${this.workspaceRoot}/${file}`;
-    return { path, line: Number(line ?? 1), column: Number(col ?? 1) };
+  /** Dateiinhalte, um Zeichen-Offsets in Zeilen umzurechnen. */
+  private readonly fileCache = new Map<string, string | undefined>();
+
+  private fileText(path: string): string | undefined {
+    if (!this.fileCache.has(path)) {
+      try {
+        this.fileCache.set(path, fs.readFileSync(path, 'utf8'));
+      } catch {
+        this.fileCache.set(path, undefined);
+      }
+    }
+    return this.fileCache.get(path);
   }
 
-  private async scopes(req: DapRequest, frameId: number): Promise<void> {
+  /**
+   * Zeichen-Offset in Zeile/Spalte umrechnen, beide 1-basiert.
+   *
+   * SBCL liefert in :position einen OFFSET, keine Zeilennummer. Genau
+   * das war der Grund, warum das Exception-Banner immer auf Zeile 1
+   * klebte: das alte Regex suchte :line, fand nichts, und der Rückfall
+   * war 1. Ein Debugger, der jeden Fehler in Zeile 1 verortet, ist beim
+   * Lesen eines Backtrace nutzlos.
+   */
+  private offsetToLineColumn(path: string, offset: number): FrameSource {
+    const src = this.fileText(path);
+    if (src === undefined) return { path, line: 1, column: 1 };
+    // Swank zählt Zeichen ab 1; ein Offset von 0 wäre schon Zeile 1.
+    const cut = Math.max(0, Math.min(src.length, offset - 1));
+    let line = 1, lastBreak = -1;
+    for (let i = 0; i < cut; i++) {
+      if (src.charCodeAt(i) === 10) { line++; lastBreak = i; }
+    }
+    // Auf vorhandene Zeilen begrenzen. Ist die Datei seit dem Kompilieren
+    // kürzer geworden, zeigt der Offset hinter das Ende — und ein
+    // abschließender Zeilenumbruch machte daraus eine Zeile, die es im
+    // Editor nicht gibt. Dann lieber auf die letzte echte Zeile.
+    const count = src.split('\n').length;
+    const maxLine = Math.max(1, src.endsWith('\n') ? count - 1 : count);
+    return { path, line: Math.min(line, maxLine), column: cut - lastBreak };
+  }
+
+  /** Zeile eines Schnipsels suchen — Rückfall, wenn kein Offset kommt. */
+  private snippetToLine(path: string, snippet: string): number | undefined {
+    const src = this.fileText(path);
+    if (src === undefined) return undefined;
+    // Nur die erste Zeile des Schnipsels, und Leerraum tolerant.
+    const first = snippet.split(/[\r\n]/)[0].trim();
+    if (first.length < 4) return undefined;
+    const at = src.indexOf(first);
+    if (at < 0) return undefined;
+    return src.slice(0, at).split('\n').length;
+  }
+
+  private async frameSource(
+    level: DebugLevel, frameId: number
+  ): Promise<FrameSource | undefined> {
+    const x = await this.swank.rex(
+      `(swank:frame-source-location ${frameId})`,
+      this.swank.packageName, level.thread, 4000
+    );
+    const list = asList(x);
+    // (:location (:file "…") (:position N) (:snippet "…")) oder (:error "…")
+    if (isSym(list[0], ':error')) return undefined;
+    const flat = printSexpr(x);
+    const file = /:file\s+"((?:[^"\\]|\\.)+)"/i.exec(flat)?.[1];
+    if (!file) return undefined;
+    const path = file.replace(/\\(.)/g, '$1');
+    const abs = path.startsWith('/') ? path : `${this.workspaceRoot}/${path}`;
+
+    // :line, falls das Backend es doch liefert — dann ist nichts zu rechnen.
+    const line = /:line\s+(\d+)/i.exec(flat)?.[1];
+    if (line) {
+      const col = /:column\s+(\d+)/i.exec(flat)?.[1];
+      return { path: abs, line: Number(line), column: Number(col ?? 1) };
+    }
+
+    const position = /:position\s+(\d+)/i.exec(flat)?.[1];
+    if (position) return this.offsetToLineColumn(abs, Number(position));
+
+    // Kein Offset: über den Schnipsel suchen. Weniger genau, aber immer
+    // noch besser als Zeile 1.
+    const snippet = /:snippet\s+"((?:[^"\\]|\\.)*)"/i.exec(flat)?.[1];
+    if (snippet) {
+      const found = this.snippetToLine(abs, snippet.replace(/\\(.)/g, '$1'));
+      if (found !== undefined) return { path: abs, line: found, column: 1 };
+    }
+    return undefined;
+  }
+
+  private async scopes(req: DapRequest, dapFrameId: number): Promise<void> {
+    // Dekodieren setzt gleich activeThread auf den Thread dieses Frames.
+    const frameId = this.decodeFrame(dapFrameId);
     const state = this.top;
-    if (!state) {
+    if (!state || frameId === undefined) {
       this.respond(req, { scopes: [] });
       return;
     }
@@ -734,10 +1027,14 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       }));
 
       const scopes: any[] = [
-        { name: 'Locals', variablesReference: this.store(locals), expensive: false },
+        { name: 'Locals', variablesReference: this.store(state, locals), expensive: false },
       ];
       if (catches.length) {
-        scopes.push({ name: 'Catch-Tags', variablesReference: this.store(catches), expensive: false });
+        scopes.push({
+          name: 'Catch-Tags',
+          variablesReference: this.store(state, catches),
+          expensive: false,
+        });
       }
       this.respond(req, { scopes });
     } catch (e) {
@@ -745,9 +1042,16 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
   }
 
-  private store(vars: any[]): number {
+  /**
+   * Variablensatz ablegen. Die Referenz wird an die Ebene gehängt, damit
+   * sie beim Verlassen GENAU dieser Ebene wegfällt — früher wurde bei
+   * jedem neuen Debugger die ganze Tabelle geleert, auch die Sätze
+   * anderer Threads.
+   */
+  private store(level: DebugLevel, vars: any[]): number {
     const ref = this.nextVarRef++;
     this.variableSets.set(ref, vars);
+    level.varRefs.push(ref);
     return ref;
   }
 
@@ -794,6 +1098,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   private async evaluateForms(
     req: DapRequest, expression: string, frameId?: number, context?: string
   ): Promise<void> {
+    // Hover geht einen eigenen, abgesicherten Weg — siehe evaluateHover.
+    if (context === 'hover') return this.evaluateHover(req, expression);
     try {
       const state = this.top;
       if (state && frameId !== undefined) state.selectedFrame = frameId;
@@ -803,38 +1109,22 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       // listener-eval antwortete gar nicht — beides ungeklärt. Statt
       // weiter zu raten wird jetzt die gesendete Form in jeder
       // Fehlermeldung mitgeführt.
-      // Mehrere Formen einzeln schicken: eval-and-grab-output liest nur
-      // die erste. Ohne das verschwinden alle weiteren stillschweigend.
-      const forms =
-        state && frameId !== undefined ? [expression] : splitTopLevelForms(expression);
+      // Mehrere Formen einzeln schicken: eval-and-grab-output UND
+      // eval-string-in-frame lesen jeweils nur die erste. Ohne das
+      // verschwinden alle weiteren stillschweigend.
+      //
+      // Der Frame-Pfad war davon ausgenommen — mit der Begründung, im
+      // Frame werte man einzelne Ausdrücke aus. Das ging schief, weil
+      // VS Code beim Anhalten automatisch Frame 0 auswählt und die
+      // frameId bei JEDER Eingabe mitschickt. Damit lief der Ausnahme-
+      // zweig immer, und `(+ 1 2) (+ 3 4)` ergab nur 3.
+      const forms = splitTopLevelForms(expression);
       const chunks: string[] = [];
-      for (const raw of forms.length > 1 ? forms : [expression]) {
-        // Hover-Auswertungen in ignore-errors kapseln.
-        //
-        // VS Code schickt bei eingeschaltetem supportsEvaluateForHovers
-        // ALLES, worüber die Maus fährt — auch Dateinamen und Kommentar-
-        // wörter. Jeder Fehlschlag öffnete eine neue Debugger-Ebene;
-        // beim Überfahren von swank.lisp stapelten sich so binnen
-        // Sekunden mehrere Ebenen, bis das Image nicht mehr antwortete.
-        // (values ...) drumherum kappt den zweiten Rückgabewert:
-        // ignore-errors liefert bei einem Fehler nil UND das
-        // Condition-Objekt, was im Tooltip als
-        // "nil, #<unbound-variable rpc …>" landete.
-        // Hover NIE im Frame auswerten.
-        //
-        // ignore-errors nützt im Frame nichts: eval-string-in-frame läuft
-        // mit aktivem SLDB-Debugger-Hook, sodass Swank bei einer Condition
-        // in den Debugger springt, BEVOR der Handler sie fangen kann. Ein
-        // Hover über ein unbekanntes Wort (etwa "n" in der REPL-Anleitung)
-        // öffnete so bei ausgewähltem Frame eine neue Ebene je Mausbewegung.
-        // Auf oberster Ebene (eval-and-grab-output) fängt ignore-errors
-        // dagegen zuverlässig.
-        const asHover = context === 'hover';
-        const single = asHover ? `(values (ignore-errors ${raw}))` : raw;
-        const useFrame = state && frameId !== undefined && !asHover;
+      for (const raw of forms.length > 0 ? forms : [expression]) {
+        const useFrame = state && frameId !== undefined;
         const one = useFrame
-          ? this.frameEvalForm(single, frameId!)
-          : `(swank:eval-and-grab-output ${JSON.stringify(single)})`;
+          ? this.frameEvalForm(raw, frameId!)
+          : `(swank:eval-and-grab-output ${JSON.stringify(raw)})`;
         this.lastForm = one;
         // WICHTIG: nur eine Auswertung IM FRAME geht an den angehaltenen
         // Thread. Alles andere bekommt einen frischen Worker (Thread-
@@ -859,11 +1149,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       this.respond(req, {
         // Leeres Ergebnis sichtbar machen: sonst ist "erfolgreich, aber
         // kein Wert" von "gar keine Antwort" nicht zu unterscheiden.
-        // Beim Hover bleibt es leer, sonst klebt an jedem Wort ein
-        // Tooltip mit "kein Wert".
-        result: rendered === '' ? (context === 'hover' ? '' : '; kein Wert') : rendered,
+        result: rendered === '' ? '; kein Wert' : rendered,
         variablesReference: 0,
-        presentationHint: context === 'hover' ? { kind: 'property' } : undefined,
       });
     } catch (e) {
       // Ein aufgerufener Restart bricht die laufende Auswertung ab —
@@ -876,15 +1163,63 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         });
         return;
       }
-      if (context === 'hover') {
-        // Ein fehlgeschlagener Hover ist kein Ereignis, über das der
-        // Nutzer informiert werden will.
-        this.respond(req, { result: '', variablesReference: 0 });
-        return;
-      }
       // Die gesendete Form gehört in die Meldung — ohne sie bleibt bei
       // einem Protokollproblem nur Raten.
       this.fail(req, 1003, `${e}\n  gesendet: ${this.lastForm}`);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Hover
+  // ------------------------------------------------------------------
+
+  /**
+   * Hover-Auswertung. Nie im Frame, nie im angehaltenen Thread, und der
+   * Ausdruck wird ERST INNERHALB von ignore-errors gelesen.
+   *
+   * Das war der verbleibende Weg in den Debugger: bei
+   * `(swank:eval-and-grab-output "(values (ignore-errors X))")` liest
+   * Swank den ganzen String, bevor irgendein Handler steht. Ein
+   * Reader-Fehler in X — `#<`, eine offene Klammer — sprang deshalb
+   * trotz ignore-errors in den Debugger, und beim Überfahren eines
+   * Backtrace stapelten sich die Ebenen im Sekundentakt.
+   *
+   * Mit read-from-string INNEN passiert das Lesen während der
+   * Auswertung, also im Schutz von ignore-errors.
+   *
+   * (values ...) kappt den zweiten Rückgabewert: ignore-errors liefert
+   * bei einem Fehler nil UND das Condition-Objekt, was im Tooltip als
+   * "nil, #<unbound-variable rpc …>" landete.
+   */
+  private async evaluateHover(req: DapRequest, expression: string): Promise<void> {
+    const safe = hoverCandidate(expression);
+    if (safe === undefined) {
+      this.respond(req, { result: '', variablesReference: 0 });
+      return;
+    }
+    const inner =
+      `(values (ignore-errors (eval (read-from-string ${lispString(safe)}))))`;
+    const one = `(swank:eval-and-grab-output ${JSON.stringify(inner)})`;
+    try {
+      // Immer frischer Worker (t): der angehaltene Thread sitzt in der
+      // SLDB-Schleife, und eval-string-in-frame läuft mit aktivem
+      // Debugger-Hook, wo ignore-errors nichts nützt.
+      const r = await this.swank.rex(one, this.swank.packageName, new Sym('t'), 4000);
+      const p = asList(r);
+      const shown =
+        p.length >= 2
+          ? [text(p[0]), text(p[1])].filter(x => x !== '').join('\n')
+          : text(r);
+      this.respond(req, {
+        // Leer bleibt leer: sonst klebt an jedem Wort ein Tooltip.
+        result: shown,
+        variablesReference: 0,
+        presentationHint: { kind: 'property' },
+      });
+    } catch {
+      // Ein fehlgeschlagener Hover ist kein Ereignis, über das der
+      // Nutzer informiert werden will.
+      this.respond(req, { result: '', variablesReference: 0 });
     }
   }
 
@@ -973,6 +1308,87 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     } catch (e) {
       this.fail(req, 1007, String(e));
     }
+  }
+
+  /**
+   * Ist ein Schritt aus DIESER Ebene heraus überhaupt möglich?
+   *
+   * Die Bedingung steht in den Restarts, die Swank ohnehin mitgeschickt
+   * hat — es braucht keine Rundreise ins Image. swank:sldb-step macht:
+   *
+   *   (cond ((find-restart 'continue) (activate-stepping frame)
+   *                                   (invoke-restart 'continue))
+   *         (t (error "Not currently single-stepping, …")))
+   *
+   * Ohne CONTINUE-Restart signalisiert der Aufruf also einen Fehler, und
+   * weil er im angehaltenen Thread läuft, wird daraus eine NEUE
+   * Debugger-Ebene statt einer abgelehnten Anfrage.
+   *
+   * Eine Probe auf (fboundp 'swank:sldb-step) war die falsche Frage: die
+   * Funktion ist da, sie weigert sich nur. Genau daran ist die vorige
+   * Fassung vorbeigelaufen und hat Ebene 2 mit
+   * "Not currently single-stepping" produziert.
+   */
+  private canStep(level: DebugLevel): boolean {
+    return level.restarts.some(r => r.name.toUpperCase() === 'CONTINUE');
+  }
+
+  private async step(req: DapRequest, operation: string): Promise<void> {
+    const level = this.top;
+    if (!level) {
+      this.fail(req, 1008, 'Stepping ist nur in einer angehaltenen Lisp-Debugger-Sitzung möglich.');
+      return;
+    }
+    if (!this.canStep(level)) {
+      // Ablehnen und die Sitzung sichtbar angehalten lassen — KEIN
+      // 'continued'. VS Code zeigt die Begründung als Meldung an.
+      this.fail(
+        req, 1012,
+        'Aus dieser Condition heraus kann nicht geschritten werden: sie bietet ' +
+        'keinen CONTINUE-Restart, ohne den SBCL das Single-Stepping nicht ' +
+        'aufnehmen kann. Weiter geht es über die Restarts im Debug-Bereich. ' +
+        'Stepping setzt außerdem hohe Debug-Qualität voraus, etwa ' +
+        '(declaim (optimize (debug 3) (speed 0) (safety 3))).'
+      );
+      return;
+    }
+    const frame = level.selectedFrame ?? 0;
+    // Wie bei Restarts nicht auf die RPC-Rückgabe warten: sldb-step setzt
+    // die Ausführung fort und antwortet häufig erst am nächsten Step-Stop
+    // oder beim Verlassen des Frames. Der DAP-Request muss sofort frei sein.
+    void this.swank
+      .rex(`(${operation} ${frame})`, this.swank.packageName, level.thread, 0)
+      .catch(e => {
+        if (/:abort/i.test(String(e))) return; // regulärer Ausgang
+        this.event('output', {
+          output:
+            `Stepping fehlgeschlagen: ${e}. Der Code muss mit hoher Debug-Qualität ` +
+            'kompiliert sein, z. B. (declaim (optimize (debug 3) (speed 0) (safety 3))).\n',
+          category: 'stderr',
+        });
+        // Zustand wieder geradeziehen: das 'continued' von unten war eine
+        // Vorauszahlung auf einen Schritt, der nicht stattgefunden hat.
+        // Ohne das bleibt die Oberfläche auf "läuft" stehen, während Lisp
+        // in SLDB wartet — und die nächste Condition legte eine Ebene auf
+        // einen Zustand, den VS Code gar nicht mehr anzeigte.
+        this.resyncStopped();
+      });
+    this.respond(req);
+    this.event('continued', { threadId: this.stoppedThreadId, allThreadsContinued: false });
+  }
+
+  /** Die aktuelle Debugger-Ebene erneut als angehalten melden. */
+  private resyncStopped(): void {
+    const s = this.top;
+    if (!s) return;
+    this.event('stopped', {
+      reason: 'exception',
+      threadId: this.stoppedThreadId,
+      text: s.condition,
+      description: s.conditionType,
+      allThreadsStopped: false,
+      preserveFocusHint: true,
+    });
   }
 
   /**
@@ -1116,7 +1532,11 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
   }
 
-  private async restartFrame(req: DapRequest, frameId: number): Promise<void> {
+  private async restartFrame(req: DapRequest, frameId: number | undefined): Promise<void> {
+    if (frameId === undefined) {
+      this.fail(req, 1009, 'Kein Frame ausgewählt.');
+      return;
+    }
     try {
       await this.swank.rex(`(swank:restart-frame ${frameId})`, this.swank.packageName, this.thread);
       this.respond(req);

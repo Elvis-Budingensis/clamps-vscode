@@ -37,7 +37,8 @@
            #:rt-status-for-repl #:completions-for-repl
            #:inspect-id-for-repl #:inspect-part-for-repl
            #:inspect-release-for-repl #:inspect-set-part-for-repl
-           #:eval-for-repl-debuggable #:incudine-node-tree-for-repl))
+           #:eval-for-repl-debuggable #:incudine-node-tree-for-repl
+           #:packages-for-repl #:classes-for-repl #:threads-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -1232,3 +1233,63 @@
                        "")
                    nodes))
          (error (e) (list :error (princ-to-string e) nil)))))))
+
+
+;;; ---------------------------------------------------------------------
+;;; Image-Browser für VS Code
+;;; ---------------------------------------------------------------------
+(defun %down (x) (let ((*print-case* :downcase)) (princ-to-string x)))
+
+(defun packages-for-repl ()
+  (handler-case
+      (list :ok
+            (sort
+             (mapcar (lambda (p)
+                       (list :label (package-name p)
+                             :description (format nil "~D extern · ~D intern"
+                                                  (loop for s being the external-symbols of p count s)
+                                                  (loop for s being the present-symbols of p
+                                                        unless (eq (nth-value 1 (find-symbol (symbol-name s) p)) :external)
+                                                        count s))
+                             :tooltip (format nil "Nicknames: ~{~A~^, ~}~%Uses: ~{~A~^, ~}"
+                                              (package-nicknames p)
+                                              (mapcar #'package-name (package-use-list p)))
+                             :icon "package"
+                             :inspect (format nil "(find-package ~S)" (package-name p))))
+                     (list-all-packages))
+             #'string-lessp :key (lambda (x) (getf x :label))))
+    (error (e) (list :error (format nil "~A" e) nil))))
+
+(defun classes-for-repl ()
+  (handler-case
+      (let ((seen (make-hash-table :test #'eq)) (rows nil))
+        (dolist (p (list-all-packages))
+          (do-symbols (s p)
+            (let ((c (ignore-errors (find-class s nil))))
+              (when (and c (eq (symbol-package s) p) (not (gethash c seen)))
+                (setf (gethash c seen) t)
+                (push (list :label (%down s)
+                            :description (%down (class-of c))
+                            :tooltip (or (documentation s 'type) "")
+                            :icon "symbol-class"
+                            :inspect (format nil "(find-class '~S)" s)) rows)))))
+        (list :ok (sort rows #'string-lessp :key (lambda (x) (getf x :label)))))
+    (error (e) (list :error (format nil "~A" e) nil))))
+
+(defun threads-for-repl ()
+  (handler-case
+      (let* ((pkg (find-package :bordeaux-threads))
+             (all (and pkg (find-symbol "ALL-THREADS" pkg)))
+             (name (and pkg (find-symbol "THREAD-NAME" pkg)))
+             (alive (and pkg (find-symbol "THREAD-ALIVE-P" pkg))))
+        (if (and all (fboundp all))
+            (list :ok
+                  (loop for th in (funcall all)
+                        collect (list :label (or (and name (fboundp name) (funcall name th)) (%preview th))
+                                      :description (if (and alive (fboundp alive) (funcall alive th)) "alive" "stopped")
+                                      :tooltip (%preview th)
+                                      :icon "debug-thread"
+                                      :inspect (format nil "(find ~S (bordeaux-threads:all-threads) :key #'bordeaux-threads:thread-name :test #'equal)"
+                                                       (and name (fboundp name) (funcall name th))))))
+            (list :error "Bordeaux-Threads ist nicht verfügbar." nil)))
+    (error (e) (list :error (format nil "~A" e) nil))))

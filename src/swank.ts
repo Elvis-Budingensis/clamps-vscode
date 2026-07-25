@@ -201,6 +201,70 @@ export const asList = (x: SExpr | undefined): SExpr[] =>
   Array.isArray(x) ? x : [];
 
 /**
+ * Ein Lisp-Stringliteral aus einem Text bauen.
+ *
+ * Bewusst NICHT JSON.stringify: das erzeugt \n, \t, \uXXXX — Escapes,
+ * die der Lisp-Reader nicht kennt. `\n` liest er als das Zeichen `n`,
+ * womit der String stillschweigend verfälscht wird. Der Lisp-Reader
+ * kennt in Strings nur \\ und \".
+ *
+ * Steuerzeichen können deshalb nicht dargestellt werden; Aufrufer, die
+ * sie zulassen wollen, müssen sie vorher aussortieren.
+ */
+export function lispString(s: string): string {
+  return `"${s.replace(/[\\"]/g, m => '\\' + m)}"`;
+}
+
+/**
+ * Entscheidet, ob ein Hover-Text überhaupt an Lisp geschickt wird.
+ * Rückgabe: der zu sendende Text oder undefined.
+ *
+ * VS Code schickt bei eingeschaltetem supportsEvaluateForHovers ALLES,
+ * worüber die Maus fährt — Dateinamen, Kommentarwörter, Bruchstücke.
+ *
+ * Abgelehnt wird:
+ *  - zu lang: dann steht die Maus nicht über einem Symbol, sondern über
+ *    einer markierten Passage. Die gehört in die Debug-Konsole
+ *  - Steuerzeichen: in einem Lisp-Stringliteral nicht darstellbar
+ *    (siehe lispString); mehrzeilige Hover fallen damit weg
+ *  - `#.` — Read-Eval. Läuft VOR jedem Handler und darf niemals aus
+ *    einer Mausbewegung heraus passieren
+ *  - `#<` — nicht wieder einlesbare Objekte, wie sie im Backtrace und in
+ *    jeder Fehlermeldung stehen
+ *  - unbalancierte Klammern und offene Zeichenketten
+ *
+ * Die letzten beiden Punkte waren das eigentliche Loch: ignore-errors
+ * greift erst bei EVAL, ein Reader-Fehler passiert aber schon beim
+ * Lesen. Bewusst hier als reine Funktion, damit sie ohne laufendes
+ * Lisp-Image geprüft werden kann.
+ */
+export function hoverCandidate(raw: string, maxLength = 120): string | undefined {
+  const s = raw.trim();
+  if (!s || s.length > maxLength) return undefined;
+  if (/[\u0000-\u001f]/.test(s)) return undefined;
+  if (s.includes('#.') || s.includes('#<') || s.includes('#|')) return undefined;
+
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '#' && s[i + 1] === '\\') { i += 2; continue; }
+    if (c === '"') {
+      i++;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\') i++;
+        i++;
+      }
+      if (i >= s.length) return undefined; // Zeichenkette offen
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')' && --depth < 0) return undefined;
+  }
+  return depth === 0 ? s : undefined;
+}
+
+/**
  * Zerlegt einen Text in seine Top-Level-Formen.
  *
  * Nötig, weil swank:eval-and-grab-output nur die ERSTE Form liest.

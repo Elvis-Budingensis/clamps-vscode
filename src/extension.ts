@@ -26,6 +26,8 @@ import { inspectCommand } from './inspector';
 import { ClampsRtStatus } from './rtStatus';
 import { ClampsDebugSession } from './debugSession';
 import { IncudineNodeProvider } from './nodeBrowser';
+import { LispBrowserProvider } from './imageBrowsers';
+import { CompilerDiagnostics } from './compilerDiagnostics';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -34,6 +36,10 @@ let clientStartPromise: Promise<void> | undefined;
 let lifecycleQueue: Promise<void> = Promise.resolve();
 let rtStatus: ClampsRtStatus | undefined;
 let incudineNodes: IncudineNodeProvider | undefined;
+let packageBrowser: LispBrowserProvider | undefined;
+let classBrowser: LispBrowserProvider | undefined;
+let threadBrowser: LispBrowserProvider | undefined;
+let compilerDiagnostics: CompilerDiagnostics | undefined;
 
 function enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
   const queued = lifecycleQueue.then(operation, operation);
@@ -63,9 +69,21 @@ export async function activate(context: vscode.ExtensionContext) {
   processManager = new ClampsProcessManager(workspaceRoot, bootstrapPath);
   rtStatus = new ClampsRtStatus(() => client);
   incudineNodes = new IncudineNodeProvider(() => client);
-  context.subscriptions.push(rtStatus, incudineNodes);
+  packageBrowser = new LispBrowserProvider('clamps/packages', () => client);
+  classBrowser = new LispBrowserProvider('clamps/classes', () => client);
+  threadBrowser = new LispBrowserProvider('clamps/threads', () => client);
+  compilerDiagnostics = new CompilerDiagnostics(() => client);
+  context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, compilerDiagnostics);
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes)
+    vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes),
+    vscode.window.registerTreeDataProvider('clamps.packages', packageBrowser),
+    vscode.window.registerTreeDataProvider('clamps.classes', classBrowser),
+    vscode.window.registerTreeDataProvider('clamps.threads', threadBrowser),
+    vscode.workspace.onDidSaveTextDocument(doc => {
+      if (vscode.workspace.getConfiguration('clamps').get<boolean>('compilerDiagnosticsOnSave', true)) {
+        void compilerDiagnostics?.update(doc);
+      }
+    })
   );
 
   // Debug-Adapter. Läuft "inline", also im selben Extension-Host-Prozess
@@ -116,6 +134,25 @@ export async function activate(context: vscode.ExtensionContext) {
         await startClamps(context, bridgePath);
       })
     ),
+    vscode.commands.registerCommand('clamps.openLog', async () => {
+      // Der einzige Ort, an dem ein Absturz des Images dokumentiert ist.
+      // Ldb-Meldungen, "fatal error encountered", Heap Exhausted und
+      // Fehler beim Laden von CLAMPS gehen alle über stderr des
+      // SBCL-Prozesses und landen hier.
+      const file = processManager?.logFile;
+      if (!file) {
+        void vscode.window.showWarningMessage('CLAMPS: Kein Arbeitsbereich, kein Protokoll.');
+        return;
+      }
+      try {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch {
+        void vscode.window.showInformationMessage(
+          `CLAMPS: Noch kein Protokoll unter ${file}. Es entsteht beim nächsten Start.`
+        );
+      }
+    }),
     vscode.commands.registerCommand('clamps.openRepl', () => ClampsReplTerminal.show(() => client)),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {
       const editor = vscode.window.activeTextEditor;
@@ -236,6 +273,16 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.incudineRefresh', () =>
       incudineNodes?.refresh()
     ),
+    vscode.commands.registerCommand('clamps.packagesRefresh', () => packageBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.classesRefresh', () => classBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.threadsRefresh', () => threadBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.inspectBrowserItem', (expression?: string) => {
+      if (expression) return vscode.commands.executeCommand('clamps.inspect', expression, 'COMMON-LISP-USER');
+    }),
+    vscode.commands.registerCommand('clamps.compileDiagnostics', () => {
+      const doc=vscode.window.activeTextEditor?.document;
+      if(doc) return compilerDiagnostics?.update(doc);
+    }),
     // Beim Auswerten im REPL kann sich der Node-Baum geändert haben
     // (dsp!, rt-start, node-free). Statt Polling — das bei laufendem
     // Audio unnötig Last erzeugt — nach jeder REPL-Auswertung einmal
@@ -266,6 +313,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   await enqueueLifecycle(() => startClamps(context, bridgePath));
   void incudineNodes?.refresh();
+  void packageBrowser?.refresh();
+  void classBrowser?.refresh();
+  void threadBrowser?.refresh();
 }
 
 async function openGui(): Promise<void> {
@@ -296,6 +346,12 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
       try {
         outputChannel.appendLine('Starte/prüfe Bootstrap-Prozess …');
         const session = await processManager!.ensureRunning();
+        // Warum weiterbenutzt oder frisch gestartet — das ist der
+        // Unterschied zwischen "mein Code ist geladen" und "ich teste
+        // gegen ein Image von vorgestern".
+        if (processManager!.lastStartNote) {
+          outputChannel.appendLine(processManager!.lastStartNote);
+        }
         outputChannel.appendLine(`Session bereit auf Port ${session.port}.`);
 
         await startLanguageClient(bridgePath);
