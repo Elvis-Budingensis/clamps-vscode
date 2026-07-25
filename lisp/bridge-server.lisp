@@ -758,6 +758,51 @@
          (lambda (status value2)
            (send-inspect-result id (if (eq status :ok) value2 nil) pkg))))))
 
+
+
+(defun handle-incudine-nodes (id params)
+  "clamps/incudineNodes — read-only Snapshot des laufenden Node-Baums."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:incudine-node-tree-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value))
+         (let* ((state (first value))
+                (message (or (second value) ""))
+                (nodes (or (third value) nil))
+                (available (eq state :ok)))
+           (send-response id
+             (make-jobj
+              "available" (if available :true :false)
+              "error" message
+              "nodes"
+              (coerce
+               (mapcar
+                (lambda (node)
+                  (let ((controls (or (getf node :controls) nil)))
+                    (make-jobj
+                     "id" (or (getf node :id) -1)
+                     "parent" (or (getf node :parent) :null)
+                     "name" (or (getf node :name) "")
+                     "kind" (if (eq (getf node :kind) :group) "group" "dsp")
+                     "paused" (if (getf node :paused) :true :false)
+                     "done" (if (getf node :done) :true :false)
+                     "uptime" (or (getf node :uptime) "")
+                     "controls"
+                     (coerce
+                      (mapcar (lambda (control)
+                                (make-jobj "name" (or (getf control :name) "")
+                                           "value" (or (getf control :value) "")))
+                              controls)
+                      'vector))))
+                nodes)
+               'vector))))
+         (send-response id
+           (make-jobj "available" :false
+                      "error" (format nil "Node-Snapshot fehlgeschlagen: ~A" value)
+                      "nodes" (vector)))))))
+
 (defun handle-rt-status (id params)
   "clamps/rtStatus — Zustand des Incudine-Realtime-Servers.
    Erwartet keine Parameter, liefert {running, info: [{key,value}]}.
@@ -840,6 +885,7 @@
           ((string= method "clamps/inspectSet") (handle-inspect-set id params))
           ((string= method "clamps/inspectRelease") (handle-inspect-release id params))
           ((string= method "clamps/rtStatus") (handle-rt-status id params))
+          ((string= method "clamps/incudineNodes") (handle-incudine-nodes id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))

@@ -381,6 +381,11 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.write(`\x1b[31m${this.normalizeNewlines(message)}\x1b[0m\r\n`);
+      // Node-Browser nachziehen: eine Auswertung kann DSP-Nodes erzeugt
+      // oder entfernt haben. Fehler hier sind unerheblich.
+      void vscode.commands
+        .executeCommand('clamps.incudineRefreshSoon')
+        .then(undefined, () => undefined);
     } finally {
       this.busy = false;
     }

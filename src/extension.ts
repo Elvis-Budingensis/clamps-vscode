@@ -25,6 +25,7 @@ import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
 import { ClampsRtStatus } from './rtStatus';
 import { ClampsDebugSession } from './debugSession';
+import { IncudineNodeProvider } from './nodeBrowser';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -32,6 +33,7 @@ let outputChannel: vscode.OutputChannel;
 let clientStartPromise: Promise<void> | undefined;
 let lifecycleQueue: Promise<void> = Promise.resolve();
 let rtStatus: ClampsRtStatus | undefined;
+let incudineNodes: IncudineNodeProvider | undefined;
 
 function enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
   const queued = lifecycleQueue.then(operation, operation);
@@ -60,7 +62,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
   processManager = new ClampsProcessManager(workspaceRoot, bootstrapPath);
   rtStatus = new ClampsRtStatus(() => client);
-  context.subscriptions.push(rtStatus);
+  incudineNodes = new IncudineNodeProvider(() => client);
+  context.subscriptions.push(rtStatus, incudineNodes);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes)
+  );
 
   // Debug-Adapter. Läuft "inline", also im selben Extension-Host-Prozess
   // — kein eigener Adapter-Prozess, und der Adapter kommt an
@@ -227,11 +233,30 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.rtStatusDetails', () =>
       rtStatus?.showDetails()
     ),
+    vscode.commands.registerCommand('clamps.incudineRefresh', () =>
+      incudineNodes?.refresh()
+    ),
+    // Beim Auswerten im REPL kann sich der Node-Baum geändert haben
+    // (dsp!, rt-start, node-free). Statt Polling — das bei laufendem
+    // Audio unnötig Last erzeugt — nach jeder REPL-Auswertung einmal
+    // nachziehen, mit kleinem Verzug, damit der Node schon existiert.
+    vscode.commands.registerCommand('clamps.incudineRefreshSoon', () => {
+      setTimeout(() => void incudineNodes?.refresh(), 300);
+    }),
+    vscode.commands.registerCommand('clamps.incudineInspectNode', async (id?: number) => {
+      if (typeof id !== 'number' || id < 0) return;
+      await vscode.commands.executeCommand(
+        'clamps.inspect',
+        `(incudine:node ${id})`,
+        'COMMON-LISP-USER'
+      );
+    }),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel
   );
 
   await enqueueLifecycle(() => startClamps(context, bridgePath));
+  void incudineNodes?.refresh();
 }
 
 async function openGui(): Promise<void> {

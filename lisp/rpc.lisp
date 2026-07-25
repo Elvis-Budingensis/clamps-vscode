@@ -37,7 +37,7 @@
            #:rt-status-for-repl #:completions-for-repl
            #:inspect-id-for-repl #:inspect-part-for-repl
            #:inspect-release-for-repl #:inspect-set-part-for-repl
-           #:eval-for-repl-debuggable))
+           #:eval-for-repl-debuggable #:incudine-node-tree-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -1114,3 +1114,121 @@
                              (format nil "~A" e))
                 (package-name pkg)))))))
 
+
+;;; ---------------------------------------------------------------------
+;;; Incudine Node Browser (read-only)
+;;;
+;;; Liest den laufenden Node-Baum, ohne Incudine zu verändern. Die
+;;; Incudine-Symbole werden erst zur Laufzeit aufgelöst, damit rpc.lisp
+;;; weiterhin gegen ein nacktes SBCL ohne Incudine ladbar bleibt.
+;;; ---------------------------------------------------------------------
+
+(defparameter *node-accessors*
+  '("DOGRAPH" "NODE-ID" "NODE-NAME" "GROUP" "GROUP-P"
+    "CONTROL-NAMES" "CONTROL-LIST" "PAUSE-P" "DONE-P" "NODE-UPTIME")
+  "Incudine-Symbole, die der Snapshot benutzt. Welche davon es in der
+   installierten Version wirklich gibt, ist nicht garantiert — deshalb
+   wird das gemeldet statt stillschweigend zu Lücken zu führen.")
+
+(defun %node-accessor-report ()
+  "Liste der fehlenden Accessoren, als Strings. Leer heisst: alle da.
+
+   Nötig, weil ein fehlender Accessor sonst unsichtbar bleibt: ein
+   nicht auflösbares GROUP etwa liefert für jeden Node parent=nil, und
+   der Baum erscheint flach — was wie ein leeres Setup aussieht statt
+   wie ein fehlendes Symbol."
+  (let ((pkg (find-package :incudine))
+        (missing '()))
+    (when pkg
+      (dolist (name *node-accessors*)
+        (let ((sym (find-symbol name pkg)))
+          (unless (and sym (or (fboundp sym) (macro-function sym)))
+            (push (string-downcase name) missing)))))
+    (nreverse missing)))
+
+(defparameter *node-snapshot-source*
+  "(let ((result '()))
+     (incudine:dograph (n)
+       (let* ((group-p (incudine:group-p n))
+              (parent (ignore-errors (incudine:group n)))
+              (names (unless group-p
+                       (ignore-errors (incudine:control-names n))))
+              (vals  (unless group-p
+                       (ignore-errors (incudine:control-list n)))))
+         (push
+          (list :id (incudine:node-id n)
+                :parent (and parent (ignore-errors (incudine:node-id parent)))
+                :name (let ((name (ignore-errors (incudine:node-name n))))
+                        (cond ((stringp name) name)
+                              ((symbolp name) (if name (symbol-name name) \"\"))
+                              (t (princ-to-string name))))
+                :kind (if group-p :group :dsp)
+                :paused (not (null (ignore-errors (incudine:pause-p n))))
+                :done (and (not group-p)
+                           (not (null (ignore-errors (incudine:done-p n)))))
+                :uptime (if group-p
+                            \"\"
+                            (handler-case
+                                (let* ((samples (round (incudine:node-uptime n)))
+                                       (sr (ignore-errors
+                                            (incudine:rt-sample-rate))))
+                                  ;; Samples zusätzlich in Sekunden: die
+                                  ;; reine Sample-Zahl ist beim Hinsehen
+                                  ;; nicht einzuordnen.
+                                  (if (and sr (> sr 0))
+                                      (format nil \"~,1Fs (~D samples)\"
+                                              (/ samples sr) samples)
+                                      (format nil \"~D samples\" samples)))
+                              (error () \"\")))
+                :controls (loop for cn in names
+                                for cv in vals
+                                collect (list :name (if (symbolp cn)
+                                                        (symbol-name cn)
+                                                        (princ-to-string cn))
+                                              :value (clamps-bridge-rpc::%preview cv))))
+          result)))
+     (nreverse result))"
+  "Quelltext des Traversals als String.
+
+   Grund für den Umweg über read-from-string: incudine:dograph ist ein
+   Makro und die Symbole existieren beim Laden dieser Datei nicht
+   zwingend. Beim Lesen ist *read-eval* aus, es wird also nichts zur
+   Lesezeit ausgeführt; ausgewertet wird nur genau dieser feste Text.")
+
+(defun incudine-node-tree-for-repl ()
+  "Read-only Snapshot des Incudine-Node-Baums.
+
+   Rückgabe: (:ok hinweis nodes) | (:unavailable grund nil)
+             | (:error meldung nil)
+
+   HINWEIS ZUR NEBENLÄUFIGKEIT: Der Graph wird vom Realtime-Thread
+   verändert, gelesen wird hier aus einem Swank-Worker. Ein Snapshot
+   während laufendem DSP kann daher einen Zwischenzustand zeigen
+   (Node gerade entfernt, Controls halb gesetzt). Für eine Anzeige ist
+   das hinnehmbar; die einzelnen Zugriffe sind zusätzlich in
+   ignore-errors gekapselt, damit ein unter der Hand verschwundener
+   Node nicht den ganzen Snapshot kippt."
+  (let ((pkg (find-package :incudine)))
+    (cond
+      ((null pkg)
+       (list :unavailable "Incudine ist nicht geladen." nil))
+      ((member "DOGRAPH" (%node-accessor-report) :test #'string-equal)
+       (list :unavailable
+             "Diese Incudine-Version kennt kein dograph — Node-Baum nicht lesbar."
+             nil))
+      (t
+       (handler-case
+           (let* ((missing (%node-accessor-report))
+                  ;; *package* festnageln: der String wird zur Laufzeit
+                  ;; gelesen, und ohne diese Bindung entscheidet das Paket
+                  ;; des Aufrufers, wohin unqualifizierte Symbole zeigen.
+                  (nodes (let ((*read-eval* nil)
+                               (*package* (find-package :clamps-bridge-rpc)))
+                           (eval (read-from-string *node-snapshot-source*)))))
+             (list :ok
+                   (if missing
+                       (format nil "Nicht verfügbar in dieser Incudine-Version: ~{~A~^, ~}"
+                               missing)
+                       "")
+                   nodes))
+         (error (e) (list :error (princ-to-string e) nil)))))))

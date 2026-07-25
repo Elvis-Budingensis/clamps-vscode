@@ -23,7 +23,10 @@
     "onCommand:clamps.toggleTrace",
     "onCommand:clamps.untraceAll",
     "onDebug",
-    "onCommand:clamps.debugAttach"
+    "onCommand:clamps.debugAttach",
+    "onView:clamps.incudineNodes",
+    "onCommand:clamps.incudineRefresh",
+    "onCommand:clamps.incudineInspectNode"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -111,6 +114,19 @@
       {
         "command": "clamps.debugAbortAll",
         "title": "CLAMPS: Alle Debugger-Ebenen verlassen"
+      },
+      {
+        "command": "clamps.incudineRefresh",
+        "title": "CLAMPS: Incudine Nodes aktualisieren",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.incudineInspectNode",
+        "title": "CLAMPS: Incudine Node inspizieren"
+      },
+      {
+        "command": "clamps.incudineRefreshSoon",
+        "title": "CLAMPS: Incudine Nodes bald aktualisieren"
       }
     ],
     "languages": [
@@ -242,6 +258,40 @@
         {
           "command": "clamps.debugInspectVariable",
           "when": "false"
+        },
+        {
+          "command": "clamps.incudineRefreshSoon",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "clamps.incudineRefresh",
+          "when": "view == clamps.incudineNodes",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "clamps.incudineInspectNode",
+          "when": "view == clamps.incudineNodes && viewItem == incudineNode"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "clamps",
+          "title": "CLAMPS",
+          "icon": "resources/clamps.svg"
+        }
+      ]
+    },
+    "views": {
+      "clamps": [
+        {
+          "id": "clamps.incudineNodes",
+          "name": "Incudine Nodes"
         }
       ]
     }
