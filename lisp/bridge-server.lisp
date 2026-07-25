@@ -204,6 +204,18 @@
 (defvar *stdout-lock* (bt:make-lock))
 
 (defun read-lsp-message (stream)
+  "Liest eine LSP-Nachricht. STREAM muss BIVALENT sein (siehe main).
+
+Content-Length zählt BYTES in UTF-8, nicht Zeichen. Genau dieser Fehler
+war auf der Schreibseite schon behoben (siehe write-lsp-message); hier
+stand er noch: (make-string content-length) plus read-sequence las so
+viele ZEICHEN. Bei einer Nachricht mit Umlauten — etwa dem didOpen für
+eine Datei mit deutschen Kommentaren — sind Bytes > Zeichen, also wurde
+über das Ende hinaus in die folgende Nachricht hineingelesen. Danach war
+der Strom verschoben, der nächste Header unlesbar, diese Funktion gab
+NIL zurück und die Hauptschleife endete: der Bridge-Prozess beendete
+sich mit Code 0, und VS Code meldete nur noch \"Connection to server got
+closed\"."
   (let ((content-length nil))
     (loop
       (let ((line (read-line stream nil nil)))
@@ -214,9 +226,14 @@
           (when (and idx (string-equal (subseq line 0 idx) "Content-Length"))
             (setf content-length (parse-integer (string-trim " " (subseq line (1+ idx)))))))))
     (unless content-length (return-from read-lsp-message nil))
-    (let ((buf (make-string content-length)))
-      (read-sequence buf stream)
-      (json-read buf))))
+    ;; Bytes lesen, dann selbst dekodieren.
+    (let* ((bytes (make-array content-length :element-type '(unsigned-byte 8)))
+           (got (read-sequence bytes stream)))
+      (when (< got content-length)
+        ;; Abgebrochene Nachricht: nicht weiterraten, sondern beenden.
+        (log-msg "Nachricht unvollständig: ~D von ~D Bytes" got content-length)
+        (return-from read-lsp-message nil))
+      (json-read (sb-ext:octets-to-string bytes :external-format :utf-8)))))
 
 (defun write-lsp-message (obj)
   (bt:with-lock-held (*stdout-lock*)
@@ -892,6 +909,19 @@
   (handle-image-browser id "(clamps-bridge-rpc:classes-for-repl)"))
 (defun handle-threads-browser (id params) (declare (ignore params))
   (handle-image-browser id "(clamps-bridge-rpc:threads-for-repl)"))
+(defun handle-traced-browser (id params) (declare (ignore params))
+  (handle-image-browser id "(clamps-bridge-rpc:traced-for-repl)"))
+
+(defun handle-untrace-one (id params)
+  (let ((label (or (gethash "label" params) "")))
+    (swank-rex (format nil "(clamps-bridge-rpc:untrace-one-for-repl ~S)" label)
+      :callback
+      (lambda (status value)
+        (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+            (send-response id (make-jobj "ok" :true "message" (or (second value) "")))
+            (send-response id (make-jobj "ok" :false
+                                         "message" (format nil "~A"
+                                                           (if (consp value) (second value) value)))))))))
 
 (defun plist-value (plist key &optional default)
   (let ((tail (member key plist :test #'eq))) (if tail (second tail) default)))
@@ -946,6 +976,56 @@
               (make-jobj "success" :false "duration" 0 "notes" (vector)
                          "error" (format nil "~A" value))))))))
 
+
+
+(defun tool-entry-json (entry)
+  (make-jobj "label" (or (getf entry :label) "")
+             "description" (or (getf entry :description) "")
+             "detail" (or (getf entry :detail) "")
+             "file" (or (getf entry :file) "")
+             "line" (or (getf entry :line) 1)
+             "character" (or (getf entry :character) 0)
+             "inspect" (or (getf entry :inspect) "")))
+
+(defun handle-tool-result (id form)
+  (swank-rex form :callback
+    (lambda (status value)
+      (if (and (eq status :ok) (consp value))
+          (let ((ok (eq (first value) :ok)) (payload (second value)))
+            (send-response id
+              (make-jobj "available" (if ok :true :false)
+                         "error" (if ok "" (or payload "Nicht verfügbar."))
+                         "entries" (if ok (coerce (mapcar #'tool-entry-json (or payload nil)) 'vector) (vector)))))
+          (send-response id (make-jobj "available" :false "error" (format nil "~A" value) "entries" (vector)))))))
+
+(defun handle-xref (id params)
+  (handle-tool-result id
+    (format nil "(clamps-bridge-rpc:xref-for-repl ~S ~S ~S)"
+            (or (gethash "symbol" params) "")
+            (or (gethash "package" params) "COMMON-LISP-USER")
+            (or (gethash "kind" params) "definitions"))))
+
+(defun handle-apropos (id params)
+  (handle-tool-result id
+    (format nil "(clamps-bridge-rpc:apropos-for-repl ~S ~S ~A)"
+            (or (gethash "query" params) "")
+            (or (gethash "package" params) "COMMON-LISP-USER")
+            (if (gethash "allPackages" params) "t" "nil"))))
+
+(defun handle-break-on-signals (id params)
+  (let* ((raw (gethash "conditions" params))
+         (conditions (if (vectorp raw) (coerce raw 'list) nil))
+         (form (format nil "(clamps-bridge-rpc:break-on-signals-for-repl '~S)" conditions)))
+    (swank-rex form :callback
+      (lambda (status value)
+        (if (and (eq status :ok) (consp value))
+            (let ((ok (eq (first value) :ok)) (payload (second value)))
+              (send-response id
+                (make-jobj "available" (if ok :true :false)
+                           "error" (if ok "" (or payload "Nicht verfügbar."))
+                           "conditions" (if ok (coerce (or payload nil) 'vector) (vector)))))
+            (send-response id (make-jobj "available" :false "error" (format nil "~A" value) "conditions" (vector))))))))
+
 (defun handle-request (msg)
   (let ((method (gethash "method" msg))
         (id (gethash "id" msg))
@@ -973,9 +1053,14 @@
           ((string= method "clamps/packages") (handle-packages id params))
           ((string= method "clamps/classes") (handle-classes id params))
           ((string= method "clamps/threads") (handle-threads-browser id params))
+          ((string= method "clamps/traced") (handle-traced-browser id params))
+          ((string= method "clamps/untraceOne") (handle-untrace-one id params))
           ((string= method "clamps/compilerNotes") (handle-compiler-notes id params))
           ((string= method "clamps/toggleTrace") (handle-trace-toggle id params))
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))
+          ((string= method "clamps/xref") (handle-xref id params))
+          ((string= method "clamps/apropos") (handle-apropos id params))
+          ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
       (error (e)
@@ -1033,10 +1118,20 @@
       (setf *swank-stream* (connect-swank "127.0.0.1" port))
       (bt:make-thread #'swank-reader-loop :name "swank-reader")
       (log-msg "Verbunden. Starte LSP-Loop auf stdio.")
-      (loop
-        (let ((msg (read-lsp-message *standard-input*)))
-          (unless msg (return))
-          (handle-request msg))))))
+      ;; Eigener BIVALENTER Strom auf Dateideskriptor 0: die Header sind
+      ;; Text (read-line), der Rumpf wird als Bytes gelesen und selbst
+      ;; dekodiert, weil Content-Length Bytes zählt. Ein rein zeichen-
+      ;; orientierter Strom kann das nicht leisten.
+      (let ((in (sb-sys:make-fd-stream 0
+                                       :input t
+                                       :element-type :default
+                                       :external-format :utf-8)))
+        (loop
+          (let ((msg (read-lsp-message in)))
+            (unless msg
+              (log-msg "Eingabestrom zu Ende oder Nachricht unlesbar — beende.")
+              (return))
+            (handle-request msg)))))))
 
 (handler-case (main)
   (error (e)

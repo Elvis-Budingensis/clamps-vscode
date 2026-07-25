@@ -60,6 +60,24 @@ const esc = (s: string): string =>
 export class ClampsInspector {
   private static panel: vscode.WebviewPanel | undefined;
   private static trail: Crumb[] = [];
+
+  /**
+   * Besuchsverlauf, unabhängig vom Breadcrumb.
+   *
+   * trail ist ein PFAD: er zeigt, wo im Objektbaum man steht, und beim
+   * Zurückgehen wird abgeschnitten. Damit ist alles verloren, was man
+   * seitwärts besucht hat — geht man von A in Teil 3 und wieder zurück,
+   * führt kein Weg mehr zu Teil 3, obwohl man gerade dort war.
+   *
+   * history ist die Browser-Sicht: jede besuchte Ansicht in der
+   * Reihenfolge des Besuchs, mit Vor und Zurück darüber. Der Index zeigt
+   * auf die gerade gezeigte Stelle; ein neuer Sprung schneidet nur den
+   * Teil VOR dem Index ab, wie bei einem Browser.
+   */
+  private static history: Crumb[] = [];
+  private static historyIndex = -1;
+  /** Verhindert, dass Vor/Zurück selbst wieder Historie schreibt. */
+  private static navigatingHistory = false;
   private static rootExpr = '';
   private static pkg = 'COMMON-LISP-USER';
   private static getClient: () => LanguageClient | undefined;
@@ -73,6 +91,8 @@ export class ClampsInspector {
     this.pkg = pkg;
     this.rootExpr = expr;
     this.trail = [];
+    this.history = [];
+    this.historyIndex = -1;
     await this.ensurePanel();
     await this.request('clamps/inspect', { expr, package: pkg }, expr);
   }
@@ -93,6 +113,8 @@ export class ClampsInspector {
     this.panel.onDidDispose(() => {
       this.panel = undefined;
       this.trail = [];
+      this.history = [];
+      this.historyIndex = -1;
       // Objekt-Tabelle im Image freigeben. Ohne das hielten wir alles
       // fest, was je angeschaut wurde — bei Audio-Buffern schnell teuer.
       void this.release();
@@ -105,6 +127,12 @@ export class ClampsInspector {
           break;
         case 'back':
           await this.back();
+          break;
+        case 'forward':
+          await this.forward();
+          break;
+        case 'history':
+          await this.gotoHistory(Number(msg.index));
           break;
         case 'jump':
           await this.jump(Number(msg.depth));
@@ -134,17 +162,50 @@ export class ClampsInspector {
     );
   }
 
+  /**
+   * Zurück im Verlauf. Bewegt sich NICHT im Pfad: wer von A nach Teil 3
+   * und zurück will, erwartet Teil 3 danach noch erreichbar zu haben.
+   */
   private static async back(): Promise<void> {
-    if (this.trail.length < 2) return;
-    this.trail.pop();
-    const target = this.current;
-    if (!target) return;
-    await this.request(
-      'clamps/inspectRefresh',
-      { id: target.id },
-      target.label,
-      'replace'
-    );
+    if (this.historyIndex <= 0) return;
+    await this.gotoHistory(this.historyIndex - 1);
+  }
+
+  private static async forward(): Promise<void> {
+    if (this.historyIndex >= this.history.length - 1) return;
+    await this.gotoHistory(this.historyIndex + 1);
+  }
+
+  /** Direkter Sprung an eine Stelle des Verlaufs. */
+  private static async gotoHistory(index: number): Promise<void> {
+    if (index < 0 || index >= this.history.length) return;
+    const target = this.history[index];
+    this.historyIndex = index;
+    // Der Pfad wird auf den Zielort gesetzt, damit Teil-Sprünge von hier
+    // aus wieder stimmen. Der Verlauf bleibt vollständig.
+    this.trail = [{ id: target.id, label: target.label }];
+    this.navigatingHistory = true;
+    try {
+      await this.request('clamps/inspectRefresh', { id: target.id }, target.label, 'replace');
+    } finally {
+      this.navigatingHistory = false;
+    }
+  }
+
+  /** Eintrag in den Verlauf schreiben, sofern es nicht Vor/Zurück war. */
+  private static recordHistory(id: number, label: string): void {
+    if (this.navigatingHistory) return;
+    const cur = this.history[this.historyIndex];
+    // Dieselbe Ansicht nicht doppelt: Aktualisieren und Setzen eines
+    // Teils landen sonst als Dutzend gleicher Einträge im Verlauf.
+    if (cur && cur.id === id && cur.label === label) return;
+    this.history = this.history.slice(0, this.historyIndex + 1);
+    this.history.push({ id, label });
+    // Nach oben begrenzen: der Verlauf hält IDs der Objekt-Tabelle im
+    // Image fest, und die wird erst beim Schliessen freigegeben.
+    const MAX = 50;
+    if (this.history.length > MAX) this.history = this.history.slice(-MAX);
+    this.historyIndex = this.history.length - 1;
   }
 
   /** Sprung im Breadcrumb auf eine frühere Ebene. */
@@ -224,6 +285,7 @@ export class ClampsInspector {
       if (mode === 'root') this.trail = [{ id: r.id, label }];
       else if (mode === 'push') this.trail.push({ id: r.id, label });
       else if (this.current) this.current.id = r.id;
+      this.recordHistory(r.id, label);
       this.panel.webview.html = this.render(r);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -240,7 +302,9 @@ export class ClampsInspector {
     const parts = r.parts ?? [];
     const meta = r.meta ?? [];
     const body = this.renderBody(kind, parts);
-    const canBack = this.trail.length > 1;
+    // Vor/Zurück richten sich nach dem VERLAUF, nicht nach dem Pfad.
+    const canBack = this.historyIndex > 0;
+    const canForward = this.historyIndex < this.history.length - 1;
 
     // Bei skalaren Typen ist die Meta-Tabelle die eigentliche Information,
     // die print-Zeile also redundant.
@@ -251,8 +315,10 @@ export class ClampsInspector {
       ${this.css()}
     </style></head><body>
       <div class="bar">
-        <button id="back" ${canBack ? '' : 'disabled'}>← Zurück</button>
+        <button id="back" ${canBack ? '' : 'disabled'} title="Zurück im Verlauf">←</button>
+        <button id="forward" ${canForward ? '' : 'disabled'} title="Vor im Verlauf">→</button>
         <button id="refresh" title="Objekt neu einlesen">↻</button>
+        ${this.renderHistorySelect()}
         <span class="kind kind-${esc(kind)}">${esc(kind)}</span>
         <span class="type">${esc(r.type)}</span>
         <span class="oid" title="ID in der Objekt-Tabelle">#${r.id}</span>
@@ -265,6 +331,10 @@ export class ClampsInspector {
         const vscode = acquireVsCodeApi();
         document.getElementById('back')?.addEventListener('click', () =>
           vscode.postMessage({ command: 'back' }));
+        document.getElementById('forward')?.addEventListener('click', () =>
+          vscode.postMessage({ command: 'forward' }));
+        document.getElementById('histsel')?.addEventListener('change', e =>
+          vscode.postMessage({ command: 'history', index: Number(e.target.value) }));
         document.getElementById('refresh')?.addEventListener('click', () =>
           vscode.postMessage({ command: 'refresh' }));
         for (const c of document.querySelectorAll('[data-depth]')) {
@@ -343,6 +413,22 @@ export class ClampsInspector {
    * Ebenen zu einem "…" zusammen. Der vollständige Text steht jeweils
    * im title-Attribut.
    */
+  /**
+   * Verlauf als Auswahlliste. Neueste zuoberst, weil man häufiger ein
+   * paar Schritte zurück will als an den Anfang.
+   */
+  private static renderHistorySelect(): string {
+    if (this.history.length < 2) return '';
+    const options = this.history
+      .map((c, i) => ({ c, i }))
+      .reverse()
+      .map(({ c, i }) =>
+        `<option value="${i}" ${i === this.historyIndex ? 'selected' : ''}>` +
+        `${esc(c.label)} <#${c.id}></option>`)
+      .join('');
+    return `<select id="histsel" title="Verlauf (${this.history.length})">${options}</select>`;
+  }
+
   private static renderTrail(): string {
     if (this.trail.length === 0) return '';
 

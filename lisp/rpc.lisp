@@ -34,11 +34,14 @@
   (:export #:eval-for-repl #:macroexpand-for-repl #:disassemble-for-repl
            #:find-definitions-for-repl #:inspect-for-repl
            #:trace-toggle-for-repl #:untrace-all-for-repl
+           #:traced-for-repl #:untrace-one-for-repl
            #:rt-status-for-repl #:completions-for-repl
            #:inspect-id-for-repl #:inspect-part-for-repl
            #:inspect-release-for-repl #:inspect-set-part-for-repl
            #:eval-for-repl-debuggable #:incudine-node-tree-for-repl
-           #:packages-for-repl #:classes-for-repl #:threads-for-repl))
+           #:packages-for-repl #:classes-for-repl #:threads-for-repl
+           #:xref-for-repl #:apropos-for-repl #:break-on-signals-for-repl
+           #:set-function-breakpoints-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -872,6 +875,88 @@
       (error (e)
         (list :error (format nil "~A" e) nil)))))
 
+;;; Zustand der Beobachtungswerkzeuge. Bewusst HIER, vor der ersten
+;;; Benutzung in traced-for-repl: nach hinten gestellt melden SBCLs
+;;; Compiler beide als undefined variable, und diese Warnungen landen
+;;; jetzt in clamps.log — dem Ort, an dem man einen Absturz sucht.
+(defvar *clamps-function-breakpoints* (make-hash-table :test #'equal))
+
+(defvar *rt-breakpoint-notes* nil
+  "Symbole, für die ein Breakpoint im Echtzeit-Thread übersprungen wurde.")
+
+(defun %restore-function-breakpoint (key)
+  (let ((record (gethash key *clamps-function-breakpoints*)))
+    (when record
+      (let ((sym (getf record :symbol)) (original (getf record :original))
+            (wrapper (getf record :wrapper)))
+        (when (and (fboundp sym) (eq (fdefinition sym) wrapper))
+          (setf (fdefinition sym) original))
+        (remhash key *clamps-function-breakpoints*)))))
+
+(defun traced-for-repl ()
+  "Liste der aktuell getraceten Funktionen für den Trace-Browser.
+
+(TRACE) ohne Argumente liefert laut Standard die getraceten Namen; das
+ist portabler als in SBCLs Innereien zu greifen. Namen können auch
+zusammengesetzt sein ((SETF FOO), (METHOD BAR (T))), deshalb wird
+princ-to-string benutzt und nicht symbol-name.
+
+Zusätzlich kommen die Funktions-Breakpoints mit, damit der Browser beide
+Arten von Beobachtung an einer Stelle zeigt — sonst sucht man den Grund
+für ein anhaltendes Image an zwei Orten."
+  (handler-case
+      (let ((entries nil))
+        (dolist (name (eval '(trace)))
+          (push (list :label (princ-to-string name)
+                      :description "TRACE"
+                      :tooltip "Aufrufe erscheinen in der REPL. Klick: inspizieren."
+                      :icon "radio-tower"
+                      :inspect (and (symbolp name) (%package-qualified name)))
+                entries))
+        (maphash
+         (lambda (key record)
+           (declare (ignore key))
+           (let ((sym (getf record :symbol)))
+             (let ((skipped (member sym *rt-breakpoint-notes*)))
+               (push (list :label (princ-to-string sym)
+                           ;; Vermerk, falls der Breakpoint im Echtzeit-
+                           ;; Thread uebersprungen wurde. Ohne diesen
+                           ;; Hinweis wirkt er kaputt.
+                           :description (if skipped
+                                            "BREAKPOINT (im RT-Thread uebersprungen)"
+                                            "BREAKPOINT")
+                           :tooltip (if skipped
+                                        "Wurde im Incudine-Echtzeit-Thread aufgerufen und dort NICHT angehalten — ein BREAK haette den Audio-Callback blockiert."
+                                        "Haelt beim Eintritt in die Funktion an.")
+                           :icon (if skipped "warning" "debug-breakpoint")
+                           :inspect (%package-qualified sym))
+                     entries))))
+         *clamps-function-breakpoints*)
+        (list :ok (sort entries #'string< :key (lambda (e) (getf e :label)))))
+    (error (e) (list :error (princ-to-string e)))))
+
+(defun untrace-one-for-repl (label)
+  "Nimmt genau einen Eintrag zurück — Trace oder Funktions-Breakpoint.
+LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
+  (handler-case
+      (let ((hit nil))
+        ;; Erst die Breakpoints: dort ist der Vergleich eindeutig.
+        (maphash (lambda (key record)
+                   (declare (ignore record))
+                   (when (string-equal key label) (setf hit key)))
+                 *clamps-function-breakpoints*)
+        (when hit
+          (%restore-function-breakpoint hit)
+          (return-from untrace-one-for-repl
+            (list :ok (format nil "Breakpoint entfernt: ~A" label))))
+        (dolist (name (eval '(trace)))
+          (when (string= (princ-to-string name) label)
+            (eval `(untrace ,name))
+            (return-from untrace-one-for-repl
+              (list :ok (format nil "Trace aus: ~A" label)))))
+        (list :error (format nil "~A ist nicht beobachtet." label)))
+    (error (e) (list :error (princ-to-string e)))))
+
 (defun untrace-all-for-repl ()
   "Schaltet alle Traces aus. Gibt (:ok TEXT) zurück."
   (handler-case
@@ -1293,3 +1378,209 @@
                                                        (and name (fboundp name) (funcall name th))))))
             (list :error "Bordeaux-Threads ist nicht verfügbar." nil)))
     (error (e) (list :error (format nil "~A" e) nil))))
+
+
+;;; ---------------------------------------------------------------------
+;;; SLY/SLIME-Werkzeuge: isolierte Ergänzungen für v72
+;;; ---------------------------------------------------------------------
+
+
+(defun %tool-entry (label &key description detail file line character inspect offset)
+  (list :label label :description (or description "") :detail (or detail "")
+        :file file :line (or line 1) :character (or character 0)
+        ;; Offset MIT durchreichen: SBCL liefert in Quellorten fast immer
+        ;; (:position N) statt (:line N), und N ist ein Zeichen-Offset.
+        ;; Ohne dieses Feld landet jeder Sprung auf Zeile 1 — derselbe
+        ;; Fehler, der im Debugger schon einmal behoben wurde. Umgerechnet
+        ;; wird auf der TS-Seite, die die Datei ohnehin öffnet.
+        :offset offset
+        :inspect inspect))
+
+(defun %location-file-line (location)
+  "Liefert (values file line character offset) aus einem Swank-Quellort.
+line/character sind nur gesetzt, wenn das Backend sie ausdrücklich
+liefert; sonst steht der Zeichen-Offset in offset."
+  (let ((file nil) (line nil) (character nil) (offset nil))
+    (labels ((walk (x)
+               (when (consp x)
+                 (case (car x)
+                   (:file (when (stringp (second x)) (setf file (second x))))
+                   (:line (when (numberp (second x)) (setf line (second x)))
+                          (when (numberp (third x)) (setf character (third x))))
+                   (:position (when (numberp (second x)) (setf offset (second x))))
+                   (:offset
+                    ;; (:offset START DELTA) — beides addiert ergibt die Stelle.
+                    (when (numberp (second x))
+                      (setf offset (+ (second x) (if (numberp (third x)) (third x) 0))))))
+                 (dolist (e x) (walk e)))))
+      (walk location))
+    (values file line character offset)))
+
+(defun %xref-type (kind)
+  (cdr (assoc (string-downcase kind)
+              ;; "definitions" absichtlich NICHT dabei: swank:xref kennt
+              ;; den Typ nicht (Definitionen laufen ueber
+              ;; find-definitions-for-emacs) und signalisiert stattdessen.
+              '(("callers" . :calls)
+                ("callees" . :calls-who)
+                ("references" . :references)
+                ("bindings" . :binds)
+                ("setters" . :sets)
+                ("macroexpands" . :macroexpands))
+              :test #'string=)))
+
+(defun xref-for-repl (symbol-string package-name kind)
+  (handler-case
+      (let* ((sym (resolve-symbol symbol-string package-name))
+             (type (%xref-type kind))
+             (fn (or (find-symbol "XREF" :swank)
+                     (find-symbol "XREF" :swank/backend))))
+        (unless (and sym type fn (fboundp fn))
+          (return-from xref-for-repl (list :error "XREF wird von diesem Swank/Image nicht angeboten.")))
+        (let ((raw (funcall fn type (%package-qualified sym))) (out nil))
+          (dolist (entry raw)
+            (let* ((name (if (consp entry) (first entry) entry))
+                   (loc (and (consp entry) (second entry))))
+              (multiple-value-bind (file line character offset) (%location-file-line loc)
+                (push (%tool-entry (princ-to-string name)
+                                   :description (string-downcase (symbol-name type))
+                                   :detail (princ-to-string loc)
+                                   :file file :line line :character character
+                                   :offset offset
+                                   :inspect (and (symbolp name) (%package-qualified name)))
+                      out))))
+          (list :ok (nreverse out))))
+    (error (e) (list :error (princ-to-string e)))))
+
+(defun apropos-for-repl (query package-name all-packages-p)
+  (handler-case
+      (let ((symbols (apropos-list query (and (not all-packages-p) (find-package package-name))))
+            (out nil))
+        (dolist (sym (sort (copy-list symbols) #'string< :key #'%package-qualified))
+          (let ((kind (%sym-kind sym)))
+            (push (%tool-entry (%package-qualified sym)
+                               :description (string-downcase (symbol-name kind))
+                               :detail (%short-doc sym)
+                               :inspect (%package-qualified sym)) out)))
+        (list :ok (nreverse out)))
+    (error (e) (list :error (princ-to-string e)))))
+
+(defun break-on-signals-for-repl (condition-names)
+  "Setzt *BREAK-ON-SIGNALS*. Der Wert ist ein TYPSPEZIFIZIERER, keine Liste.
+
+Wichtig, weil SIGNAL diese Variable bei JEDER signalisierten Condition
+gegen TYPEP prüft: eine Liste (WARNING TYPE-ERROR) wird als zusammen-
+gesetzter Typspezifizierer mit Kopf WARNING gelesen, der ungültig ist.
+TYPEP signalisiert dann selbst — bei jedem Signal, also auch beim
+Aufräumen des dadurch entstehenden Fehlers. Das Image ist danach nicht
+mehr benutzbar. Mehrere Typen müssen als (OR a b) zusammengefasst werden.
+
+Zielvariable ist CL:*BREAK-ON-SIGNALS* aus dem Standard; nur falls das
+Image eine eigene Swank-Variante mitbringt, wird die bevorzugt."
+  (handler-case
+      (let ((var (or (let ((s (find-symbol "*BREAK-ON-SIGNALS*" :swank)))
+                       (and s (boundp s) s))
+                     (find-symbol "*BREAK-ON-SIGNALS*" :common-lisp))))
+        (unless var
+          (return-from break-on-signals-for-repl
+            (list :error "*BREAK-ON-SIGNALS* ist in diesem Image nicht verfügbar.")))
+        (let ((types (loop for name in condition-names
+                           for sym = (or (ignore-errors (resolve-symbol name "COMMON-LISP-USER"))
+                                         (find-symbol (string-upcase name) :common-lisp))
+                           when sym collect sym)))
+          ;; Jeden Typ einzeln prüfen, BEVOR er scharf gestellt wird —
+          ;; ein Tippfehler darf nicht dazu führen, dass erst der nächste
+          ;; SIGNAL das Image lahmlegt.
+          (dolist (type types)
+            (unless (ignore-errors (progn (typep nil type) t))
+              (return-from break-on-signals-for-repl
+                (list :error (format nil "~A ist kein gültiger Condition-Typ." type)))))
+          (let ((spec (cond ((null types) nil)
+                            ((null (cdr types)) (first types))
+                            (t (cons 'or types)))))
+            ;; setf symbol-value statt set: set ist gestrichen und sagt
+            ;; nichts darüber, welche Bindung getroffen wird.
+            (setf (symbol-value var) spec)
+            (list :ok (mapcar #'%package-qualified types)))))
+    (error (e) (list :error (princ-to-string e)))))
+
+(defun %generic-function-p (sym)
+  (handler-case
+      (let ((gf (find-symbol "GENERIC-FUNCTION" :common-lisp)))
+        (and gf (fboundp sym) (typep (fdefinition sym) gf)))
+    (error () nil)))
+
+
+(defun %rt-breakpoint-note (sym)
+  "Im Echtzeit-Thread nur vermerken, nicht anhalten. Kein Ausgeben:
+Konsolen-I/O aus dem Audio-Callback ist selbst schon eine Frist-
+verletzung. Der Vermerk wird beim nächsten Abruf der Breakpoint-Liste
+sichtbar."
+  (pushnew sym *rt-breakpoint-notes*)
+  nil)
+
+(defun %rt-thread-p ()
+  "Läuft der aktuelle Thread als Incudine-Echtzeit-Thread?
+
+Kein Fehler, wenn Incudine gar nicht geladen ist — dann gibt es auch
+keinen Echtzeit-Thread."
+  (handler-case
+      (let ((fn (find-symbol "RT-THREAD-P" :incudine))
+            (var (find-symbol "*RT-THREAD*" :incudine)))
+        (cond ((and fn (fboundp fn)) (and (funcall fn) t))
+              ((and var (boundp var))
+               (let ((bt (find-symbol "CURRENT-THREAD" :bordeaux-threads)))
+                 (and bt (fboundp bt) (eq (funcall bt) (symbol-value var)))))
+              (t nil)))
+    (error () nil)))
+
+(defun set-function-breakpoints-for-repl (names package-name)
+  "Setzt Eintritts-Breakpoints für gewöhnliche Funktionen. Bestehende
+Definitionen werden bewahrt und beim Entfernen exakt wiederhergestellt."
+  (handler-case
+      (progn
+        (let ((wanted (mapcar #'string-upcase names)))
+          (maphash (lambda (key value) (declare (ignore value))
+                     (unless (member key wanted :test #'string=)
+                       (%restore-function-breakpoint key)))
+                   *clamps-function-breakpoints*)
+          (let ((result nil))
+            (dolist (name names)
+              (let* ((sym (resolve-symbol name package-name))
+                     (key (string-upcase name)))
+                (cond
+                  ((null sym) (push (list :name name :verified nil :message "Symbol nicht gefunden.") result))
+                  ((macro-function sym) (push (list :name name :verified nil :message "Makros werden nicht gewrappt.") result))
+                  ((not (fboundp sym)) (push (list :name name :verified nil :message "Keine Funktionsdefinition.") result))
+                  ;; Generische Funktionen NICHT ersetzen: fdefinition
+                  ;; würde die ganze GF samt Dispatch durch ein Lambda
+                  ;; tauschen. Ein spätere defmethod auf dasselbe Symbol
+                  ;; trifft dann ins Leere, und die Methoden sind weg.
+                  ((%generic-function-p sym)
+                   (push (list :name name :verified nil
+                               :message "Generische Funktion — Dispatch würde verloren gehen. Stattdessen TRACE benutzen.")
+                         result))
+                  ((gethash key *clamps-function-breakpoints*)
+                   (push (list :name name :verified t :message "Aktiv.") result))
+                  (t
+                   (let* ((original (fdefinition sym))
+                          (wrapper (lambda (&rest args)
+                                     ;; NIEMALS im Echtzeit-Thread in den
+                                     ;; Debugger. Incudines Audio-Callback
+                                     ;; hat eine harte Frist; ein BREAK
+                                     ;; dort blockiert ihn, und mit ihm
+                                     ;; das ganze Image — im besten Fall
+                                     ;; hörbar als Aussetzer, im
+                                     ;; schlechteren als Absturz, den
+                                     ;; hinterher niemand zuordnen kann.
+                                     (if (%rt-thread-p)
+                                         (%rt-breakpoint-note sym)
+                                         (break "Funktions-Breakpoint: ~A~%Argumente: ~S" sym args))
+                                     (apply original args))))
+                     (setf (fdefinition sym) wrapper)
+                     (setf (gethash key *clamps-function-breakpoints*)
+                           (list :symbol sym :original original :wrapper wrapper))
+                     (push (list :name name :verified t :message "Aktiv.") result))))))
+            (list :ok (nreverse result)))))
+    (error (e) (list :error (princ-to-string e)))))
+

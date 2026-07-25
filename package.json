@@ -167,6 +167,30 @@
       {
         "command": "clamps.compileDiagnostics",
         "title": "CLAMPS: Compiler-Diagnostics aktualisieren"
+      },
+      {
+        "command": "clamps.xref",
+        "title": "CLAMPS: XREF"
+      },
+      {
+        "command": "clamps.apropos",
+        "title": "CLAMPS: Apropos"
+      },
+      {
+        "command": "clamps.breakOnSignals",
+        "title": "CLAMPS: Break on Signals"
+      },
+      {
+        "command": "clamps.tracedRefresh",
+        "title": "CLAMPS: Trace-Liste aktualisieren",
+        "category": "CLAMPS",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.untraceOne",
+        "title": "CLAMPS: Beobachtung zurücknehmen",
+        "category": "CLAMPS",
+        "icon": "$(close)"
       }
     ],
     "languages": [
@@ -340,6 +364,11 @@
           "command": "clamps.threadsRefresh",
           "when": "view == clamps.threads",
           "group": "navigation"
+        },
+        {
+          "command": "clamps.tracedRefresh",
+          "when": "view == clamps.traced",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -351,6 +380,11 @@
           "command": "clamps.inspectBrowserItem",
           "when": "viewItem == clampsInspectable",
           "group": "navigation"
+        },
+        {
+          "command": "clamps.untraceOne",
+          "when": "view == clamps.traced",
+          "group": "inline"
         }
       ]
     },
@@ -380,6 +414,10 @@
         {
           "id": "clamps.threads",
           "name": "Threads"
+        },
+        {
+          "id": "clamps.traced",
+          "name": "Trace & Breakpoints"
         }
       ]
     }
@@ -389,8 +427,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
-    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js",
-    "gates": "npm run check && npm run compile && npm test"
+    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js",
+    "gates": "npm run check && npm run lisp && npm run compile && npm test",
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

@@ -27,7 +27,9 @@ import { ClampsRtStatus } from './rtStatus';
 import { ClampsDebugSession } from './debugSession';
 import { IncudineNodeProvider } from './nodeBrowser';
 import { LispBrowserProvider } from './imageBrowsers';
+import { ClampsInlineValuesProvider } from './inlineValues';
 import { CompilerDiagnostics } from './compilerDiagnostics';
+import { xrefCommand, aproposCommand, breakOnSignalsCommand } from './slimeTools';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -39,6 +41,7 @@ let incudineNodes: IncudineNodeProvider | undefined;
 let packageBrowser: LispBrowserProvider | undefined;
 let classBrowser: LispBrowserProvider | undefined;
 let threadBrowser: LispBrowserProvider | undefined;
+let traceBrowser: LispBrowserProvider | undefined;
 let compilerDiagnostics: CompilerDiagnostics | undefined;
 
 function enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
@@ -72,13 +75,22 @@ export async function activate(context: vscode.ExtensionContext) {
   packageBrowser = new LispBrowserProvider('clamps/packages', () => client);
   classBrowser = new LispBrowserProvider('clamps/classes', () => client);
   threadBrowser = new LispBrowserProvider('clamps/threads', () => client);
+  traceBrowser = new LispBrowserProvider('clamps/traced', () => client);
   compilerDiagnostics = new CompilerDiagnostics(() => client);
-  context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, compilerDiagnostics);
+  context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, traceBrowser, compilerDiagnostics);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes),
     vscode.window.registerTreeDataProvider('clamps.packages', packageBrowser),
     vscode.window.registerTreeDataProvider('clamps.classes', classBrowser),
     vscode.window.registerTreeDataProvider('clamps.threads', threadBrowser),
+    vscode.window.registerTreeDataProvider('clamps.traced', traceBrowser),
+    // Inline Values: Werte der Frame-Locals im Editor, solange Lisp
+    // angehalten ist. Registriert fuer beide Sprach-IDs, weil .lisp und
+    // .cl je nach Einstellung unterschiedlich zugeordnet werden.
+    vscode.languages.registerInlineValuesProvider(
+      [{ language: 'commonlisp' }, { language: 'lisp' }],
+      new ClampsInlineValuesProvider()
+    ),
     vscode.workspace.onDidSaveTextDocument(doc => {
       if (vscode.workspace.getConfiguration('clamps').get<boolean>('compilerDiagnosticsOnSave', true)) {
         void compilerDiagnostics?.update(doc);
@@ -276,6 +288,25 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.packagesRefresh', () => packageBrowser?.refresh()),
     vscode.commands.registerCommand('clamps.classesRefresh', () => classBrowser?.refresh()),
     vscode.commands.registerCommand('clamps.threadsRefresh', () => threadBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.tracedRefresh', () => traceBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.untraceOne', async (item?: { label?: string }) => {
+      const label = item?.label;
+      if (!label) return;
+      const current = client;
+      if (!current || current.state !== State.Running) {
+        void vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        return;
+      }
+      try {
+        const r = await current.sendRequest<{ ok: boolean; message: string }>(
+          'clamps/untraceOne', { label });
+        if (r.ok) outputChannel.appendLine(r.message);
+        else void vscode.window.showWarningMessage(r.message);
+      } catch (e) {
+        void vscode.window.showErrorMessage(`Konnte ${label} nicht zurücknehmen: ${e}`);
+      }
+      await traceBrowser?.refresh();
+    }),
     vscode.commands.registerCommand('clamps.inspectBrowserItem', (expression?: string) => {
       if (expression) return vscode.commands.executeCommand('clamps.inspect', expression, 'COMMON-LISP-USER');
     }),
@@ -307,6 +338,9 @@ export async function activate(context: vscode.ExtensionContext) {
         'COMMON-LISP-USER'
       );
     }),
+    vscode.commands.registerCommand('clamps.xref', () => xrefCommand(() => client)),
+    vscode.commands.registerCommand('clamps.apropos', () => aproposCommand(() => client)),
+    vscode.commands.registerCommand('clamps.breakOnSignals', () => breakOnSignalsCommand(() => client)),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
     outputChannel
   );

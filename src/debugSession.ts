@@ -398,6 +398,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
           supportsEvaluateForHovers: true,
           supportsExceptionInfoRequest: true,
           supportsRestartFrame: true,
+          supportsSetVariable: true,
+          supportsFunctionBreakpoints: true,
           supportsDelayedStackTraceLoading: true,
           supportsStepInTargetsRequest: false,
           supportsSteppingGranularity: false,
@@ -412,7 +414,10 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       case 'threads':         return this.threads(req);
       case 'stackTrace':      return this.stackTrace(req, a.threadId, a.startFrame ?? 0, a.levels ?? 200);
       case 'scopes':          return this.scopes(req, a.frameId);
-      case 'variables':       this.respond(req, { variables: this.variableSets.get(a.variablesReference) ?? [] }); return;
+      case 'variables':       return this.variables(req, a.variablesReference);
+      case 'setVariable':     return this.setVariable(
+                                req, a.variablesReference,
+                                String(a.name ?? ''), String(a.value ?? ''));
       // frameId wird hier dekodiert: alles dahinter rechnet mit echten
       // Lisp-Frame-Nummern, und das Dekodieren richtet gleich den
       // Thread-Fokus auf den Frame, den VS Code meint.
@@ -437,7 +442,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
           })),
         });
         return;
-      case 'setFunctionBreakpoints': this.respond(req, { breakpoints: [] }); return;
+      case 'setFunctionBreakpoints': return this.setFunctionBreakpoints(req, a.breakpoints ?? []);
       case 'setExceptionBreakpoints': this.respond(req); return;
 
       // --- eigene Anfragen -------------------------------------------
@@ -450,6 +455,8 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         return this.abortAll(req);
       case 'clamps/replEval':
         return this.replEval(req, String(a.code ?? ''), String(a.package ?? 'COMMON-LISP-USER'));
+      case 'clamps/frameLocals':
+        return this.frameLocals(req, this.decodeFrame(a.frameId));
       case 'clamps/bindForInspector':
         return this.bindForInspector(req, String(a.expression ?? ''), this.decodeFrame(a.frameId));
       case 'clamps/bindCondition':
@@ -1018,6 +1025,11 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
           value: text(plistGet(entry, ':value')),
           variablesReference: 0,
           evaluateName: name,
+          // Herkunft mitführen, damit setVariable weiß, in welchem Frame
+          // und Thread die Zuweisung stattfinden muss. Wird vor dem
+          // Senden entfernt (siehe variables).
+          __frame: frameId,
+          __settable: true,
         };
       });
       const catches = asList(outer[1]).map((tag, i) => ({
@@ -1039,6 +1051,120 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       this.respond(req, { scopes });
     } catch (e) {
       this.fail(req, 1002, String(e));
+    }
+  }
+
+  /**
+   * Locals eines Frames als flache Liste — Grundlage für Inline Values.
+   *
+   * Eigene Anfrage statt scopes/variables: der Inline-Values-Anbieter
+   * läuft bei jedem Sprung im Editor und braucht nur Namen und Werte,
+   * keine Referenzen, keine Catch-Tags. Antwortet bewusst mit leerer
+   * Liste statt mit einem Fehler, wenn nichts angehalten ist — ein
+   * fehlgeschlagener Request pro Cursorbewegung wäre nur Lärm.
+   */
+  private async frameLocals(req: DapRequest, frameId: number | undefined): Promise<void> {
+    const level = this.top;
+    if (!level || frameId === undefined) {
+      this.respond(req, { locals: [] });
+      return;
+    }
+    try {
+      const result = await this.swank.rex(
+        `(swank:frame-locals-and-catch-tags ${frameId})`,
+        this.swank.packageName, level.thread, 4000
+      );
+      const locals = asList(asList(result)[0]).map((entry, i) => ({
+        name: text(plistGet(entry, ':name')) || `local-${i}`,
+        value: text(plistGet(entry, ':value')),
+      }));
+      this.respond(req, { locals });
+    } catch {
+      this.respond(req, { locals: [] });
+    }
+  }
+
+  /**
+   * Variablensatz ausliefern. Die internen Felder __frame/__settable
+   * gehen NICHT über die Leitung: DAP-Clients dürfen unbekannte Felder
+   * ignorieren, aber sie sind Ballast und würden im Protokollmitschnitt
+   * verwirren.
+   */
+  private variables(req: DapRequest, ref: number): void {
+    const set = this.variableSets.get(ref) ?? [];
+    const variables = (set as any[]).map(v => {
+      const { __frame, __settable, ...rest } = v;
+      return rest;
+    });
+    this.respond(req, { variables });
+  }
+
+  /**
+   * Eine lokale Variable im angehaltenen Frame setzen.
+   *
+   * Swank hat dafür keinen eigenen Aufruf; der Weg ist eine Zuweisung
+   * IM FRAME über eval-string-in-frame. Das funktioniert nur, wenn SBCL
+   * die Variable als setzbar führt — bei hoch optimiertem Code ist sie
+   * das oft nicht, und die Zuweisung läuft ins Leere, ohne zu klagen.
+   *
+   * Deshalb wird nach dem Setzen NEU GELESEN und der tatsächliche Wert
+   * zurückgemeldet. Sonst zeigt VS Code den Wunschwert an, während im
+   * Image der alte steht — die schlimmste Art von Debugger-Anzeige.
+   */
+  private async setVariable(
+    req: DapRequest, ref: number, name: string, value: string
+  ): Promise<void> {
+    const set = (this.variableSets.get(ref) ?? []) as any[];
+    const entry = set.find(v => v.name === name);
+    if (!entry) {
+      this.fail(req, 1013, `Unbekannte Variable ${name}.`);
+      return;
+    }
+    if (!entry.__settable) {
+      this.fail(req, 1014, `${name} ist nicht setzbar (kein Frame-Local).`);
+      return;
+    }
+    const level = this.top;
+    const frame = entry.__frame;
+    if (!level || frame === undefined) {
+      this.fail(req, 1015, 'Kein aktiver Frame.');
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      this.fail(req, 1016, 'Leerer Wert.');
+      return;
+    }
+    try {
+      // Zuweisung und Rückgabe des danach gelesenen Werts in EINEM
+      // Aufruf: zwei Rundreisen könnten sich einen Restart einfangen,
+      // der zwischen ihnen die Ebene wechselt.
+      const form = `(progn (setq ${name} ${trimmed}) ${name})`;
+      const raw = await this.swank.rex(
+        this.frameEvalForm(form, frame), this.swank.packageName, level.thread, 8000
+      );
+      const shown = text(raw).trim();
+      // Gegenprobe: den Frame neu einlesen und den Eintrag aktualisieren,
+      // damit die Variablenansicht und das Rückgabefeld dasselbe sagen.
+      entry.value = shown;
+      this.respond(req, { value: shown, variablesReference: 0 });
+      if (shown !== trimmed) {
+        this.event('output', {
+          category: 'console',
+          output:
+            `${name} = ${shown}` +
+            (shown === '' ? ' (leer — Zuweisung hat vermutlich nicht gegriffen)\n' : '\n'),
+        });
+      }
+    } catch (e) {
+      // Der häufigste Fall: die Variable ist im kompilierten Code nicht
+      // setzbar. Die Meldung sagt, was zu tun ist.
+      this.fail(
+        req, 1017,
+        `${name} konnte nicht gesetzt werden: ${e}\n` +
+        'Bei wegoptimierten Locals hilft nur, die Funktion mit ' +
+        '(declaim (optimize (debug 3) (speed 0))) neu zu kompilieren.'
+      );
     }
   }
 
@@ -1585,6 +1711,37 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       breakMode: 'always',
       details: { message: s?.condition ?? '', typeName: s?.conditionType ?? '' },
     });
+  }
+
+
+  private async setFunctionBreakpoints(req: DapRequest, specs: any[]): Promise<void> {
+    try {
+      const names = specs.map(s => String(s.name ?? '').trim()).filter(Boolean);
+      const form = `(clamps-bridge-rpc:set-function-breakpoints-for-repl ` +
+        `'(${names.map(n => lispString(n)).join(' ')}) ${lispString(this.swank.packageName || 'COMMON-LISP-USER')})`;
+      const raw = await this.swank.rex(form, this.swank.packageName, new Sym('t'), 5000);
+      const top = asList(raw);
+      if (!top.length || !isSym(top[0], ':ok')) {
+        const message = top.length > 1 ? text(top[1]) : printSexpr(raw);
+        this.respond(req, { breakpoints: names.map(name => ({ verified: false, message, source: undefined })) });
+        return;
+      }
+      const entries = asList(top[1]);
+      const breakpoints = entries.map((entry, index) => {
+        const pl = asList(entry);
+        const verified = !isNil(plistGet(pl, ':verified'));
+        return {
+          id: index + 1,
+          verified,
+          message: text(plistGet(pl, ':message')) || (verified ? 'Aktiv.' : 'Nicht gesetzt.'),
+        };
+      });
+      this.respond(req, { breakpoints });
+    } catch (e) {
+      this.respond(req, {
+        breakpoints: specs.map(() => ({ verified: false, message: `Funktions-Breakpoint fehlgeschlagen: ${e}` })),
+      });
+    }
   }
 
   // ------------------------------------------------------------------
