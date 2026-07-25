@@ -127,6 +127,14 @@
       {
         "command": "clamps.incudineRefreshSoon",
         "title": "CLAMPS: Incudine Nodes bald aktualisieren"
+      },
+      {
+        "command": "clamps.closeParens",
+        "title": "CLAMPS: Offene Klammern schließen"
+      },
+      {
+        "command": "clamps.checkBalance",
+        "title": "CLAMPS: Klammern prüfen"
       }
     ],
     "languages": [
@@ -140,7 +148,8 @@
         "aliases": [
           "Common Lisp",
           "lisp"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "keybindings": [
@@ -193,6 +202,11 @@
         "command": "clamps.toggleTrace",
         "key": "ctrl+c ctrl+t",
         "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.closeParens",
+        "key": "ctrl+c ctrl+]",
+        "when": "editorTextFocus && editorLangId == lisp"
       }
     ],
     "configuration": {
@@ -222,6 +236,11 @@
           "type": "boolean",
           "default": true,
           "description": "Hängt den Lisp-Debugger automatisch an, sobald CLAMPS startet, damit Fehler ohne manuelles Einhängen im Debugger landen."
+        },
+        "clamps.openReplOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Öffnet das CLAMPS-REPL-Terminal automatisch, sobald CLAMPS gestartet ist."
         }
       }
     },

@@ -153,6 +153,11 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   static async evaluate(getClient: () => LanguageClient | undefined, code: string): Promise<void> {
     const repl = this.show(getClient);
     await repl.evaluateCode(code);
+    // Auch Auswertungen aus dem Editor können DSP-Nodes anlegen; sie
+    // gehen über evaluateCode, nicht über requestEval.
+    void vscode.commands
+      .executeCommand('clamps.incudineRefreshSoon')
+      .then(undefined, () => undefined);
   }
 
   private constructor(private readonly getClient: () => LanguageClient | undefined) {}
@@ -381,13 +386,15 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.write(`\x1b[31m${this.normalizeNewlines(message)}\x1b[0m\r\n`);
+    } finally {
+      this.busy = false;
       // Node-Browser nachziehen: eine Auswertung kann DSP-Nodes erzeugt
-      // oder entfernt haben. Fehler hier sind unerheblich.
+      // oder entfernt haben. Gehört in finally, nicht in catch — dort
+      // lief er nur bei fehlgeschlagenen Auswertungen, also gerade nicht
+      // nach einem erfolgreichen (dsp!)- oder (rt-start)-Aufruf.
       void vscode.commands
         .executeCommand('clamps.incudineRefreshSoon')
         .then(undefined, () => undefined);
-    } finally {
-      this.busy = false;
     }
   }
 

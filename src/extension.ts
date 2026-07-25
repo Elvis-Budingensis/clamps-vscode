@@ -19,7 +19,7 @@ import {
   ErrorAction,
 } from 'vscode-languageclient/node';
 import { ClampsProcessManager } from './processManager';
-import { ClampsReplTerminal } from './replTerminal';
+import { ClampsReplTerminal, readState } from './replTerminal';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -121,12 +121,12 @@ export async function activate(context: vscode.ExtensionContext) {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const code = editor.document.getText(editor.selection) || editor.document.lineAt(editor.selection.active.line).text;
-      await ClampsReplTerminal.evaluate(() => client, code);
+      await evaluateChecked(() => client, code);
     }),
     vscode.commands.registerCommand('clamps.evalFile', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
-      await ClampsReplTerminal.evaluate(() => client, editor.document.getText());
+      await evaluateChecked(() => client, editor.document.getText());
     }),
     vscode.commands.registerCommand('clamps.evalLastExpression', async () => {
       const editor = vscode.window.activeTextEditor;
@@ -138,7 +138,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         return;
       }
-      await ClampsReplTerminal.evaluate(() => client, form);
+      await evaluateChecked(() => client, form);
     }),
     vscode.commands.registerCommand('clamps.evalTopLevel', async () => {
       const editor = vscode.window.activeTextEditor;
@@ -150,7 +150,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
         return;
       }
-      await ClampsReplTerminal.evaluate(() => client, form);
+      await evaluateChecked(() => client, form);
     }),
     vscode.commands.registerCommand('clamps.macroexpand', () =>
       macroexpandCommand(() => client, false, outputChannel)
@@ -240,6 +240,15 @@ export async function activate(context: vscode.ExtensionContext) {
     // (dsp!, rt-start, node-free). Statt Polling — das bei laufendem
     // Audio unnötig Last erzeugt — nach jeder REPL-Auswertung einmal
     // nachziehen, mit kleinem Verzug, damit der Node schon existiert.
+    vscode.commands.registerCommand('clamps.closeParens', () => closeParens()),
+    vscode.commands.registerCommand('clamps.checkBalance', () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const problem = balanceProblem(editor.document.getText());
+      vscode.window.showInformationMessage(
+        problem ?? 'Klammern und Strings sind ausgeglichen.'
+      );
+    }),
     vscode.commands.registerCommand('clamps.incudineRefreshSoon', () => {
       setTimeout(() => void incudineNodes?.refresh(), 300);
     }),
@@ -292,6 +301,13 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         await startLanguageClient(bridgePath);
         rtStatus?.start();
         vscode.window.showInformationMessage(`CLAMPS läuft (Swank-Port ${session.port}).`);
+
+        // REPL gleich mitöffnen: sie ist der Ort, an dem man arbeitet,
+        // und sie erst über die Befehlspalette holen zu müssen ist ein
+        // unnötiger Zwischenschritt.
+        if (vscode.workspace.getConfiguration('clamps').get<boolean>('openReplOnStart', true)) {
+          ClampsReplTerminal.show(() => client);
+        }
 
         // Debugger automatisch anhängen, sofern nicht abgeschaltet.
         // Damit ist der Lisp-Debugger sofort da, ohne dass man ihn jedes
@@ -490,4 +506,80 @@ async function chooseRestart(): Promise<void> {
     { placeHolder: 'Restart auswählen' }
   );
   if (picked) await session.customRequest('clamps/invokeRestart', { index: picked.index });
+}
+
+/**
+ * Beschreibt ein Klammer- oder String-Problem, oder undefined wenn alles
+ * ausgeglichen ist.
+ *
+ * Warum vor dem Auswerten prüfen: unbalancierter Code kommt sonst im
+ * Image an, wo der Reader ins Dateiende läuft. Bei einer Bridge, die auf
+ * eine Antwort wartet, kann das die Verbindung mitnehmen — genau die
+ * Sorte Ausfall, die schwer zuzuordnen ist, weil die Ursache im Editor
+ * liegt und die Wirkung im Prozess.
+ */
+function balanceProblem(text: string): string | undefined {
+  const st = readState(text);
+  if (st.inString) return 'Ein String ist nicht geschlossen (fehlendes ").';
+  if (st.inBlockComment) return 'Ein Blockkommentar ist nicht geschlossen (fehlendes |#).';
+  if (st.tooManyClosers) return 'Es gibt mehr schließende als öffnende Klammern.';
+  if (st.depth > 0) {
+    return `${st.depth} Klammer${st.depth === 1 ? '' : 'n'} nicht geschlossen.`;
+  }
+  return undefined;
+}
+
+/**
+ * Fügt am Cursor so viele schließende Klammern ein, wie offen sind —
+ * Paredits sly-close-all-parens nachempfunden. Rechnet vom Dateianfang
+ * bis zum Cursor, was voraussetzt, dass der Text davor ausgeglichen ist;
+ * bei unbalanciertem Vortext wird das gemeldet statt still falsch zu
+ * schließen.
+ */
+/**
+ * Wertet CODE aus, prüft aber vorher die Klammern. Bei einem Problem wird
+ * gefragt statt blind gesendet: unbalancierter Code lässt den Reader im
+ * Image ins Dateiende laufen, und das hat schon die Bridge mitgenommen.
+ */
+async function evaluateChecked(
+  getClient: () => LanguageClient | undefined,
+  code: string
+): Promise<void> {
+  const problem = balanceProblem(code);
+  if (problem) {
+    const choice = await vscode.window.showWarningMessage(
+      `CLAMPS: ${problem} Trotzdem auswerten?`,
+      { modal: true },
+      'Trotzdem auswerten'
+    );
+    if (choice !== 'Trotzdem auswerten') return;
+  }
+  await ClampsReplTerminal.evaluate(getClient, code);
+}
+
+async function closeParens(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return;
+  const upToCursor = editor.document.getText(
+    new vscode.Range(new vscode.Position(0, 0), editor.selection.active)
+  );
+  const st = readState(upToCursor);
+  if (st.inString) {
+    vscode.window.showWarningMessage(
+      'Cursor steht in einem String — dort schließe ich keine Klammern.'
+    );
+    return;
+  }
+  if (st.tooManyClosers) {
+    vscode.window.showWarningMessage(
+      'Vor dem Cursor gibt es mehr schließende als öffnende Klammern.'
+    );
+    return;
+  }
+  if (st.depth <= 0) {
+    vscode.window.showInformationMessage('Keine offenen Klammern.');
+    return;
+  }
+  const closers = ')'.repeat(st.depth);
+  await editor.edit(b => b.insert(editor.selection.active, closers));
 }
