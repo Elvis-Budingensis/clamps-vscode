@@ -690,7 +690,17 @@ closed\"."
                                                 "navigable"
                                                 (if (fourth p) :true :false)
                                                 "settable"
-                                                (if (fifth p) :true :false)))
+                                                (if (fifth p) :true :false)
+                                                ;; Sechstes Feld: hat der Teil
+                                                ;; selbst Teile? Entscheidet
+                                                ;; über den Aufklapp-Pfeil.
+                                                ;; Fehlt es (älteres Image), ist
+                                                ;; es NIL -> der Client fällt
+                                                ;; auf navigable zurück.
+                                                "expandable"
+                                                (cond ((null (nthcdr 5 p)) :null)
+                                                      ((sixth p) :true)
+                                                      (t :false))))
                                    parts)
                            'vector)
            "package" fallback-pkg)))
@@ -983,8 +993,9 @@ closed\"."
              "description" (or (getf entry :description) "")
              "detail" (or (getf entry :detail) "")
              "file" (or (getf entry :file) "")
-             "line" (or (getf entry :line) 1)
-             "character" (or (getf entry :character) 0)
+             "line" (getf entry :line)
+             "character" (getf entry :character)
+             "offset" (getf entry :offset)
              "inspect" (or (getf entry :inspect) "")))
 
 (defun handle-tool-result (id form)

@@ -26,6 +26,8 @@ class TreeItem {
 const vscodeStub = {
   EventEmitter: Emitter,
   TreeItem,
+  // Nur so viel, wie die Sprungziel-Rechnung braucht.
+  Position: class { constructor(line, character) { this.line = line; this.character = character; } },
   ThemeIcon: class { constructor(id) { this.id = id; } },
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
   Uri: { file: p => ({ fsPath: p, scheme: 'file' }) },

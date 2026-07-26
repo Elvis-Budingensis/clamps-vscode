@@ -594,9 +594,9 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
    */
   private frameEvalForm(expression: string, frameId: number): string {
     const byName: Record<string, string> = {
-      string: JSON.stringify(expression),
+      string: lispString(expression),
       frame: String(frameId),
-      package: JSON.stringify(this.swank.packageName),
+      package: lispString(this.swank.packageName),
       lines: '10',
       width: '80',
       'print-right-margin': '80',
@@ -1250,7 +1250,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
         const useFrame = state && frameId !== undefined;
         const one = useFrame
           ? this.frameEvalForm(raw, frameId!)
-          : `(swank:eval-and-grab-output ${JSON.stringify(raw)})`;
+          : `(swank:eval-and-grab-output ${lispString(raw)})`;
         this.lastForm = one;
         // WICHTIG: nur eine Auswertung IM FRAME geht an den angehaltenen
         // Thread. Alles andere bekommt einen frischen Worker (Thread-
@@ -1325,7 +1325,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
     }
     const inner =
       `(values (ignore-errors (eval (read-from-string ${lispString(safe)}))))`;
-    const one = `(swank:eval-and-grab-output ${JSON.stringify(inner)})`;
+    const one = `(swank:eval-and-grab-output ${lispString(inner)})`;
     try {
       // Immer frischer Worker (t): der angehaltene Thread sitzt in der
       // SLDB-Schleife, und eval-string-in-frame läuft mit aktivem
@@ -1591,7 +1591,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       // Antwort ohne Debugger aus (Funktion fehlt im Image), greift der
       // Timeout und die REPL hängt nicht stumm.
       const r = await this.swank.rex(
-        `(clamps-bridge-rpc:eval-for-repl-debuggable ${JSON.stringify(code)} ${JSON.stringify(pkg)})`,
+        `(clamps-bridge-rpc:eval-for-repl-debuggable ${lispString(code)} ${lispString(pkg)})`,
         pkg, new Sym('t'), 15000,
         id => { entry.swankId = id; }
       );
@@ -1674,7 +1674,7 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
   private async returnFromFrame(req: DapRequest, frameId: number, expression: string): Promise<void> {
     try {
       const x = await this.swank.rex(
-        `(swank:return-from-frame ${frameId} ${JSON.stringify(expression)})`,
+        `(swank:return-from-frame ${frameId} ${lispString(expression)})`,
         this.swank.packageName, this.thread
       );
       this.respond(req, { result: text(x) || 'ok', variablesReference: 0 });
@@ -1757,11 +1757,11 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
    */
   private async bind(expression: string, frameId?: number): Promise<{ expression: string; package: string }> {
     const token = `CLAMPS-DEBUG-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
-    const bind = `(setf (symbol-value (intern ${JSON.stringify(token)} "COMMON-LISP-USER")) ${expression})`;
+    const bind = `(setf (symbol-value (intern ${lispString(token)} "COMMON-LISP-USER")) ${expression})`;
     const form =
       frameId !== undefined
         ? this.frameEvalForm(bind, frameId)
-        : `(swank:eval-and-grab-output ${JSON.stringify(bind)})`;
+        : `(swank:eval-and-grab-output ${lispString(bind)})`;
     // Ohne Frame in einen frischen Worker, aus demselben Grund wie bei
     // evaluate: der angehaltene Thread nimmt keine gewöhnlichen Anfragen.
     const target = frameId !== undefined ? this.thread : new Sym('t');

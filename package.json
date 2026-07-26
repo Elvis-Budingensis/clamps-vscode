@@ -30,7 +30,16 @@
     "onView:clamps.packages",
     "onView:clamps.classes",
     "onView:clamps.threads",
-    "onCommand:clamps.compileDiagnostics"
+    "onCommand:clamps.compileDiagnostics",
+    "onView:clamps.xrefView",
+    "onCommand:clamps.xref",
+    "onCommand:clamps.xrefDefinitions",
+    "onCommand:clamps.xrefCallers",
+    "onCommand:clamps.xrefCallees",
+    "onCommand:clamps.xrefReferences",
+    "onCommand:clamps.xrefBindings",
+    "onCommand:clamps.xrefSetters",
+    "onCommand:clamps.xrefMacroexpands"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -191,6 +200,52 @@
         "title": "CLAMPS: Beobachtung zurücknehmen",
         "category": "CLAMPS",
         "icon": "$(close)"
+      },
+      {
+        "command": "clamps.xrefDefinitions",
+        "title": "CLAMPS XREF: Definitionen",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefCallers",
+        "title": "CLAMPS XREF: Aufrufer",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefCallees",
+        "title": "CLAMPS XREF: Aufgerufene Funktionen",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefReferences",
+        "title": "CLAMPS XREF: Referenzen",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefBindings",
+        "title": "CLAMPS XREF: Bindungen",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefSetters",
+        "title": "CLAMPS XREF: Setzer",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefMacroexpands",
+        "title": "CLAMPS XREF: Makroexpansionen",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefRefresh",
+        "title": "CLAMPS: XREF aktualisieren",
+        "category": "CLAMPS",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "clamps.xrefOpen",
+        "title": "CLAMPS: XREF-Treffer öffnen",
+        "category": "CLAMPS"
       }
     ],
     "languages": [
@@ -369,6 +424,11 @@
           "command": "clamps.tracedRefresh",
           "when": "view == clamps.traced",
           "group": "navigation"
+        },
+        {
+          "command": "clamps.xrefRefresh",
+          "when": "view == clamps.xrefView",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -386,6 +446,18 @@
           "when": "view == clamps.traced",
           "group": "inline"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "clamps.xrefDefinitions",
+          "when": "editorLangId == lisp || editorLangId == commonlisp",
+          "group": "navigation@1"
+        },
+        {
+          "command": "clamps.xref",
+          "when": "editorLangId == lisp || editorLangId == commonlisp",
+          "group": "navigation@2"
+        }
       ]
     },
     "viewsContainers": {
@@ -399,6 +471,10 @@
     },
     "views": {
       "clamps": [
+        {
+          "id": "clamps.xrefView",
+          "name": "XREF"
+        },
         {
           "id": "clamps.incudineNodes",
           "name": "Incudine Nodes"
@@ -427,9 +503,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
-    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js",
+    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/xref.test.js && node test/lispstring.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
-    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp"
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-xref.lisp"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

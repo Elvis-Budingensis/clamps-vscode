@@ -180,11 +180,15 @@ export function text(x: SExpr | undefined): string {
   return String(x);
 }
 
-/** Lisp-Schreibweise, u.a. um Thread-Bezeichner zurückzusenden. */
+/**
+ * Lisp-Schreibweise, u.a. um Thread-Bezeichner zurückzusenden.
+ *
+ * Strings gehen über lispString, NICHT über JSON.stringify: siehe dort.
+ */
 export function printSexpr(x: SExpr): string {
   if (Array.isArray(x)) return `(${x.map(printSexpr).join(' ')})`;
   if (x instanceof Sym) return x.name;
-  if (typeof x === 'string') return JSON.stringify(x);
+  if (typeof x === 'string') return lispString(x);
   return String(x);
 }
 
@@ -208,8 +212,12 @@ export const asList = (x: SExpr | undefined): SExpr[] =>
  * womit der String stillschweigend verfälscht wird. Der Lisp-Reader
  * kennt in Strings nur \\ und \".
  *
- * Steuerzeichen können deshalb nicht dargestellt werden; Aufrufer, die
- * sie zulassen wollen, müssen sie vorher aussortieren.
+ * Steuerzeichen brauchen KEINE Maskierung: ein echter Zeilenumbruch
+ * innerhalb eines Lisp-Stringliterals ist gültig und bleibt beim Lesen
+ * erhalten, und der Swank-Rahmen zählt Bytes, verträgt also Umbrüche im
+ * Rumpf. Genau daran hing die mehrzeilige REPL-Eingabe: über
+ * JSON.stringify wurde aus jedem Umbruch das Symbol `n`, sodass
+ * (dsp! …) über drei Zeilen mit "undefined variable: n" scheiterte.
  */
 export function lispString(s: string): string {
   return `"${s.replace(/[\\"]/g, m => '\\' + m)}"`;
@@ -225,8 +233,10 @@ export function lispString(s: string): string {
  * Abgelehnt wird:
  *  - zu lang: dann steht die Maus nicht über einem Symbol, sondern über
  *    einer markierten Passage. Die gehört in die Debug-Konsole
- *  - Steuerzeichen: in einem Lisp-Stringliteral nicht darstellbar
- *    (siehe lispString); mehrzeilige Hover fallen damit weg
+ *  - Steuerzeichen: nicht weil sie sich nicht darstellen liessen (siehe
+ *    lispString), sondern weil ein mehrzeiliger Text keine Maus-Hover-
+ *    Abfrage mehr ist, sondern eine markierte Passage — die gehört in
+ *    die Debug-Konsole
  *  - `#.` — Read-Eval. Läuft VOR jedem Handler und darf niemals aus
  *    einer Mausbewegung heraus passieren
  *  - `#<` — nicht wieder einlesbare Objekte, wie sie im Backtrace und in
@@ -423,7 +433,7 @@ export class SwankClient extends EventEmitter {
       };
       this.pending.set(id, { resolve: done(resolve), reject: done(reject), timer });
       try {
-        this.send(`(:emacs-rex ${form} ${JSON.stringify(pkg)} ${printSexpr(thread)} ${id})`);
+        this.send(`(:emacs-rex ${form} ${lispString(pkg)} ${printSexpr(thread)} ${id})`);
       } catch (e) {
         if (timer) clearTimeout(timer);
         this.pending.delete(id);
@@ -458,7 +468,7 @@ export class SwankClient extends EventEmitter {
   /** Antwort auf ein :read-string — sonst wartet das Image ewig. */
   emacsReturnString(thread: SExpr, tag: SExpr | undefined, value: string): void {
     this.send(
-      `(:emacs-return-string ${printSexpr(thread)} ${printSexpr(tag ?? 1)} ${JSON.stringify(value)})`
+      `(:emacs-return-string ${printSexpr(thread)} ${printSexpr(tag ?? 1)} ${lispString(value)})`
     );
   }
 

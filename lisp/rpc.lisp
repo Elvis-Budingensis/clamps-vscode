@@ -388,6 +388,17 @@
 
 (defvar *inspect-table* (make-hash-table :test 'eql)
   "id (fixnum) -> Objekt")
+(defvar *inspect-ids* (make-hash-table :test 'eq)
+  "Objekt -> id, die Umkehrung von *INSPECT-TABLE*.
+
+   Ohne diese Tabelle bekam DASSELBE Objekt bei jedem Betreten eine neue
+   Nummer. Der Client erkennt Zyklen daran, dass die ID eines
+   Unterobjekts schon in der Kette der Vorfahren steht — das konnte so
+   nie zutreffen, die Zyklenerkennung war wirkungslos und eine
+   selbstbezügliche Struktur klappte stumpf bis zur Tiefengrenze durch.
+
+   Test ist EQ, also Identität: zwei gleich aussehende Listen sind zwei
+   Objekte und bekommen zu Recht zwei Nummern.")
 (defvar *inspect-order* '()
   "IDs in Einfügereihenfolge, jüngste zuerst — für die FIFO-Räumung.")
 (defvar *inspect-counter* 0)
@@ -412,13 +423,29 @@
    vorbei am Leben hält.")
 
 (defun %inspect-register (obj)
-  "Legt OBJ ab und liefert dessen ID."
+  "Legt OBJ ab und liefert dessen ID.
+
+   Ist OBJ schon bekannt, kommt die BESTEHENDE ID zurück — nur so kann
+   der Client erkennen, dass er im Kreis läuft. Der Eintrag rutscht
+   dabei in der Räumungsreihenfolge wieder nach vorn: was gerade
+   angeschaut wird, soll nicht als Ältestes hinausfliegen."
+  (let ((known (gethash obj *inspect-ids*)))
+    (when known
+      (setf *inspect-order* (cons known (remove known *inspect-order*)))
+      (return-from %inspect-register known)))
   (let ((id (incf *inspect-counter*)))
     (setf (gethash id *inspect-table*) obj)
+    (setf (gethash obj *inspect-ids*) id)
     (push id *inspect-order*)
     (when (> (hash-table-count *inspect-table*) *inspect-capacity*)
       (let ((keep (subseq *inspect-order* 0 *inspect-capacity*)))
         (dolist (old (nthcdr *inspect-capacity* *inspect-order*))
+          (multiple-value-bind (victim found) (gethash old *inspect-table*)
+            ;; Umkehrtabelle mitziehen, sonst zeigt sie auf geräumte IDs
+            ;; und inspect-part-for-repl meldet "nicht mehr verfügbar"
+            ;; für ein Objekt, das gerade neu registriert wurde.
+            (when (and found (eql (gethash victim *inspect-ids*) old))
+              (remhash victim *inspect-ids*)))
           (remhash old *inspect-table*)
           (remhash old *inspect-parts-cache*))
         (setf *inspect-order* keep)))
@@ -426,11 +453,49 @@
 
 (defun inspect-release-for-repl ()
   "Gibt alle gehaltenen Objekte frei. Der Client ruft das beim Schließen
-   des Inspector-Panels."
+   des Inspector-Panels.
+
+   *INSPECT-IDS* MUSS mit: die Umkehrtabelle hält die Objekte selbst als
+   Schlüssel, hier stehen also starke Referenzen auf alles, was je
+   angeschaut wurde — genau das, was Freigeben verhindern soll. Und
+   funktional noch schlimmer: bliebe sie stehen, käme beim erneuten
+   Inspizieren desselben Objekts die alte ID zurück, zu der es in
+   *INSPECT-TABLE* keinen Eintrag mehr gibt. Der nächste Klick meldete
+   dann 'Objekt nicht mehr verfügbar' für ein frisch geöffnetes Panel."
   (clrhash *inspect-table*)
   (clrhash *inspect-parts-cache*)
+  (clrhash *inspect-ids*)
   (setf *inspect-order* '())
   (list :ok))
+
+(defun %inspect-expandable-p (val)
+  "Hat VAL selbst Teile, lohnt sich also ein Aufklapp-Pfeil?
+
+   Der Client kann das nicht wissen: er sieht nur Label und Vorschau und
+   müsste jeden Teil laden, um es herauszufinden. Ohne diese Auskunft
+   bekommt JEDE gebundene Zeile einen Pfeil — auch Fixnums und Strings,
+   die aufgeklappt nur 'Keine navigierbaren Teile' zeigen.
+
+   Bewusst ein billiger Typtest und kein Aufruf von %inspect-describe:
+   die Vorhersage steht neben jedem der bis zu 1000 Teile, ein echtes
+   Beschreiben wäre genau die Rechenlast, die der Teile-Cache vermeidet.
+   Die Zweige spiegeln %inspect-describe; bei Grenzfällen (Symbol ohne
+   Wert und ohne Funktion) darf ein Pfeil ins Leere führen, das ist
+   harmloser als ein fehlender Pfeil an einem betretbaren Objekt."
+  (when (eq val +unbound+)
+    (return-from %inspect-expandable-p nil))
+  (typecase val
+    (null nil)
+    ((or number character string package random-state) nil)
+    (hash-table (plusp (hash-table-count val)))
+    (pathname t)                        ; directory-Teil
+    (cons t)
+    ((and vector (not string)) (plusp (length val)))
+    (array (plusp (array-total-size val)))
+    ((or standard-object structure-object) t)
+    (symbol t)
+    (function t)
+    (t nil)))
 
 (defun %describe-registered (obj id)
   "Baut die Antwort für ein bereits registriertes Objekt."
@@ -444,12 +509,13 @@
       ;; Für die spätere Navigation aufheben.
       (setf (gethash id *inspect-parts-cache*) parts)
       (list :ok id type-str print-str
-            ;; (label index preview navigierbar-p schreibbar-p)
+            ;; (label index preview navigierbar-p schreibbar-p aufklappbar-p)
             (loop for p in parts
                   for i from 0
                   collect (list (first p) i (or (third p) "")
                                 (if (eq (second p) +unbound+) nil t)
-                                (if (fourth p) t nil)))
+                                (if (fourth p) t nil)
+                                (if (%inspect-expandable-p (second p)) t nil)))
             kind
             (mapcar (lambda (m) (list (car m) (cdr m))) meta)))))
 
@@ -841,7 +907,22 @@
                                                     (find-class s nil)))
                                     candidates)
                            (first candidates)
+                           ;; Reader-Rückfall nur für Namen mit
+                           ;; Maskierung (|foo bar|, a\.b): genau die
+                           ;; kann die find-symbol-Schleife oben nicht
+                           ;; finden, weil sie stumpf upcased.
+                           ;;
+                           ;; Für alles andere wäre er schädlich, denn
+                           ;; READ-FROM-STRING INTERNIERT: ein Tippfehler
+                           ;; in der XREF-Eingabe legte bisher ein neues
+                           ;; Symbol im Paket an und lieferte es zurück,
+                           ;; als wäre es gefunden worden. Das Paket
+                           ;; verschmutzte bei jedem Vertipper, und der
+                           ;; Aufrufer bekam :ok mit leerer Trefferliste
+                           ;; statt "Symbol nicht gefunden".
                            (and (not (find #\: symbol-string))
+                                (or (find #\| symbol-string)
+                                    (find #\\ symbol-string))
                                 (ignore-errors
                                   (let ((obj (read-from-string symbol-string)))
                                     (and (symbolp obj) obj))))))))))))
@@ -1387,7 +1468,13 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
 
 (defun %tool-entry (label &key description detail file line character inspect offset)
   (list :label label :description (or description "") :detail (or detail "")
-        :file file :line (or line 1) :character (or character 0)
+        :file file
+        ;; line bewusst NICHT auf 1 vorbelegen. Der Client bevorzugt eine
+        ;; vorhandene Zeile vor dem Offset; eine erfundene 1 hat den
+        ;; Offset daneben nutzlos gemacht und jeden Treffer an den
+        ;; Dateianfang geschickt — genau der Fehler, der behoben sein
+        ;; sollte. NIL heißt: "keine Zeile bekannt, nimm den Offset".
+        :line line :character (or character 0)
         ;; Offset MIT durchreichen: SBCL liefert in Quellorten fast immer
         ;; (:position N) statt (:line N), und N ist ein Zeichen-Offset.
         ;; Ohne dieses Feld landet jeder Sprung auf Zeile 1 — derselbe
@@ -1416,6 +1503,13 @@ liefert; sonst steht der Zeichen-Offset in offset."
       (walk location))
     (values file line character offset)))
 
+(defun %swank-symbol (name package-designator)
+  "FIND-SYMBOL, aber NIL statt Fehler, wenn es das Paket nicht gibt.
+Ein Image ohne geladenes Swank soll die vorgesehene Meldung bekommen
+und keinen Paket-Typfehler."
+  (let ((pkg (find-package package-designator)))
+    (and pkg (find-symbol name pkg))))
+
 (defun %xref-type (kind)
   (cdr (assoc (string-downcase kind)
               ;; "definitions" absichtlich NICHT dabei: swank:xref kennt
@@ -1429,27 +1523,109 @@ liefert; sonst steht der Zeichen-Offset in offset."
                 ("macroexpands" . :macroexpands))
               :test #'string=)))
 
-(defun xref-for-repl (symbol-string package-name kind)
+(defun %xref-inspect-expr (name pkg)
+  "Ausdruck, mit dem der Client den XREF-Treffer inspizieren kann.
+
+NAME ist meist ein String (\"cl-user::bar\"), bei manchen Backends auch
+ein Symbol oder ein Setf-Name (setf foo). Nur einfache Symbole ergeben
+etwas Inspizierbares; alles andere liefert NIL, damit der Client ehrlich
+'keine Quelldatei verfügbar' meldet statt auf einen kaputten Ausdruck
+zu springen."
   (handler-case
-      (let* ((sym (resolve-symbol symbol-string package-name))
+      (let ((sym (cond ((symbolp name) name)
+                       ((stringp name) (resolve-symbol name pkg))
+                       (t nil))))
+        (and sym (symbolp sym) (%package-qualified sym)))
+    (error () nil)))
+
+(defun %definition-xref-entries (symbol-string package-name)
+  "Wandelt FIND-DEFINITIONS-FOR-REPL in dasselbe Tool-Entry-Format wie XREF um."
+  (let ((result (find-definitions-for-repl symbol-string package-name))
+        (out nil))
+    (unless (and (consp result) (eq (first result) :ok))
+      (return-from %definition-xref-entries result))
+    (dolist (entry (second result))
+      (destructuring-bind (file line character label) entry
+        (push (%tool-entry label
+                           :description "definition"
+                           :detail (if file file "Quelldatei nicht verfügbar")
+                           :file file
+                           ;; find-definitions-for-repl liefert bereits
+                           ;; nullbasierte LSP-Zeilen; ToolEntry erwartet
+                           ;; dagegen eine einsbasierte Zeile.
+                           :line (and file (1+ line))
+                           :character character)
+              out)))
+    (list :ok (nreverse out))))
+
+(defun xref-for-repl (symbol-string package-name kind)
+  "Vollständige SLIME-XREF-Abfrage einschließlich Definitionen.
+
+KIND ist einer von definitions, callers, callees, references, bindings,
+setters oder macroexpands. Die Rückgabe ist (:ok TOOL-ENTRIES) bzw.
+(:error TEXT)."
+  (handler-case
+      (when (string-equal kind "definitions")
+        (return-from xref-for-repl
+          (%definition-xref-entries symbol-string package-name)))
+    (error (e) (return-from xref-for-repl (list :error (princ-to-string e)))))
+  (handler-case
+      (let* ((pkg (or (find-package (string-upcase package-name))
+                      (find-package :common-lisp-user)))
+             ;; resolve-symbol bindet *PACKAGE* an dieses Argument. SBCL
+             ;; deklariert *PACKAGE* als Typ PACKAGE, ein String löst dort
+             ;; einen Typfehler aus, den resolve-symbol still zu NIL
+             ;; verschluckt. Ergebnis war: jede XREF-Art außer
+             ;; "definitions" meldete "Symbol nicht gefunden", swank:xref
+             ;; wurde nie aufgerufen. Deshalb hier ein Paket-OBJEKT, wie
+             ;; an allen anderen Aufrufstellen auch.
+             (sym (resolve-symbol symbol-string pkg))
              (type (%xref-type kind))
-             (fn (or (find-symbol "XREF" :swank)
-                     (find-symbol "XREF" :swank/backend))))
-        (unless (and sym type fn (fboundp fn))
-          (return-from xref-for-repl (list :error "XREF wird von diesem Swank/Image nicht angeboten.")))
+             ;; find-symbol signalisiert, wenn das Paket fehlt — dann käme
+             ;; ein Typfehler statt der vorgesehenen Meldung heraus.
+             (fn (or (%swank-symbol "XREF" :swank)
+                     (%swank-symbol "XREF" :swank/backend))))
+        (unless sym
+          (return-from xref-for-repl
+            (list :error (format nil "Symbol ~A wurde im Paket ~A nicht gefunden."
+                                 symbol-string package-name))))
+        (unless type
+          (return-from xref-for-repl
+            (list :error (format nil "Unbekannte XREF-Art: ~A" kind))))
+        (unless (and fn (fboundp fn))
+          (return-from xref-for-repl
+            (list :error "XREF wird von diesem Swank/Image nicht angeboten.")))
         (let ((raw (funcall fn type (%package-qualified sym))) (out nil))
           (dolist (entry raw)
             (let* ((name (if (consp entry) (first entry) entry))
                    (loc (and (consp entry) (second entry))))
               (multiple-value-bind (file line character offset) (%location-file-line loc)
-                (push (%tool-entry (princ-to-string name)
-                                   :description (string-downcase (symbol-name type))
-                                   :detail (princ-to-string loc)
-                                   :file file :line line :character character
-                                   :offset offset
-                                   :inspect (and (symbolp name) (%package-qualified name)))
-                      out))))
-          (list :ok (nreverse out))))
+                ;; Swank kann logische Pathnames oder nicht existierende
+                ;; Build-Pfade liefern. Dieselbe Auflösung wie M-. nutzen.
+                (let ((resolved (and file (%resolve-source-file file))))
+                  (push (%tool-entry (princ-to-string name)
+                                     :description (string-downcase (symbol-name type))
+                                     :detail (princ-to-string loc)
+                                     :file resolved :line line :character character
+                                     :offset offset
+                                     ;; swank:xref schickt den Namen durch
+                                     ;; xref>elisp, es kommt also ein
+                                     ;; STRING an — die alte symbolp-Probe
+                                     ;; war immer falsch und der
+                                     ;; Inspect-Rückfallweg damit tot.
+                                     :inspect (%xref-inspect-expr name pkg))
+                        out)))))
+          ;; Doppelte Treffer derselben Quelle entfernt Swank nicht immer,
+          ;; besonders bei generischen Funktionen. Stabil deduplizieren.
+          (let ((seen (make-hash-table :test #'equal)) (dedup nil))
+            (dolist (entry (nreverse out))
+              (let ((key (list (getf entry :label) (getf entry :file)
+                               (getf entry :line) (getf entry :character)
+                               (getf entry :offset))))
+                (unless (gethash key seen)
+                  (setf (gethash key seen) t)
+                  (push entry dedup))))
+            (list :ok (nreverse dedup)))))
     (error (e) (list :error (princ-to-string e)))))
 
 (defun apropos-for-repl (query package-name all-packages-p)

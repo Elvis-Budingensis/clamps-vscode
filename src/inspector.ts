@@ -13,6 +13,14 @@ interface InspectPart {
   navigable?: boolean;
   /** Schreibbar? Zahlen, Pathnames und Funktionszellen sind es nicht. */
   settable?: boolean;
+  /**
+   * Hat der Teil selbst Teile? Nur dann lohnt der Aufklapp-Pfeil.
+   *
+   * Das Image entscheidet das, weil nur es den Wert kennt. Fehlt das
+   * Feld (null/undefined), ist die Frage unbeantwortet und wir zeigen den
+   * Pfeil wie bisher an allem Gebundenen.
+   */
+  expandable?: boolean | null;
 }
 interface InspectMeta {
   key: string;
@@ -37,11 +45,25 @@ interface Crumb {
   label: string;
 }
 
+/**
+ * Maskiert Text für HTML — Elementinhalt UND Attributwert.
+ *
+ * Die Anführungszeichen sind nicht optional: die Labels kommen aus
+ * prin1-to-string, ein String-Schlüssel einer Hashtable ist also immer
+ * `"key"` mit Anführungszeichen, und genau dieser Text landet in
+ * data-label="…" und title="…". Ohne Maskierung bricht das Attribut bei
+ * jeder Hashtable mit String-Schlüsseln auf — und weil das Webview
+ * Skripte ausführen darf und über die set-Nachricht beliebiges Lisp
+ * auswerten lässt, wäre ein Label wie `" onmouseover=…` mehr als ein
+ * Darstellungsfehler.
+ */
 const esc = (s: string): string =>
   String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 /**
  * Der Inspector navigiert über Objekt-IDs, nicht über Ausdrücke.
@@ -81,6 +103,12 @@ export class ClampsInspector {
   private static rootExpr = '';
   private static pkg = 'COMMON-LISP-USER';
   private static getClient: () => LanguageClient | undefined;
+  /** Aktuell dargestelltes Objekt; Grundlage fuer den rekursiven Baum. */
+  private static currentResult: InspectResult | undefined;
+  /** Bereits geladene Unterobjekte, adressiert durch ihren Pfad im Baum. */
+  private static recursiveChildren = new Map<string, InspectResult>();
+  private static recursiveExpanded = new Set<string>();
+  private static recursiveErrors = new Map<string, string>();
 
   static async inspect(
     getClient: () => LanguageClient | undefined,
@@ -93,6 +121,7 @@ export class ClampsInspector {
     this.trail = [];
     this.history = [];
     this.historyIndex = -1;
+    this.resetRecursive();
     await this.ensurePanel();
     await this.request('clamps/inspect', { expr, package: pkg }, expr);
   }
@@ -115,6 +144,7 @@ export class ClampsInspector {
       this.trail = [];
       this.history = [];
       this.historyIndex = -1;
+      this.resetRecursive();
       // Objekt-Tabelle im Image freigeben. Ohne das hielten wir alles
       // fest, was je angeschaut wurde — bei Audio-Buffern schnell teuer.
       void this.release();
@@ -123,7 +153,16 @@ export class ClampsInspector {
     this.panel.webview.onDidReceiveMessage(async msg => {
       switch (msg.command) {
         case 'navigate':
-          await this.navigate(Number(msg.index), String(msg.label ?? '?'));
+          await this.navigate(Number(msg.index), String(msg.label ?? '?'), Number(msg.parentId));
+          break;
+        case 'expand':
+          await this.expandRecursive(
+            String(msg.path ?? ''), Number(msg.parentId), Number(msg.index), String(msg.label ?? '?')
+          );
+          break;
+        case 'collapse':
+          this.recursiveExpanded.delete(String(msg.path ?? ''));
+          this.rerenderCurrent();
           break;
         case 'back':
           await this.back();
@@ -151,15 +190,50 @@ export class ClampsInspector {
     return this.trail[this.trail.length - 1];
   }
 
-  private static async navigate(index: number, label: string): Promise<void> {
+  private static async navigate(index: number, label: string, parentId?: number): Promise<void> {
     const cur = this.current;
     if (!cur) return;
     await this.request(
       'clamps/inspectPart',
-      { id: cur.id, index },
+      { id: Number.isFinite(parentId) ? parentId : cur.id, index },
       label,
       'push'
     );
+  }
+
+
+  private static resetRecursive(): void {
+    this.currentResult = undefined;
+    this.recursiveChildren.clear();
+    this.recursiveExpanded.clear();
+    this.recursiveErrors.clear();
+  }
+
+  /** Laedt einen Teil als Unterbaum, ohne die aktuelle Inspector-Seite zu verlassen. */
+  private static async expandRecursive(
+    path: string, parentId: number, index: number, label: string
+  ): Promise<void> {
+    if (!path || !Number.isFinite(parentId) || !Number.isFinite(index)) return;
+    this.recursiveExpanded.add(path);
+    if (this.recursiveChildren.has(path)) {
+      this.rerenderCurrent();
+      return;
+    }
+    const client = this.getClient?.();
+    if (!client || client.state !== State.Running) return;
+    try {
+      const child = await client.sendRequest<InspectResult>('clamps/inspectPart', { id: parentId, index });
+      if (child.kind === 'error') throw new Error(child.print || `Teil ${label} konnte nicht gelesen werden.`);
+      this.recursiveChildren.set(path, child);
+      this.recursiveErrors.delete(path);
+    } catch (error) {
+      this.recursiveErrors.set(path, error instanceof Error ? error.message : String(error));
+    }
+    this.rerenderCurrent();
+  }
+
+  private static rerenderCurrent(): void {
+    if (this.panel && this.currentResult) this.panel.webview.html = this.render(this.currentResult);
   }
 
   /**
@@ -286,6 +360,10 @@ export class ClampsInspector {
       else if (mode === 'push') this.trail.push({ id: r.id, label });
       else if (this.current) this.current.id = r.id;
       this.recordHistory(r.id, label);
+      this.currentResult = r;
+      this.recursiveChildren.clear();
+      this.recursiveExpanded.clear();
+      this.recursiveErrors.clear();
       this.panel.webview.html = this.render(r);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -301,7 +379,7 @@ export class ClampsInspector {
     const kind = r.kind || 'atom';
     const parts = r.parts ?? [];
     const meta = r.meta ?? [];
-    const body = this.renderBody(kind, parts);
+    const body = this.renderBody(kind, parts, r.id, '', [r.id], 0);
     // Vor/Zurück richten sich nach dem VERLAUF, nicht nach dem Pfad.
     const canBack = this.historyIndex > 0;
     const canForward = this.historyIndex < this.history.length - 1;
@@ -349,7 +427,21 @@ export class ClampsInspector {
             vscode.postMessage({
               command: 'navigate',
               index: Number(a.dataset.index),
+              parentId: Number(a.dataset.parentId),
               label: a.dataset.label
+            });
+          });
+        }
+        for (const b of document.querySelectorAll('[data-expand-path]')) {
+          b.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({
+              command: b.dataset.expanded === 'true' ? 'collapse' : 'expand',
+              path: b.dataset.expandPath,
+              parentId: Number(b.dataset.parentId),
+              index: Number(b.dataset.index),
+              label: b.dataset.label
             });
           });
         }
@@ -386,18 +478,24 @@ export class ClampsInspector {
           });
         }
 
-        const filter = document.getElementById('filter');
-        if (filter) {
-          filter.addEventListener('input', () => {
-            const q = filter.value.toLowerCase();
+        // Ein Filter pro Ebene, und jeder betrifft nur die DIREKTEN Zeilen
+        // seiner eigenen Liste. Vorher lief der oberste Filter über alle
+        // [data-filter-row] im Dokument und blendete damit auch Zeilen in
+        // aufgeklappten Unterobjekten aus.
+        for (const input of document.querySelectorAll('[data-filter-input]')) {
+          const scope = input.dataset.filterInput;
+          const list = document.querySelector('[data-filter-list="' + scope + '"]');
+          const count = document.querySelector('[data-filter-count="' + scope + '"]');
+          if (!list) continue;
+          input.addEventListener('input', () => {
+            const q = input.value.toLowerCase();
             let shown = 0;
-            for (const row of document.querySelectorAll('.row')) {
+            for (const row of list.children) {
               const hit = row.textContent.toLowerCase().includes(q);
               row.style.display = hit ? '' : 'none';
               if (hit) shown++;
             }
-            const c = document.getElementById('filter-count');
-            if (c) c.textContent = shown + ' sichtbar';
+            if (count) count.textContent = shown + ' sichtbar';
           });
         }
       </script>
@@ -467,35 +565,62 @@ export class ClampsInspector {
   }
 
   /** Wählt das Layout anhand der Objekt-Kategorie. */
-  private static renderBody(kind: string, parts: InspectPart[]): string {
-    switch (kind) {
-      case 'hash-table':
-        return this.renderPairs(parts, 'Schlüssel', 'Wert');
-      case 'object':
-      case 'struct':
-        return this.renderPairs(parts, 'Slot', 'Wert');
-      case 'symbol':
-        return this.renderPairs(parts, 'Zelle', 'Inhalt');
-      case 'list':
-      case 'vector':
-      case 'array':
-        return this.renderIndexed(parts);
-      case 'string':
-      case 'number':
-      case 'character':
-      case 'function':
-      case 'package':
-        // Meist steht alles Wesentliche in der Meta-Tabelle. Ausnahme:
-        // Komplexzahlen kommen ebenfalls als kind "number", haben aber
-        // real- und imagpart als navigierbare Teile.
-        return parts.length > 0 ? this.renderPairs(parts, 'Teil', 'Wert') : '';
-      case 'pathname':
-        return this.renderPairs(parts, 'Komponente', 'Wert');
-      default:
-        return parts.length > 0
-          ? this.renderPairs(parts, 'Teil', 'Wert')
-          : '<div class="empty">Atomarer Wert — keine navigierbaren Teile.</div>';
+  private static renderBody(
+    kind: string, parts: InspectPart[], parentId: number, prefix: string,
+    ancestors: number[], depth: number
+  ): string {
+    if (parts.length === 0) {
+      return ['list', 'vector', 'array'].includes(kind)
+        ? '<div class="empty">Leere Sequenz.</div>'
+        : '<div class="empty">Keine navigierbaren Teile.</div>';
     }
+    const indexed = ['list', 'vector', 'array'].includes(kind);
+    const rows = parts.map(p => this.renderRecursiveRow(p, parentId, prefix, ancestors, depth, indexed)).join('');
+    // Jede Ebene bekommt einen eigenen Namensraum. Vorher trug jeder
+    // Filter dieselbe id="filter": getElementById band nur den ersten,
+    // alle Filterfelder in aufgeklappten Unterobjekten waren tote UI.
+    const scope = prefix === '' ? 'root' : `s${prefix.replace(/\./g, '_')}`;
+    return `${this.filterBar(parts.length, scope)}` +
+      `<div class="recursive-list" data-filter-list="${scope}">${rows}</div>`;
+  }
+
+  private static renderRecursiveRow(
+    p: InspectPart, parentId: number, prefix: string, ancestors: number[],
+    depth: number, indexed: boolean
+  ): string {
+    const path = prefix ? `${prefix}.${p.index}` : String(p.index);
+    const expanded = this.recursiveExpanded.has(path);
+    const child = this.recursiveChildren.get(path);
+    const error = this.recursiveErrors.get(path);
+    // expandable == null heißt „Image sagt nichts dazu" — dann wie bisher
+    // jeden gebundenen Teil anbieten.
+    const canExpand =
+      p.navigable !== false && p.expandable !== false && depth < 8;
+    const toggle = canExpand
+      ? `<button class="twisty" data-expand-path="${esc(path)}" data-expanded="${expanded}" ` +
+        `data-parent-id="${parentId}" data-index="${p.index}" data-label="${esc(p.label)}" ` +
+        `title="${expanded ? 'Unterobjekt einklappen' : 'Unterobjekt inline aufklappen'}">${expanded ? '▾' : '▸'}</button>`
+      : '<span class="twisty spacer"></span>';
+    const labelClass = indexed ? 'idx' : 'k';
+    const label = this.link(p, labelClass, parentId);
+    let nested = '';
+    if (expanded) {
+      if (error) nested = `<div class="recursive-error">${esc(error)}</div>`;
+      else if (!child) nested = '<div class="recursive-loading">Lade …</div>';
+      else if (ancestors.includes(child.id)) {
+        nested = `<div class="recursive-cycle">↩ Zyklus zu Objekt #${child.id}</div>`;
+      } else {
+        nested = `<div class="recursive-child"><div class="recursive-head">` +
+          `<span class="kind kind-${esc(child.kind || 'atom')}">${esc(child.kind || 'atom')}</span>` +
+          `<span class="type">${esc(child.type)}</span><span class="oid">#${child.id}</span></div>` +
+          `${child.print ? `<div class="recursive-print">${esc(child.print)}</div>` : ''}` +
+          `${this.renderBody(child.kind || 'atom', child.parts || [], child.id, path, [...ancestors, child.id], depth + 1)}` +
+          `</div>`;
+      }
+    }
+    return `<div class="recursive-item">` +
+      `<div class="recursive-row">${toggle}<span class="recursive-label">${label}</span>${this.valueCell(p)}</div>` +
+      `${nested}</div>`;
   }
 
   private static renderMeta(meta: InspectMeta[]): string {
@@ -511,12 +636,12 @@ export class ClampsInspector {
   }
 
   /** Klickbares Label, sofern der Teil betretbar ist. */
-  private static link(p: InspectPart, cls: string): string {
+  private static link(p: InspectPart, cls: string, parentId: number): string {
     const label = esc(p.label);
     if (p.navigable === false) {
       return `<span class="${cls} dead" title="nicht gebunden">${label}</span>`;
     }
-    return `<a class="${cls}" href="#" data-index="${p.index}" data-label="${label}">${label}</a>`;
+    return `<a class="${cls}" href="#" data-index="${p.index}" data-parent-id="${parentId}" data-label="${label}">${label}</a>`;
   }
 
   /** Wertzelle; bei schreibbaren Teilen per Doppelklick editierbar. */
@@ -527,45 +652,11 @@ export class ClampsInspector {
                   title="Doppelklick zum Ändern">${v}</span>`;
   }
 
-  private static renderPairs(
-    parts: InspectPart[],
-    leftHead: string,
-    rightHead: string
-  ): string {
-    if (parts.length === 0) return '<div class="empty">Keine Teile.</div>';
-    const rows = parts
-      .map(
-        p =>
-          `<div class="row">${this.link(p, 'k')}${this.valueCell(p)}</div>`
-      )
-      .join('');
-    return `
-      ${this.filterBar(parts.length)}
-      <div class="pairs">
-        <div class="head">${esc(leftHead)}</div>
-        <div class="head">${esc(rightHead)}</div>
-        ${rows}
-      </div>`;
-  }
-
-  private static renderIndexed(parts: InspectPart[]): string {
-    if (parts.length === 0) return '<div class="empty">Leere Sequenz.</div>';
-    const rows = parts
-      .map(
-        p =>
-          `<div class="row">${this.link(p, 'idx')}${this.valueCell(p)}</div>`
-      )
-      .join('');
-    return `
-      ${this.filterBar(parts.length)}
-      <div class="indexed">${rows}</div>`;
-  }
-
-  private static filterBar(count: number): string {
+  private static filterBar(count: number, scope: string): string {
     if (count < 12) return '';
     return `<div class="filterbar">
-      <input id="filter" type="text" placeholder="filtern …">
-      <span id="filter-count">${count} Einträge</span>
+      <input class="filter" data-filter-input="${scope}" type="text" placeholder="filtern …">
+      <span class="filter-count" data-filter-count="${scope}">${count} Einträge</span>
     </div>`;
   }
 
@@ -629,7 +720,7 @@ export class ClampsInspector {
                          color: var(--vscode-input-foreground);
                          border: 1px solid var(--vscode-input-border, transparent);
                          border-radius: 3px; }
-      #filter-count { color: var(--vscode-descriptionForeground);
+      .filter-count { color: var(--vscode-descriptionForeground);
                       font-size: 11px; white-space: nowrap; }
 
       .pairs { display: grid; grid-template-columns: max-content 1fr;
@@ -663,6 +754,25 @@ export class ClampsInspector {
                 border-radius: 2px; }
       .v { white-space: pre-wrap; word-break: break-all; }
       .empty { color: var(--vscode-descriptionForeground); }
+      .recursive-list { display: flex; flex-direction: column; gap: 1px; }
+      .recursive-item { border-bottom: 1px solid var(--vscode-panel-border); }
+      .recursive-row { display: grid; grid-template-columns: 20px minmax(90px, max-content) 1fr;
+                       align-items: baseline; gap: 8px; padding: 3px 0; }
+      .twisty { width: 18px; min-width: 18px; padding: 0; background: transparent;
+                color: var(--vscode-foreground); }
+      .twisty.spacer { display: inline-block; }
+      .recursive-label { min-width: 0; }
+      .recursive-child { margin: 3px 0 7px 20px; padding: 7px 8px;
+                         border-left: 2px solid var(--vscode-panel-border);
+                         background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-focusBorder)); }
+      .recursive-head { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+      .recursive-head .oid { margin-left: auto; }
+      .recursive-print { white-space: pre-wrap; word-break: break-all; opacity: .8;
+                         margin-bottom: 6px; font-size: 12px; }
+      .recursive-error { color: var(--vscode-errorForeground); margin: 4px 0 6px 22px; }
+      .recursive-loading, .recursive-cycle { color: var(--vscode-descriptionForeground);
+                                             margin: 4px 0 6px 22px; font-style: italic; }
+
     `;
   }
 

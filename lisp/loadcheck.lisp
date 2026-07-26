@@ -70,8 +70,17 @@ nicht laden lässt und die deshalb am dringendsten eine Prüfung braucht."
           ((char= c #\:)
            (let ((prev (and (> i 0) (char text (1- i)))))
              (cond
-               ;; Führender Doppelpunkt = Schlüsselwort, unverändert
-               ((or (null prev) (member prev '(#\Space #\Tab #\Newline #\( #\) #\')))
+               ;; Führender Doppelpunkt = Schlüsselwort, unverändert.
+               ;;
+               ;; #\# MUSS in dieser Liste stehen: #:foo ist ein
+               ;; nicht-internierter Symbolname, kein Paketpräfix. Wurde
+               ;; der Doppelpunkt dort zu einem Bindestrich, entstand
+               ;; #-foo — eine Leseklausel, die die nächste Form
+               ;; stillschweigend überspringt. In einer defpackage-Form
+               ;; verschluckte das die halbe Exportliste und meldete am
+               ;; Dateiende eine überzählige Klammer.
+               ((or (null prev)
+                    (member prev '(#\Space #\Tab #\Newline #\( #\) #\' #\#)))
                 (write-char c out) (incf i))
                (t
                 (if (and (< (1+ i) n) (char= (char text (1+ i)) #\:))

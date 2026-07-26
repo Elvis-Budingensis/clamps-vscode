@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LanguageClient, State } from 'vscode-languageclient/node';
 import { packageAt } from './macroexpand';
 import { symbolAt } from './disassemble';
+import { XREF_KINDS, XrefBrowserProvider, openXrefEntry } from './xrefBrowser';
 
 interface ToolEntry {
   label: string;
@@ -43,52 +44,37 @@ async function showEntries(title: string, entries: ToolEntry[]): Promise<void> {
     { title, matchOnDescription: true, matchOnDetail: true }
   );
   if (!picked) return;
-  const e = entries[picked.index];
-  if (e.file) {
-    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(e.file));
-    // Offset bevorzugen, wo keine Zeile kommt: SBCL liefert in
-    // Quellorten (:position N) mit N als Zeichen-Offset. positionAt
-    // rechnet das gegen das offene Dokument um — genauer als selbst
-    // Zeilenumbrueche zaehlen, weil VS Code die Zeilenenden kennt.
-    const pos = e.line !== undefined && e.line !== null
-      ? new vscode.Position(Math.max(0, e.line - 1), Math.max(0, e.character ?? 0))
-      : e.offset !== undefined && e.offset !== null
-        ? doc.positionAt(Math.max(0, e.offset - 1))
-        : new vscode.Position(0, 0);
-    const editor = await vscode.window.showTextDocument(doc, { preview: false });
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-  } else if (e.inspect) {
-    await vscode.commands.executeCommand('clamps.inspect', e.inspect, 'COMMON-LISP-USER');
-  }
+  await openXrefEntry(entries[picked.index]);
 }
 
 export async function xrefCommand(
   getClient: () => LanguageClient | undefined,
+  browser?: XrefBrowserProvider,
   kind?: string
 ): Promise<void> {
   const client = await requireClient(getClient); if (!client) return;
   const at = currentSymbolAndPackage();
   const symbol = at?.symbol ?? await vscode.window.showInputBox({ title: 'CLAMPS XREF', prompt: 'Symbol' });
   if (!symbol) return;
+  const packageName = at?.packageName ?? 'COMMON-LISP-USER';
+
+  if (!kind && browser) {
+    await browser.search(symbol, packageName);
+    await vscode.commands.executeCommand('clamps.xrefView.focus');
+    return;
+  }
+
   const selectedKind = kind ?? await vscode.window.showQuickPick(
-    [
-      // "Definitionen" fehlt bewusst: swank:xref kennt den Typ nicht.
-      // Dafuer gibt es "Gehe zu Definition" der Sprachunterstuetzung.
-      { label: 'Aufrufer', value: 'callers' },
-      { label: 'Aufgerufene Funktionen', value: 'callees' },
-      { label: 'Referenzen', value: 'references' },
-      { label: 'Bindungen', value: 'bindings' },
-      { label: 'Setzer', value: 'setters' },
-      { label: 'Makroexpansionen', value: 'macroexpands' },
-    ], { title: `XREF: ${symbol}` }
+    XREF_KINDS.map(k => ({ label: k.label, value: k.kind })),
+    { title: `XREF: ${symbol}` }
   ).then((x: { value: string } | undefined) => x?.value);
   if (!selectedKind) return;
   const r = await client.sendRequest<ToolResult>('clamps/xref', {
-    symbol, package: at?.packageName ?? 'COMMON-LISP-USER', kind: selectedKind,
+    symbol, package: packageName, kind: selectedKind,
   });
   if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'XREF nicht verfügbar.'); return; }
-  await showEntries(`XREF ${selectedKind}: ${symbol}`, r.entries ?? []);
+  const title = XREF_KINDS.find(k => k.kind === selectedKind)?.label ?? selectedKind;
+  await showEntries(`XREF ${title}: ${symbol}`, r.entries ?? []);
 }
 
 export async function aproposCommand(getClient: () => LanguageClient | undefined): Promise<void> {

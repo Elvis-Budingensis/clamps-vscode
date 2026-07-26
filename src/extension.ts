@@ -30,6 +30,7 @@ import { LispBrowserProvider } from './imageBrowsers';
 import { ClampsInlineValuesProvider } from './inlineValues';
 import { CompilerDiagnostics } from './compilerDiagnostics';
 import { xrefCommand, aproposCommand, breakOnSignalsCommand } from './slimeTools';
+import { XrefBrowserProvider, XrefEntry, openXrefEntry } from './xrefBrowser';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -42,6 +43,7 @@ let packageBrowser: LispBrowserProvider | undefined;
 let classBrowser: LispBrowserProvider | undefined;
 let threadBrowser: LispBrowserProvider | undefined;
 let traceBrowser: LispBrowserProvider | undefined;
+let xrefBrowser: XrefBrowserProvider | undefined;
 let compilerDiagnostics: CompilerDiagnostics | undefined;
 
 function enqueueLifecycle(operation: () => Promise<void>): Promise<void> {
@@ -76,10 +78,12 @@ export async function activate(context: vscode.ExtensionContext) {
   classBrowser = new LispBrowserProvider('clamps/classes', () => client);
   threadBrowser = new LispBrowserProvider('clamps/threads', () => client);
   traceBrowser = new LispBrowserProvider('clamps/traced', () => client);
+  xrefBrowser = new XrefBrowserProvider(() => client);
   compilerDiagnostics = new CompilerDiagnostics(() => client);
-  context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, traceBrowser, compilerDiagnostics);
+  context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, traceBrowser, xrefBrowser, compilerDiagnostics);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes),
+    vscode.window.registerTreeDataProvider('clamps.xrefView', xrefBrowser),
     vscode.window.registerTreeDataProvider('clamps.packages', packageBrowser),
     vscode.window.registerTreeDataProvider('clamps.classes', classBrowser),
     vscode.window.registerTreeDataProvider('clamps.threads', threadBrowser),
@@ -338,7 +342,16 @@ export async function activate(context: vscode.ExtensionContext) {
         'COMMON-LISP-USER'
       );
     }),
-    vscode.commands.registerCommand('clamps.xref', () => xrefCommand(() => client)),
+    vscode.commands.registerCommand('clamps.xref', () => xrefCommand(() => client, xrefBrowser)),
+    vscode.commands.registerCommand('clamps.xrefDefinitions', () => xrefCommand(() => client, undefined, 'definitions')),
+    vscode.commands.registerCommand('clamps.xrefCallers', () => xrefCommand(() => client, undefined, 'callers')),
+    vscode.commands.registerCommand('clamps.xrefCallees', () => xrefCommand(() => client, undefined, 'callees')),
+    vscode.commands.registerCommand('clamps.xrefReferences', () => xrefCommand(() => client, undefined, 'references')),
+    vscode.commands.registerCommand('clamps.xrefBindings', () => xrefCommand(() => client, undefined, 'bindings')),
+    vscode.commands.registerCommand('clamps.xrefSetters', () => xrefCommand(() => client, undefined, 'setters')),
+    vscode.commands.registerCommand('clamps.xrefMacroexpands', () => xrefCommand(() => client, undefined, 'macroexpands')),
+    vscode.commands.registerCommand('clamps.xrefRefresh', () => xrefBrowser?.refresh()),
+    vscode.commands.registerCommand('clamps.xrefOpen', (entry: XrefEntry) => openXrefEntry(entry)),
     vscode.commands.registerCommand('clamps.apropos', () => aproposCommand(() => client)),
     vscode.commands.registerCommand('clamps.breakOnSignals', () => breakOnSignalsCommand(() => client)),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
