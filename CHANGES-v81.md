@@ -392,3 +392,129 @@ Kontrollcode ausserhalb der Audiokette ist es brauchbar.
 
 Das ist eine Einschätzung aus dem Lesen des Codes, nicht aus einem
 Messlauf.
+
+## v81.9 — Paredit: Atome waren keine Formen
+
+Auf die Frage, wie man Paredit prüft, erst `structuralEditing.ts` gelesen.
+Drei Fehler, davon einer, der die Hälfte der Befehle wirkungslos machte.
+
+### 1. Der Scanner kannte nur Klammern
+
+`formRanges` erfasste ausschliesslich Klammerausdrücke. In
+
+    (mapcar #'car liste)
+
+gibt es keinen einzigen — also taten `forwardSexp`, `backwardSexp`,
+`slurpForward` und `barfForward` dort **nichts**. Genau in der Sorte Zeile,
+in der man sie am häufigsten braucht.
+
+Jetzt erfasst der Scanner Atome mit `list: false`. Reader-Makros bleiben
+am Atom (`#'car` ist ein Stück, nicht zwei), und Strings sind ebenfalls
+Atome — sonst hätte `slurp` über `"text"` hinweggegriffen.
+
+`spliceSexp` benutzt dafür neu `containingList`: bei einem Atom hätte es
+dessen erstes und letztes Zeichen gelöscht.
+
+### 2. parentStart === 0 ist falsy
+
+`selectParentSexp` prüfte `!r?.parentStart`. Die erste Form jeder Datei
+beginnt bei Offset 0, also brach der Befehl dort ab — bei genau der Form,
+in der man am meisten arbeitet. Jetzt `=== undefined`.
+
+### 3. slurp griff über Ebenen hinweg
+
+Die alte Zielsuche nahm die nächste Form, die nicht in der eigenen liegt —
+auch eine aus der Elternform. Neu `slurpTarget`: nur Nachbarn mit
+demselben `parentStart`. Bei `((a) )` gibt es kein Ziel, statt aus der
+Klammer herauszugreifen.
+
+`slurpTarget`, `barfTarget`, `containing` und `containingList` sind jetzt
+exportiert — die Zielberechnung ist ohne Editor prüfbar, und genau darum
+ging es.
+
+### Neues Gate
+
+`test/paredit.test.js`, in `npm test`. Prüft die berechneten Bereiche, nicht
+„der Befehl existiert": Atome und Listen, Reader-Makros, Strings, Klammern
+in String, Kommentar und `#\(`, Elternzuordnung inklusive Offset 0, die
+kleinste umschliessende Form, slurp- und barf-Ziele, direkte Kinder gegen
+Enkel, leere Form. Dazu fünf unbalancierte Eingaben (`(((`, `)))`,
+`"unterminiert`, `#| offen`), die nicht werfen dürfen.
+
+Gegenproben: Atome aus dem Scanner ⇒ 6 Fehler. `parentStart`-Zuordnung auf
+falsy-Prüfung ⇒ 3 Fehler, darunter der Offset-0-Fall.
+
+Beim Schreiben hatte ich selbst zwei Fehler drin — eine falsch abgezählte
+Sortierreihenfolge, und der String-Fall, der einen echten Scanner-Fehler
+aufdeckte statt meiner Erwartung.
+
+### Was nicht geprüft ist
+
+Die Befehle selbst brauchen einen Editor; getestet ist die
+Zielberechnung, nicht das Anwenden der Edits. `wrapSexp` wickelt die
+umschliessende Form ein, nicht den nächsten Ausdruck wie Emacs-Paredit —
+das ist eine Design-Entscheidung, die ich so gelassen habe.
+`barfForward` und `slurpForward` existieren nur vorwärts; die
+Rückwärts-Varianten fehlen ganz.
+
+## v81.10 — ein Gate gegen Gate-Lücken
+
+Heute zweimal derselbe Fehler, beide Male zufällig gefunden:
+
+- `lisp/test-inspect.lisp` — der gründlichste Test im Projekt, 80 Formen
+  über 17 Typen, Slot-Setzen, Zirkularität, Teile-Cache — hing in **keiner**
+  npm-Kette. Er lief nie.
+- `test/lispstring.test.js` hatte eine Whitelist von 15 Dateinamen. v81
+  brachte drei neue Module, die nicht darin standen, und
+  `advancedTools.ts` baute prompt wieder einen Lisp-String mit
+  `JSON.stringify`. Grün durchgelaufen, weil die Datei nie gelesen wurde.
+
+Gemeinsame Ursache: eine gepflegte Liste, die beim nächsten neuen Code
+verfällt. Ein Test, der nicht läuft, ist schlimmer als kein Test — er
+erzeugt Vertrauen, das nicht gedeckt ist.
+
+### `test/gatecoverage.test.js`
+
+Läuft als erstes in `npm test`. Vier Prüfungen:
+
+1. **Jede `test/*.test.js` kommt in der Gate-Kette vor.** Die npm-Skripte
+   werden dafür rekursiv aufgelöst, damit `gates → lisp → sbcl --script …`
+   miterfasst wird.
+2. **Jede `lisp/test-*.lisp`** plus `loadcheck`, `framingtest`,
+   `swankframing`.
+3. **Kein Früh-Ausstieg mitten in einer Testdatei.** `test-inspect.lisp`
+   enthält `(when (posix-getenv "TEST_EXIT") (exit :code 0))`; in den
+   Gates ist die Variable nicht gesetzt, aber wer sie setzt, überspringt
+   still den Rest und der Lauf endet mit Code 0. Ausstieg im letzten
+   Fünftel gilt als Abschluss, weiter vorn als Falle.
+4. **Keine Datei-Whitelists in Tests** — ein Array mit drei oder mehr
+   `.ts`-Namen wird gemeldet. Wer `src/` prüfen will, liest `src/`.
+
+### Gegenproben gegen die realen Fehler
+
+- `test-inspect.lisp` aus der Kette entfernt (der tatsächliche
+  v81.2-Zustand) ⇒ erkannt.
+- Whitelist im lispstring-Wächter wiederhergestellt ⇒ erkannt.
+- Früh-Ausstieg nach vorn verschoben ⇒ erkannt, mit Prozentangabe.
+
+Das Gate hätte also beide heutigen Zufallsfunde von allein gemacht.
+
+### Eigener Fehler beim Bauen
+
+Die erste Fassung meldete alle 11 JS-Tests als nicht ausgeführt. Ursache:
+`gates` endet mit `npm test`, nicht `npm run test`, und mein Regex kannte
+nur die lange Form. Falscher Alarm statt Fund — behoben, die Kurzformen
+werden jetzt mitaufgelöst.
+
+Stand: 18 grüne Gate-Zeilen, 11 JS-Tests, 8 Lisp-Testläufe.
+
+### Offen
+
+Die Prüfung erfasst, **dass** ein Test läuft, nicht **wie viel** er
+abdeckt. Ein Test, der nur `assert(true)` enthält, gilt als erfüllt.
+Zeilenabdeckung würde das messen, ist aber ein eigenes Werkzeug.
+
+Stickers bleiben ebenfalls offen: `stickerWrap` schreibt in die
+Quelldatei, und `sticker-record-for-repl` alloziert — für `dsp!`-Körper
+unbrauchbar, also für den Hauptzweck, für den ich Stickers empfohlen
+hatte.
