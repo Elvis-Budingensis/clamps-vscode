@@ -338,3 +338,57 @@ Das Manifest-Gate prüft es als fünften Punkt. Gegenprobe: Block entfernt
 Ob die Warnungen mit `--disable-extensions` tatsächlich verschwinden, habe
 ich nicht gesehen — das zeigt erst ein Lauf bei dir. Bleiben sie stehen,
 ist es VS Code selbst, und dann ist auch das kein Handlungsbedarf.
+
+## v81.8 — der v79-Wächter sah nicht hin
+
+Auf die Frage „sind wir nahe an SLY" habe ich die neuen v81-Module gelesen
+statt eine Zahl zu nennen. Dabei fiel das auf.
+
+### Die Whitelist verfiel
+
+Der statische Wächter aus v79 — „wer Lisp-Quelltext baut, benutzt
+`lispString`" — hatte **15 Dateinamen fest eingetragen**. v81 fügte drei
+Module hinzu (`advancedTools.ts`, `structuralEditing.ts`,
+`imageIndentation.ts`), die nicht in der Liste standen. Und in
+`advancedTools.ts:17` stand prompt wieder:
+
+    `(clamps-bridge-rpc:sticker-record-for-repl ${JSON.stringify(key)} …)`
+
+Genau das Muster, das v79 verboten hat. Der Wächter lief grün durch, weil
+er die Datei nie gelesen hat.
+
+Beweis: die drei Dateien in die Liste eingetragen ⇒ exit 1,
+`advancedTools.ts:17`. Der Wächter funktionierte, er hat nur nicht
+hingesehen.
+
+Behoben in beide Richtungen:
+
+- Der Wächter scannt jetzt **alle** `.ts` unter `src/` per `readdirSync`
+  statt einer gepflegten Liste. Eine Whitelist verfällt genau dann, wenn
+  man sie am dringendsten braucht: bei neuem Code.
+- `advancedTools.ts` benutzt an beiden Stellen `lispString`.
+
+### Wie schlimm war es wirklich
+
+Latent, nicht akut. Der Sticker-Name wird mit
+`${dateiname}:${zeile}` vorbelegt; für macOS-Pfade liefern
+`JSON.stringify` und `lispString` dasselbe. Zum echten Fehler wird es
+erst, wenn ein Pfad oder ein selbst getippter Name einen Backslash
+enthält. Das ändert nichts daran, dass die Sperre wirkungslos war —
+sie hätte die nächste, schlimmere Stelle genauso durchgelassen.
+
+### Anmerkung zu Stickers
+
+`clamps.stickerWrap` **schreibt in die Quelldatei**: die Auswahl wird
+durch `(sticker-record-for-repl "key" <form>)` ersetzt. SLYs Stickers
+verändern den Quelltext nicht — sie instrumentieren beim Compile und
+lassen die Datei sauber.
+
+Für Realtime-Code ist der Unterschied kein Geschmacksfrage:
+`sticker-record-for-repl` macht `push`, `%inspect-register` und
+`prin1-to-string`. In einem `dsp!`-Körper, der pro Audioblock läuft, ist
+das Allokation und Ausgabe im Audio-Thread. Nicht benutzen. Für
+Kontrollcode ausserhalb der Audiokette ist es brauchbar.
+
+Das ist eine Einschätzung aus dem Lesen des Codes, nicht aus einem
+Messlauf.

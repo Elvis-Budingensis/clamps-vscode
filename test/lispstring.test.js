@@ -85,14 +85,17 @@ check('printSexpr Symbol bleibt roh', printSexpr(new Sym('t')), 't');
   const lispish = ['(swank:', '(swank/', '(clamps-bridge-rpc:', ':emacs-rex',
                    ':emacs-return-string', '(setf ', '(intern '];
   const offenders = [];
-  for (const file of ['swank.ts', 'debugSession.ts', 'replTerminal.ts',
-                      'inspector.ts', 'macroexpand.ts', 'slimeTools.ts',
-                      'disassemble.ts', 'nodeBrowser.ts', 'imageBrowsers.ts',
-                      'xrefBrowser.ts', 'inlineValues.ts', 'rtStatus.ts',
-                      'compilerDiagnostics.ts', 'extension.ts',
-                      'processManager.ts']) {
-    const full = path.join(__dirname, '..', 'src', file);
-    if (!fs.existsSync(full)) continue;
+  // ALLE .ts unter src/ scannen, nicht eine gepflegte Liste.
+  //
+  // Die erste Fassung hatte 15 Dateinamen fest eingetragen. Als v81 drei
+  // Module hinzufuegte, standen die nicht darin — und advancedTools.ts
+  // baute prompt wieder einen Lisp-String mit JSON.stringify. Der
+  // Waechter lief gruen durch, weil er die Datei nie gelesen hat. Eine
+  // Whitelist verfaellt genau dann, wenn man sie am dringendsten
+  // braucht: bei neuem Code.
+  const srcDir = path.join(__dirname, '..', 'src');
+  for (const file of fs.readdirSync(srcDir).filter(f => f.endsWith('.ts')).sort()) {
+    const full = path.join(srcDir, file);
     const lines = fs.readFileSync(full, 'utf8').split('\n');
     lines.forEach((line, i) => {
       const code = line.replace(/^\s*(\/\/|\*).*/, '');
