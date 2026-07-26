@@ -5,7 +5,7 @@ Funktionen mitgenommen hat: der Schnitt lief von inspect-part-for-repl
 bis %offset->line-col, und nach dem Umbau der Objekt-Tabelle lag alles
 dazwischen. Der Test hat es gefunden, aber erst nach dem Ausliefern.
 """
-import io, re, sys
+import glob, io, re, sys
 from collections import Counter
 
 def balance(path):
@@ -41,8 +41,10 @@ def balance(path):
     return None if d == 0 else f"{d} Klammern offen"
 
 problems = []
-for path in ['lisp/rpc.lisp', 'lisp/bridge-server.lisp',
-             'lisp/bootstrap.lisp', 'lisp/test-inspect.lisp']:
+# Die Liste war handgepflegt, und completion.lisp fehlte darin — sie ging
+# mit zwei fehlenden Klammern raus, ohne dass hier etwas aufgefallen ist.
+# Deshalb jetzt alle Lisp-Dateien im Verzeichnis.
+for path in sorted(glob.glob('lisp/*.lisp')):
     b = balance(path)
     if b: problems.append(f"{path}: {b}")
 
@@ -55,6 +57,9 @@ if dupes: problems.append(f"rpc.lisp: doppelt definiert {dupes}")
 # Jedes exportierte Symbol muss definiert sein
 exported = re.findall(r'#:([a-z-]+)', s[s.index('(:export'):s.index('(in-package :clamps-bridge-rpc)')])
 defined = set(re.findall(r'^\(defun ([a-z%*+-]+)', s, re.M))
+for extra in ['lisp/completion.lisp', 'lisp/autodoc.lisp']:
+    extra_source = io.open(extra, encoding='utf-8').read()
+    defined.update(re.findall(r'^\(defun ([a-z%*+-]+)', extra_source, re.M))
 missing = [e for e in exported if e not in defined]
 if missing: problems.append(f"rpc.lisp: exportiert aber undefiniert: {missing}")
 
@@ -87,7 +92,7 @@ if orphans: problems.append(f"Handler wird nie aufgerufen: {orphans}")
 
 # TypeScript: jeder registrierte Befehl muss in package.json stehen und
 # umgekehrt. Der Debugger hat gezeigt, wie leicht das auseinanderläuft.
-import json, glob
+import json
 try:
     pkg = json.load(io.open('package.json', encoding='utf-8'))
     declared = {c['command'] for c in pkg.get('contributes', {}).get('commands', [])}
@@ -107,6 +112,63 @@ try:
                 problems.append(f"Menüeintrag zeigt auf unbekannten Befehl: {c}")
 except FileNotFoundError:
     pass
+
+# Argumentzahl der Bridge gegen die Lambda-Liste prüfen.
+#
+# Der Anlass: handle-completion schickt IMMER drei Argumente, weil
+# completion.lisp den Quelltext vor dem Cursor braucht. Die Basisfassung in
+# rpc.lisp nahm aber nur zwei. Solange completion.lisp lud, fiel das nicht
+# auf — und als sie es nicht tat, scheiterte jede Vervollständigung mit
+# "invalid number of arguments: 3". Es kamen einfach keine Vorschläge, ohne
+# Fehlermeldung im Editor. Der angebliche Rückfall auf die Basis-Completion
+# war deshalb keiner.
+def lambda_info(source, name):
+    m = re.search(r'^\(defun ' + re.escape(name) + r'\s*\(([^)]*)\)', source, re.M)
+    if not m:
+        return None
+    words = m.group(1).split()
+    required = 0
+    optional = 0
+    rest = False
+    section = 'required'
+    for w in words:
+        if w.startswith('&'):
+            section = w.lower()
+            if section in ('&rest', '&body', '&key'):
+                rest = True
+            continue
+        if section == 'required':
+            required += 1
+        elif section == '&optional':
+            optional += 1
+    return required, optional, rest
+
+rpc_sources = {'lisp/rpc.lisp': s}
+for extra in ['lisp/completion.lisp', 'lisp/autodoc.lisp']:
+    rpc_sources[extra] = io.open(extra, encoding='utf-8').read()
+
+# (format nil "(clamps-bridge-rpc:foo ~S ~S)" ...) — Direktiven zählen.
+for m in re.finditer(r'format nil "\(clamps-bridge-rpc:([a-z-]+)([^"]*)"', bs):
+    fname, tail = m.group(1), m.group(2)
+    # Argumente zählen, nicht nur Format-Direktiven: handle-references
+    # übergibt die XREF-Art als LITERAL (\"references\"), nicht als ~S.
+    body = tail.rstrip()
+    if body.endswith(')'):
+        body = body[:-1]
+    nargs = len(re.findall(r'~[SAD]|\\"(?:[^"\\]|\\.)*\\"|[^\s]+', body))
+    infos = [lambda_info(src, fname) for src in rpc_sources.values()]
+    infos = [i for i in infos if i]
+    if not infos:
+        problems.append(f"bridge ruft {fname}, nirgends definiert")
+        continue
+    for info in infos:
+        required, optional, rest = info
+        if nargs < required or (not rest and nargs > required + optional):
+            problems.append(
+                f"bridge ruft {fname} mit {nargs} Argument(en), "
+                f"Definition nimmt {required}"
+                + (f"–{required + optional}" if optional else "")
+                + (" und mehr" if rest else ""))
 
 if problems:
     print("PROBLEME:"); [print(" -", p) for p in problems]; sys.exit(1)

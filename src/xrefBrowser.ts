@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LanguageClient, State } from 'vscode-languageclient/node';
+import { xrefNavigationHistory } from './xrefNavigation';
 
 export interface XrefEntry {
   label: string;
@@ -63,6 +64,7 @@ export function entryPosition(entry: XrefEntry, doc: vscode.TextDocument): vscod
 
 export async function openXrefEntry(entry: XrefEntry): Promise<void> {
   if (entry.file) {
+    xrefNavigationHistory.captureCurrent();
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.file));
     const pos = entryPosition(entry, doc);
     const editor = await vscode.window.showTextDocument(doc, { preview: false });

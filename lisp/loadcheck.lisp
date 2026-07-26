@@ -184,6 +184,37 @@ meldet jede korrekte Klausel einen Fehler."
 
 ;;; --- Stufe 3: Laden --------------------------------------------------
 
+;;; --- Stufe 4: Übersetzen ---------------------------------------------
+;;;
+;;; LOAD einer Quelldatei fängt Kompilierfehler selbst ab: der Compiler
+;;; meldet "caught ERROR" auf den Strom, ersetzt die Form durch einen
+;;; Stummel, der erst beim AUFRUF knallt — und LOAD kehrt erfolgreich
+;;; zurück. Genau so ist (let ((pi 0)) ...) durch Stufe 3 gelaufen:
+;;; PI ist eine Konstante, die Datei war lesbar, formschön und
+;;; "geladen", und trotzdem lieferte jede Completion nur noch
+;;; "Execution of a form compiled with errors".
+;;;
+;;; COMPILE-FILE gibt FAILURE-P zurück und ist deshalb das ehrliche Gate.
+;;; STYLE-WARNINGs setzen es nicht — die beabsichtigte Neudefinition von
+;;; COMPLETIONS-FOR-REPL bleibt also erlaubt.
+
+(defun check-compile (path)
+  (let ((out (merge-pathnames (format nil "loadcheck-~A.fasl" (pathname-name path))
+                              #p"/tmp/")))
+    (multiple-value-bind (fasl warnings-p failure-p)
+        (handler-bind ((style-warning #'muffle-warning))
+          (handler-case (compile-file path :output-file out :verbose nil :print nil)
+            (error (e)
+              (problem "~A lässt sich nicht übersetzen: ~A" (file-namestring path) e)
+              (values nil t t))))
+      (declare (ignore warnings-p))
+      (when failure-p
+        (problem "~A übersetzt mit Fehler oder ernster Warnung"
+                 (file-namestring path)))
+      (unless failure-p
+        (format t "~&  ~A übersetzt sauber.~%" (file-namestring path)))
+      (when fasl (ignore-errors (delete-file fasl))))))
+
 (defun check-load (path)
   (let ((styles 0))
     (handler-bind
@@ -211,8 +242,28 @@ meldet jede korrekte Klausel einen Fehler."
   (format t "~&Gestalt prüfen …~%")
   (check-file-shape rpc)
   (dolist (p others) (check-file-shape p))
-  (format t "~&Laden prüfen …~%")
-  (check-load rpc)
+  ;; completion.lisp und autodoc.lisp sind wie rpc.lisp frei von CLAMPS,
+  ;; Swank und Incudine und bauen nur auf rpc.lisp auf. Sie MUESSEN hier
+  ;; mitgeprueft werden: (let ((pi 0)) ...) ist lesbar und formschoen, aber
+  ;; ein Kompilierfehler — Stufe 1 und 2 sehen davon nichts.
+  ;;
+  ;; Uebersetzen kommt VOR dem Laden. Umgekehrt hat autodoc.lisp beim
+  ;; Laden (export '(autodoc-for-repl)) ausgefuehrt, und die spaetere
+  ;; Uebersetzung von rpc.lisp meldete dann eine Paketabweichung gegen
+  ;; das eigene DEFPACKAGE — eine Warnung, die nur die Pruefreihenfolge
+  ;; erzeugt hat und nichts ueber die Dateien sagt.
+  (let ((extras (remove nil
+                        (mapcar (lambda (name)
+                                  (let ((p (merge-pathnames
+                                            (concatenate 'string name ".lisp") here)))
+                                    (and (probe-file p) p)))
+                                '("completion" "autodoc")))))
+    (format t "~&Übersetzen prüfen …~%")
+    (check-compile rpc)
+    (dolist (p extras) (check-compile p))
+    (format t "~&Laden prüfen …~%")
+    (check-load rpc)
+    (dolist (p extras) (check-load p)))
   (if (zerop *problems*)
       (format t "~&ok — Lisp lädt sauber und ohne verrutschte Klauseln.~%")
       (format t "~&~D Problem(e).~%" *problems*))

@@ -252,6 +252,16 @@ closed\"."
 (defun send-response (id result)
   (write-lsp-message (make-jobj "jsonrpc" "2.0" "id" id "result" result)))
 
+(defun send-notification (method params)
+  (write-lsp-message (make-jobj "jsonrpc" "2.0" "method" method "params" params)))
+
+(defun show-message (text &optional (type 3))
+  "window/showMessage. TYPE: 1 Error, 2 Warning, 3 Info.
+Damit ein erfolglos gebliebenes F12 sichtbar wird statt still zu
+verpuffen — ein Sprung, der nichts tut, ist schlechter als eine Meldung."
+  (send-notification "window/showMessage"
+                     (make-jobj "type" type "message" text)))
+
 (defun send-error (id code message)
   (write-lsp-message
    (make-jobj "jsonrpc" "2.0" "id" id
@@ -271,13 +281,33 @@ closed\"."
   (bt:with-lock-held (*swank-lock*) (incf *swank-request-id*)))
 
 (defun connect-swank (host port)
-  (usocket:socket-stream (usocket:socket-connect host port :element-type 'character)))
+  "Der Swank-Strom ist BYTE-orientiert, nicht zeichenorientiert.
+
+Der 6-stellige Hex-Header des Swank-Protokolls zählt BYTES der
+UTF-8-Kodierung — genau wie Content-Length in LSP. Auf einem
+Zeichenstrom war (length text) die ZEICHENzahl: bei jedem Umlaut, jedem
+Gedankenstrich, jedem ° im Payload waren Bytes > Zeichen. Swank las dann
+zu wenig, der Rest der Form wurde als Anfang der nächsten Nachricht
+gelesen, und die Verbindung war verschoben. Symmetrisch dazu las
+read-swank-message so viele ZEICHEN wie Bytes angekündigt waren.
+
+Folge: sobald eine deutsche Docstring zurückkam (autodoc, describe-symbol
+in CLAMPS) oder eine Completion-Anfrage ein Dateifenster mit Umlaut
+mitschickte, endete die Leseschleife — ab da feuerte KEIN Callback aus
+*pending-requests* mehr. Definition, Completion, Signature Help und Hover
+antworteten nie, ohne Fehlermeldung. Deshalb hier Bytes lesen/schreiben
+und UTF-8 selbst kodieren, wie in write-lsp-message/read-lsp-message."
+  (usocket:socket-stream
+   (usocket:socket-connect host port :element-type '(unsigned-byte 8))))
 
 (defun send-swank-text (text)
   (bt:with-lock-held (*swank-lock*)
-    (write-string (format nil "~6,'0X" (length text)) *swank-stream*)
-    (write-string text *swank-stream*)
-    (force-output *swank-stream*)))
+    (let* ((body (sb-ext:string-to-octets text :external-format :utf-8))
+           (header (sb-ext:string-to-octets (format nil "~6,'0X" (length body))
+                                            :external-format :utf-8)))
+      (write-sequence header *swank-stream*)
+      (write-sequence body *swank-stream*)
+      (force-output *swank-stream*))))
 
 (defun swank-rex (form-string &key (package *swank-package*) callback)
   "FORM-STRING ist ein fertig formatierter Lisp-Form-String, z.B.
@@ -310,12 +340,19 @@ closed\"."
   "Readtable, der Paket-Doppelpunkte als normale Zeichen liest.")
 
 (defun read-swank-message (stream)
-  (let ((len-str (make-string 6)))
-    (let ((n (read-sequence len-str stream)))
+  "STREAM ist byte-orientiert (siehe connect-swank). Der Header zählt
+BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
+  (let ((header (make-array 6 :element-type '(unsigned-byte 8))))
+    (let ((n (read-sequence header stream)))
       (when (< n 6) (return-from read-swank-message nil)))
-    (let* ((len (parse-integer len-str :radix 16))
-           (buf (make-string len)))
-      (read-sequence buf stream)
+    (let* ((len (parse-integer (sb-ext:octets-to-string header :external-format :utf-8)
+                               :radix 16))
+           (bytes (make-array len :element-type '(unsigned-byte 8)))
+           (got (read-sequence bytes stream)))
+      (when (< got len)
+        (log-msg "Swank-Nachricht unvollständig: ~D von ~D Bytes" got len)
+        (return-from read-swank-message nil))
+      (let ((buf (sb-ext:octets-to-string bytes :external-format :utf-8)))
       (handler-case
           ;; Erst der normale, korrekte Reader. Der versteht Keywords
           ;; richtig und ist für die allermeisten Nachrichten der Fall.
@@ -336,7 +373,7 @@ closed\"."
             (error (e)
               (log-msg "Konnte Swank-Antwort nicht lesen (~A): ~A" e
                         (subseq buf 0 (min 200 (length buf))))
-              :unreadable)))))))
+              :unreadable))))))))
 
 (defun %fixup-leading-keyword (form)
   "Der nachsichtige Reader liest das führende :return/:debug/… als
@@ -422,7 +459,10 @@ closed\"."
                      ;; man erst einen Buchstaben tippen muss.
                      "completionProvider" (make-jobj
                                            "triggerCharacters" (vector ":"))
-                     "definitionProvider" :true)
+                     "signatureHelpProvider" (make-jobj
+                                               "triggerCharacters" (vector " " "("))
+                     "definitionProvider" :true
+                     "referencesProvider" :true)
      "serverInfo" (make-jobj "name" "clamps-bridge" "version" "0.1.0"))))
 
 (defun handle-did-open (params)
@@ -486,10 +526,27 @@ closed\"."
         ;; Ohne Präfix nicht das ganze Image schicken.
         (send-response id (make-jobj "isIncomplete" :true "items" (vector)))
         (swank-rex
-         (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S)" prefix pkg)
+         (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S ~S)"
+                 prefix pkg
+                 ;; Nur ein begrenztes Fenster vor dem Cursor übertragen.
+                 ;; Genug für lokale Bindungen und Kopf-/Argumentposition,
+                 ;; ohne bei großen Dateien jeden Tastendruck aufzublähen.
+                 (let* ((line-start (max 0 (- line 120)))
+                        (lines (loop for ln from line-start to line
+                                     collect (or (nth-line text ln) ""))))
+                   (with-output-to-string (out)
+                     (loop for l in lines
+                           for ln from line-start
+                           do (if (= ln line)
+                                  (write-string (subseq l 0 (min character (length l))) out)
+                                  (progn (write-string l out) (terpri out)))))))
          :callback
          (lambda (status value)
-           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+           (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                    ;; Arity mitpruefen: eine unerwartet geformte Antwort
+                    ;; liess destructuring-bind fliegen, der Handler
+                    ;; antwortete mit -32603 statt mit einer leeren Liste.
+                    (= (length value) 3))
                (destructuring-bind (ok truncated items) value
                  (declare (ignore ok))
                  (send-response id
@@ -543,6 +600,132 @@ closed\"."
             (setf start (1+ idx)))))
       pkg)))
 
+
+(defun text-before-position (text line character)
+  (with-output-to-string (out)
+    (loop for ln from 0 to line
+          for value = (or (nth-line text ln) "")
+          do (if (= ln line)
+                 (write-string (subseq value 0 (min character (length value))) out)
+                 (progn (write-string value out) (terpri out))))))
+
+(defun call-context-before-point (text line character)
+  "Liefert (operator active-parameter) fuer die innerste offene Form.
+Strings und Zeilenkommentare werden ignoriert; verschachtelte Formen zaehlen
+als jeweils ein Argument der aeusseren Form."
+  (let* ((source (text-before-position text line character))
+         (stack nil) (token "") (in-string nil) (escape nil) (comment nil))
+    (labels ((flush-token ()
+               (when (> (length token) 0)
+                 (when stack
+                   (let ((frame (first stack)))
+                     (if (null (first frame))
+                         (setf (first frame) token)
+                         (incf (second frame)))))
+                 (setf token ""))))
+      (loop for ch across source do
+        (cond
+          (comment (when (char= ch #\Newline) (setf comment nil)))
+          (in-string
+           (cond (escape (setf escape nil))
+                 ((char= ch #\\) (setf escape t))
+                 ((char= ch #\") (setf in-string nil))))
+          ;; Zeichenliteral: nach #\ gehoert das naechste Zeichen zum
+          ;; Token, auch wenn es eine Klammer ist. Sonst verrutscht die
+          ;; Verschachtelung bei (foo #\( ...).
+          ((and (>= (length token) 2)
+                (string= "#\\" (subseq token (- (length token) 2))))
+           (setf token (concatenate 'string token (string ch))))
+          ((char= ch #\;) (flush-token) (setf comment t))
+          ((char= ch #\") (flush-token) (setf in-string t))
+          ((char= ch #\() (flush-token) (push (list nil 0) stack))
+          ((char= ch #\))
+           (flush-token)
+           (when stack
+             (pop stack)
+             (when stack (incf (second (first stack))))))
+          ;; Kein C-Escape in CL-Strings: " \t\r\n" waere " trn" gewesen.
+          ((member ch '(#\Space #\Tab #\Return #\Newline #\Page)) (flush-token))
+          (t (setf token (concatenate 'string token (string ch))))))
+      ;; Steht der Cursor mitten in einem Token, wird dieses Argument noch
+      ;; getippt und ist deshalb das aktive. Steht er hinter einem
+      ;; Trennzeichen, ist das naechste Argument gemeint. Ohne diese
+      ;; Unterscheidung markierte Signature Help nach jedem Leerzeichen —
+      ;; also genau beim Trigger — den vorherigen Parameter.
+      (let ((in-token (> (length token) 0)))
+        (flush-token)
+        (when (and stack (first (first stack)))
+          (let ((count (second (first stack))))
+            (list (first (first stack))
+                  (if in-token (max 0 (1- count)) count))))))))
+
+(defun handle-signature-help (id params)
+  (let* ((doc (gethash "textDocument" params))
+         (pos (gethash "position" params))
+         (text (and doc (gethash (gethash "uri" doc) *documents*)))
+         (line (and pos (gethash "line" pos)))
+         (character (and pos (gethash "character" pos)))
+         (ctx (and text (call-context-before-point text line character)))
+         (pkg (if text (package-at-position text line character) *swank-package*)))
+    (if (null ctx)
+        (send-response id :null)
+        (destructuring-bind (operator active) ctx
+          (swank-rex
+           (format nil "(clamps-bridge-rpc:autodoc-for-repl ~S ~S)" operator pkg)
+           :callback
+           (lambda (status value)
+             (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                      (= (length value) 4))
+                 (destructuring-bind (ok label params-list docu) value
+                   (declare (ignore ok))
+                   (let ((signature (make-jobj
+                                     "label" label
+                                     "parameters"
+                                     (coerce (mapcar (lambda (x) (make-jobj "label" x)) params-list)
+                                             'vector))))
+                     (when (and docu (string/= docu ""))
+                       (setf (gethash "documentation" signature)
+                             (make-jobj "kind" "markdown" "value" docu)))
+                     (send-response id
+                       (make-jobj "signatures" (vector signature)
+                                  "activeSignature" 0
+                                  "activeParameter" active))))
+                 (send-response id :null))))))))
+
+(defun xref-locations-for-lsp (entries)
+  (let ((locations nil))
+    (dolist (entry entries)
+      ;; Tool-Entry ist eine plist.
+      (let* ((file (getf entry :file))
+             (line (or (getf entry :line) 1))
+             (character (or (getf entry :character) 0)))
+        (when file
+          (push (make-jobj
+                 "uri" (format nil "file://~A" file)
+                 "range" (make-jobj
+                          "start" (make-jobj "line" (max 0 (1- line)) "character" character)
+                          "end" (make-jobj "line" (max 0 (1- line)) "character" character)))
+                locations))))
+    (coerce (nreverse locations) 'vector)))
+
+(defun handle-references (id params)
+  (let* ((sym (position-symbol params))
+         (doc (gethash "textDocument" params))
+         (pos (gethash "position" params))
+         (text (and doc (gethash (gethash "uri" doc) *documents*)))
+         (pkg (if text (package-at-position text (gethash "line" pos)
+                                             (gethash "character" pos))
+                  "COMMON-LISP-USER")))
+    (if (null sym)
+        (send-response id (vector))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:xref-for-repl ~S ~S \"references\")" sym pkg)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+               (send-response id (xref-locations-for-lsp (second value)))
+               (send-response id (vector))))))))
+
 (defun handle-definition (id params)
   "textDocument/definition — das M-. Erlebnis: springt zur Definition
    jedes Symbols, auch in SBCLs eigene Quellen. Die eigentliche Suche
@@ -564,23 +747,32 @@ closed\"."
          :callback
          (lambda (status value)
            (if (and (eq status :ok) (consp value) (eq (first value) :ok))
-               (let ((locations '()))
+               (let ((locations '()) (fileless '()))
                  (dolist (entry (second value))
                    (destructuring-bind (file line col label) entry
-                     (declare (ignore label))
-                     ;; Einträge ohne auffindbare Datei (SBCL ohne
-                     ;; installierte Quellen) überspringen — LSP kann
-                     ;; nur echte Orte anspringen.
-                     (when file
-                       (push (make-jobj
-                              "uri" (format nil "file://~A" file)
-                              "range" (make-jobj
-                                       "start" (make-jobj "line" line "character" col)
-                                       "end" (make-jobj "line" line "character" col)))
-                             locations))))
+                     ;; LSP kann nur echte Orte anspringen. Einträge ohne
+                     ;; auffindbare Datei — in der REPL definierte
+                     ;; Funktionen, SBCL ohne installierte Quellen —
+                     ;; werden gemeldet statt verschluckt: ein F12, das
+                     ;; nichts tut und nichts sagt, ist schlechter als
+                     ;; eine Meldung.
+                     (if file
+                         (push (make-jobj
+                                "uri" (format nil "file://~A" file)
+                                "range" (make-jobj
+                                         "start" (make-jobj "line" line "character" col)
+                                         "end" (make-jobj "line" line "character" col)))
+                               locations)
+                         (push (or label "?") fileless))))
+                 (when (and (null locations) fileless)
+                   (show-message
+                    (format nil "~A: Definition bekannt (~{~A~^, ~}), aber keine Quelldatei — in der REPL definiert oder SBCL-Quellen nicht installiert."
+                            sym (nreverse fileless))
+                    2))
                  (send-response id (coerce (nreverse locations) 'vector)))
                (progn
                  (log-msg "definition: nichts gefunden für ~S in ~S" sym pkg)
+                 (show-message (format nil "Keine Definition für ~A in ~A gefunden." sym pkg) 2)
                  (send-response id (vector)))))))))
 
 (defun lisp-escape-string (s)
@@ -1050,7 +1242,9 @@ closed\"."
           ((string= method "textDocument/didChange") (handle-did-change params))
           ((string= method "textDocument/hover") (handle-hover id params))
           ((string= method "textDocument/completion") (handle-completion id params))
+          ((string= method "textDocument/signatureHelp") (handle-signature-help id params))
           ((string= method "textDocument/definition") (handle-definition id params))
+          ((string= method "textDocument/references") (handle-references id params))
           ((string= method "clamps/eval") (handle-eval id params))
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))

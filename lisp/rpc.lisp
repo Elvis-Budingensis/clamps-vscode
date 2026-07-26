@@ -590,6 +590,23 @@
     ((boundp sym) 6)                                      ; Variable
     (t 12)))                                              ; Value
 
+(defun %sym-kind-label (kind)
+  "Lesbarer Name zu einer LSP-CompletionItemKind-Zahl.
+Gebraucht von APROPOS-FOR-REPL: dort stand (symbol-name (%sym-kind sym)),
+und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
+(:error \"The value 3 is not of type SYMBOL\")."
+  (case kind
+    (2 "method")
+    (3 "function")
+    (6 "variable")
+    (7 "class")
+    (12 "value")
+    (14 "macro")
+    (20 "keyword")
+    (21 "constant")
+    (22 "struct")
+    (t (format nil "kind-~A" kind))))
+
 (defun %arglist (sym)
   "Lambda-Liste als String, oder nil. sb-introspect kennt auch Makros."
   (handler-case
@@ -642,8 +659,18 @@
    isIncomplete=t und VS Code fragt beim nächsten Zeichen erneut an —
    sonst müssten wir bei leerem Präfix zehntausende Symbole schicken.")
 
-(defun completions-for-repl (prefix package-name)
+(defun completions-for-repl (prefix package-name &optional context)
   "Symbolvervollständigung für PREFIX im Kontext von PACKAGE-NAME.
+
+   CONTEXT wird hier NICHT ausgewertet, muss aber angenommen werden:
+   handle-completion in bridge-server.lisp schickt grundsätzlich drei
+   Argumente, weil completion.lisp den Quelltext vor dem Cursor für
+   lokale Bindungen und Kopfposition braucht. Ohne dieses &optional
+   scheiterte JEDER Vervollständigungsversuch mit \"invalid number of
+   arguments: 3\", sobald completion.lisp nicht geladen war — und damit
+   war der angebliche Rückfall auf die Basis-Completion keiner: es kamen
+   überhaupt keine Vorschläge mehr. Die Signaturen der Basis- und der
+   Erweiterungsfassung müssen deckungsgleich bleiben.
 
    Bewusst nicht swank:simple-completions: das liefert nur Namen. Hier
    kommen Art (Funktion/Makro/Variable/Klasse), Lambda-Liste und erste
@@ -651,6 +678,7 @@
    CLAMPS-Funktionen ist die Arglist beim Tippen der eigentliche Nutzen.
 
    Rückgabe: (:ok truncated-p ((label kind detail doc) ...))"
+  (declare (ignore context))
   (handler-case
       (destructuring-bind (pkg-part sym-part internal-p) (%split-prefix prefix)
         (let* ((home (or (find-package (string-upcase package-name))
@@ -1635,7 +1663,7 @@ setters oder macroexpands. Die Rückgabe ist (:ok TOOL-ENTRIES) bzw.
         (dolist (sym (sort (copy-list symbols) #'string< :key #'%package-qualified))
           (let ((kind (%sym-kind sym)))
             (push (%tool-entry (%package-qualified sym)
-                               :description (string-downcase (symbol-name kind))
+                               :description (%sym-kind-label kind)
                                :detail (%short-doc sym)
                                :inspect (%package-qualified sym)) out)))
         (list :ok (nreverse out)))

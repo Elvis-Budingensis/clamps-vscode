@@ -147,3 +147,15 @@ Beweis fuer die Ursache.
 
 Neues Gate: `node test/lispstring.test.js`. Es prueft die Maskierung und
 sperrt `JSON.stringify` in Formen mit Lisp-Syntax statisch.
+
+## Autodoc und XREF-Navigation
+
+- VS Code zeigt beim Tippen innerhalb einer Funktionsform die Lambda-Liste als Signature Help an.
+- Der aktive Parameter wird anhand der aktuellen Lisp-Form markiert.
+- `Gehe zu Definition` verwendet weiterhin die Swank-Quellorte.
+- `Referenzen suchen` ist nun auch als nativer LSP-Befehl verfügbar.
+- `Alt+-` springt zum Ausgangsort des letzten CLAMPS-XREF-Sprungs zurück.
+- `Alt+Shift+-` springt in der CLAMPS-XREF-Historie wieder vor.
+
+Autodoc liegt additiv in `lisp/autodoc.lisp`. Kann das Modul nicht geladen
+werden, bleiben REPL, Completion, Debugger und die bisherige XREF-Suche aktiv.

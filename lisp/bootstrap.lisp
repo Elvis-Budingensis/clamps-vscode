@@ -179,6 +179,21 @@
     (write-session-file :pid *pid* :status "error"
                          :detail (format nil "rpc.lisp: ~A" e))
     (sb-ext:exit :code 1)))
+
+;; Additive Completion-Erweiterung. rpc.lisp bleibt unverändert; bei einem
+;; Fehler fällt die Extension sicher auf die dortige Präfix-Completion zurück.
+(handler-case
+    (load (merge-pathnames "completion.lisp"
+                           (or *load-truename* *default-pathname-defaults*)))
+  (error (e)
+    (log-msg "WARNUNG: completion.lisp nicht geladen; nutze Basis-Completion: ~A" e)))
+
+;; Additive Autodoc-Erweiterung; ein Fehler darf den bestehenden Server nicht stoppen.
+(handler-case
+    (load (merge-pathnames "autodoc.lisp"
+                           (or *load-truename* *default-pathname-defaults*)))
+  (error (e)
+    (log-msg "WARNUNG: autodoc.lisp nicht geladen: ~A" e)))
 (in-package :cl-user)
 
 (log-msg "Eval-Kanal (clamps-bridge-rpc:eval-for-repl) bereit")

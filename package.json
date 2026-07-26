@@ -13,6 +13,9 @@
   ],
   "activationEvents": [
     "onLanguage:lisp",
+    "workspaceContains:**/*.asd",
+    "workspaceContains:**/*.lisp",
+    "onLanguage:commonlisp",
     "onCommand:clamps.openRepl",
     "onCommand:clamps.macroexpand",
     "onCommand:clamps.macroexpandAll",
@@ -246,6 +249,16 @@
         "command": "clamps.xrefOpen",
         "title": "CLAMPS: XREF-Treffer öffnen",
         "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefBack",
+        "title": "CLAMPS XREF: Zurück",
+        "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.xrefForward",
+        "title": "CLAMPS XREF: Vor",
+        "category": "CLAMPS"
       }
     ],
     "languages": [
@@ -254,7 +267,8 @@
         "extensions": [
           ".lisp",
           ".cl",
-          ".asd"
+          ".asd",
+          ".lsp"
         ],
         "aliases": [
           "Common Lisp",
@@ -318,6 +332,16 @@
         "command": "clamps.closeParens",
         "key": "ctrl+c ctrl+]",
         "when": "editorTextFocus && editorLangId == lisp"
+      },
+      {
+        "command": "clamps.xrefBack",
+        "key": "alt+-",
+        "when": "editorTextFocus && (editorLangId == lisp || editorLangId == commonlisp)"
+      },
+      {
+        "command": "clamps.xrefForward",
+        "key": "alt+shift+-",
+        "when": "editorTextFocus && (editorLangId == lisp || editorLangId == commonlisp)"
       }
     ],
     "configuration": {
@@ -505,7 +529,7 @@
     "check": "python3 lisp/check.py",
     "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/xref.test.js && node test/lispstring.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
-    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-xref.lisp"
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

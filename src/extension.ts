@@ -31,6 +31,7 @@ import { ClampsInlineValuesProvider } from './inlineValues';
 import { CompilerDiagnostics } from './compilerDiagnostics';
 import { xrefCommand, aproposCommand, breakOnSignalsCommand } from './slimeTools';
 import { XrefBrowserProvider, XrefEntry, openXrefEntry } from './xrefBrowser';
+import { xrefNavigationHistory } from './xrefNavigation';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -352,6 +353,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.xrefMacroexpands', () => xrefCommand(() => client, undefined, 'macroexpands')),
     vscode.commands.registerCommand('clamps.xrefRefresh', () => xrefBrowser?.refresh()),
     vscode.commands.registerCommand('clamps.xrefOpen', (entry: XrefEntry) => openXrefEntry(entry)),
+    vscode.commands.registerCommand('clamps.xrefBack', () => xrefNavigationHistory.back()),
+    vscode.commands.registerCommand('clamps.xrefForward', () => xrefNavigationHistory.forward()),
     vscode.commands.registerCommand('clamps.apropos', () => aproposCommand(() => client)),
     vscode.commands.registerCommand('clamps.breakOnSignals', () => breakOnSignalsCommand(() => client)),
     vscode.commands.registerCommand('clamps.openGui', () => openGui()),
@@ -464,7 +467,16 @@ async function startLanguageClient(bridgePath: string): Promise<void> {
   };
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'lisp' }],
+    // Beide Sprach-IDs UND ein Datei-Muster. Ist eine zweite
+    // Lisp-Extension installiert (Alive, commonlisp), kann .lisp der ID
+    // "commonlisp" zugeordnet sein. Dann bekam der Client kein didOpen,
+    // und Definition/Completion/Signature Help/Hover waren tot, waehrend
+    // die REPL (laeuft ueber Commands) weiter funktionierte.
+    documentSelector: [
+      { scheme: 'file', language: 'lisp' },
+      { scheme: 'file', language: 'commonlisp' },
+      { scheme: 'file', pattern: '**/*.{lisp,lsp,cl,asd}' },
+    ],
     outputChannel,
     // VS Codes eingebauter Auto-Restart würde bei jedem Server-Exit einen
     // NEUEN Bridge-Prozess spawnen, ohne den alten sauber abzuräumen —

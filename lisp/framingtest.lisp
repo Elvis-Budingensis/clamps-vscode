@@ -205,6 +205,40 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
                     out))
   (check "abgeschnitten ergibt NIL" (first (read-frames tmp 1)) nil)
 
+  ;; 5. Autodoc-Kontext. Der Anlass: in bridge-server.lisp stand
+  ;;    (find ch " \t\r\n") — in Common Lisp gibt es diese Escapes in
+  ;;    Strings nicht, die Zeichenmenge war also " trn". Damit brach
+  ;;    jeder Operatorname an einem t, r oder n ab: "concatenate" wurde
+  ;;    zu "co", "list" zu "lis". Signature Help zeigte dann nichts.
+  (let ((ctx (intern "CALL-CONTEXT-BEFORE-POINT" :framingtest)))
+    (if (not (fboundp ctx))
+        (progn (incf *failed*)
+               (format t "~&FEHLER: call-context-before-point fehlt.~%"))
+        (flet ((op (text) (first (funcall ctx text 0 (length text)))))
+          (check "Autodoc: einfacher Operator" (op "(mapcar #'car x") "mapcar")
+          (check "Autodoc: Name mit t/r/n bleibt heil"
+                 (op "(concatenate 'string ") "concatenate")
+          (check "Autodoc: Tabulator trennt"
+                 (op (format nil "(list~Ca" #\Tab)) "list")
+          (check "Autodoc: Zeilenumbruch trennt"
+                 (op (format nil "(print~C  x" #\Newline)) "print")
+          (check "Autodoc: innerste Form gewinnt"
+                 (op "(mapcar (truncate ") "truncate")
+          (check "Autodoc: Klammer im String zaehlt nicht"
+                 (op "(format nil \"(nicht \" ") "format")
+          (check "Autodoc: Klammer als Zeichenliteral zaehlt nicht"
+                 (op "(find ch #\\( ") "find")
+          (check "Autodoc: ohne offene Form NIL" (op "abc ") nil)
+          ;; Aktiver Parameter: Leerzeichen ist ein Trigger, also muss
+          ;; genau dort das NAECHSTE Argument markiert sein.
+          (flet ((active (text) (second (funcall ctx text 0 (length text)))))
+            (check "aktiv: direkt nach dem Operator" (active "(mapcar ") 0)
+            (check "aktiv: erstes Argument im Tippen" (active "(mapcar #'c") 0)
+            (check "aktiv: nach erstem Argument" (active "(mapcar #'car ") 1)
+            (check "aktiv: zweites Argument im Tippen" (active "(mapcar #'car ls") 1)
+            (check "aktiv: nach zweitem Argument" (active "(mapcar #'car ls ") 2)
+            (check "aktiv: nach geschlossener Unterform" (active "(mapcar (car x) ") 1)))))
+
   (ignore-errors (delete-file tmp))
   (if (zerop *failed*)
       (format t "~&ok — LSP-Rahmung zählt Bytes, Strom bleibt synchron.~%")

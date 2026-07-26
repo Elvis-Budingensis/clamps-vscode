@@ -1,0 +1,7 @@
+(load (merge-pathnames "rpc.lisp" *load-truename*))
+(load (merge-pathnames "autodoc.lisp" *load-truename*))
+(let ((r (clamps-bridge-rpc:autodoc-for-repl "mapcar" "COMMON-LISP-USER")))
+  (assert (eq (first r) :ok))
+  (assert (search "mapcar" (string-downcase (second r))))
+  (assert (listp (third r))))
+(format t "autodoc tests ok~%")
