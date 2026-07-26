@@ -805,13 +805,86 @@ als jeweils ein Argument der aeusseren Form."
                  ;; Kanal. Der eval-status (:ok/:error) ist im String
                  ;; bereits enthalten (Fehlertext), daher hier egal.
                  (when result-pkg (setf *swank-package* result-pkg))
-                 (send-response id (make-jobj "output" output "package" result-pkg)))
+                 (let ((presentations (fourth value)))
+                   (send-response id
+                     (make-jobj "output" output
+                                "package" result-pkg
+                                "presentations"
+                                (coerce
+                                 (mapcar (lambda (p)
+                                           (make-jobj "id" (first p)
+                                                      "preview" (or (second p) "")
+                                                      "type" (or (third p) "")))
+                                         presentations)
+                                 'vector)))))
                ;; Swank selbst hat den Aufruf abgebrochen (z.B. Funktion
                ;; nicht gefunden, Reader-Fehler in der RPC-Form).
                (send-response id
                  (make-jobj "output"
                             (format nil "Bridge-Eval fehlgeschlagen: ~A" value)
                             "package" pkg))))))))
+
+
+
+(defun handle-indentation-rules (id params)
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:indentation-rules-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+         (send-response id
+           (make-jobj "rules"
+             (coerce (mapcar (lambda (rule)
+                               (make-jobj "name" (first rule) "body" (second rule)))
+                             (second value))
+                     'vector)))
+         (send-response id (make-jobj "rules" (vector)))))))
+
+(defun handle-asdf-operation (id params)
+  (let ((operation (string-downcase (or (gethash "operation" params) "load")))
+        (system (or (gethash "system" params) "")))
+    (if (string= system "")
+        (send-response id (make-jobj "ok" :false "message" "No ASDF system supplied"))
+        (swank-rex
+         (format nil "(clamps-bridge-rpc:asdf-operation-for-repl :~A ~S)" operation system)
+         :callback
+         (lambda (status value)
+           (if (and (eq status :ok) (consp value))
+               (send-response id (make-jobj "ok" (if (eq (first value) :ok) :true :false)
+                                            "message" (or (second value) "")))
+               (send-response id (make-jobj "ok" :false "message" (format nil "~A" value)))))))))
+
+(defun handle-stickers (id params)
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:sticker-snapshot-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value))
+         (send-response id
+           (make-jobj "entries"
+             (coerce
+              (mapcar (lambda (entry)
+                        (make-jobj "key" (first entry)
+                                   "records"
+                                   (coerce
+                                    (mapcar (lambda (record)
+                                              (make-jobj "time" (first record)
+                                                         "id" (second record)
+                                                         "preview" (third record)))
+                                            (second entry))
+                                    'vector)))
+                      (second value))
+              'vector)))
+         (send-response id (make-jobj "entries" (vector)))))))
+
+(defun handle-stickers-clear (id params)
+  (declare (ignore params))
+  (swank-rex "(clamps-bridge-rpc:sticker-clear-for-repl)"
+             :callback (lambda (status value)
+                         (declare (ignore value))
+                         (send-response id (make-jobj "ok" (if (eq status :ok) :true :false))))))
 
 (defun handle-macroexpand (id params)
   "clamps/macroexpand — expandiert die Form im Code-String.
@@ -1246,6 +1319,10 @@ als jeweils ein Argument der aeusseren Form."
           ((string= method "textDocument/definition") (handle-definition id params))
           ((string= method "textDocument/references") (handle-references id params))
           ((string= method "clamps/eval") (handle-eval id params))
+          ((string= method "clamps/indentationRules") (handle-indentation-rules id params))
+          ((string= method "clamps/asdfOperation") (handle-asdf-operation id params))
+          ((string= method "clamps/stickers") (handle-stickers id params))
+          ((string= method "clamps/stickersClear") (handle-stickers-clear id params))
           ((string= method "clamps/macroexpand") (handle-macroexpand id params))
           ((string= method "clamps/disassemble") (handle-disassemble id params))
           ((string= method "clamps/inspect") (handle-inspect id params))

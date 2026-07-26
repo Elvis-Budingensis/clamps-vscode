@@ -8,6 +8,35 @@
       "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
+    },
+    {
+      // Isoliert: alle anderen Extensions bleiben aus, CLAMPS selbst
+      // laeuft weiter — --extensionDevelopmentPath ist davon nicht
+      // betroffen.
+      //
+      // Wofuer: eine zweite Lisp-Extension (Alive, commonlisp) kann die
+      // Zuordnung von .lisp an sich ziehen. Dann bekommt unser
+      // LanguageClient kein didOpen, und Definition, Completion und
+      // Signature Help sind still tot, waehrend die REPL weiterlaeuft —
+      // genau das Symptombild aus v80. Hier laesst sich das in einem
+      // Durchgang ausschliessen.
+      //
+      // Ausserdem ist der Extension-Host ein GEMEINSAMER Prozess. Die
+      // DeprecationWarnings zu punycode (DEP0040) und url.parse
+      // (DEP0169) in der Debug Console stammen nicht aus diesem Projekt:
+      // der Laufzeit-Abhaengigkeitsbaum sind sechs Pakete, keines
+      // importiert url oder punycode. Bleiben die Warnungen auch hier
+      // stehen, kommen sie aus VS Code selbst; verschwinden sie, war es
+      // eine der anderen Extensions.
+      "name": "CLAMPS Extension starten (isoliert, ohne andere Extensions)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extensions"
+      ],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "${defaultBuildTask}"
     }
   ]
 }

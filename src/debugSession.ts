@@ -1600,10 +1600,20 @@ export class ClampsDebugSession implements vscode.DebugAdapter {
       const parts = asList(r);
       if (!entry.answered) {
         entry.answered = true;
+        const rawPresentations = asList(parts[3]);
+        const presentations = rawPresentations.map(item => {
+          const fields = asList(item);
+          return {
+            id: Number(fields[0] ?? 0),
+            preview: text(fields[1]),
+            type: text(fields[2]),
+          };
+        }).filter(item => Number.isFinite(item.id) && item.id > 0);
         this.respond(req, {
           status: 'ok',
           output: text(parts[1]),
           package: text(parts[2]) || pkg,
+          presentations,
         });
       } else {
         // Der Debugger hatte den Request bereits beantwortet; die

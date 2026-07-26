@@ -12,37 +12,10 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:lisp",
     "workspaceContains:**/*.asd",
     "workspaceContains:**/*.lisp",
     "onLanguage:commonlisp",
-    "onCommand:clamps.openRepl",
-    "onCommand:clamps.macroexpand",
-    "onCommand:clamps.macroexpandAll",
-    "onCommand:clamps.openGui",
-    "onCommand:clamps.disassemble",
-    "onCommand:clamps.inspect",
-    "onCommand:clamps.evalTopLevel",
-    "onCommand:clamps.toggleTrace",
-    "onCommand:clamps.untraceAll",
-    "onDebug",
-    "onCommand:clamps.debugAttach",
-    "onView:clamps.incudineNodes",
-    "onCommand:clamps.incudineRefresh",
-    "onCommand:clamps.incudineInspectNode",
-    "onView:clamps.packages",
-    "onView:clamps.classes",
-    "onView:clamps.threads",
-    "onCommand:clamps.compileDiagnostics",
-    "onView:clamps.xrefView",
-    "onCommand:clamps.xref",
-    "onCommand:clamps.xrefDefinitions",
-    "onCommand:clamps.xrefCallers",
-    "onCommand:clamps.xrefCallees",
-    "onCommand:clamps.xrefReferences",
-    "onCommand:clamps.xrefBindings",
-    "onCommand:clamps.xrefSetters",
-    "onCommand:clamps.xrefMacroexpands"
+    "onDebug"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -259,6 +232,78 @@
         "command": "clamps.xrefForward",
         "title": "CLAMPS XREF: Vor",
         "category": "CLAMPS"
+      },
+      {
+        "command": "clamps.refreshIndentation",
+        "title": "CLAMPS: Einrückungsregeln aus Image aktualisieren"
+      },
+      {
+        "command": "clamps.selectSexp",
+        "title": "CLAMPS Paredit: S-Expression auswählen"
+      },
+      {
+        "command": "clamps.selectParentSexp",
+        "title": "CLAMPS Paredit: Elternform auswählen"
+      },
+      {
+        "command": "clamps.forwardSexp",
+        "title": "CLAMPS Paredit: Vorwärts"
+      },
+      {
+        "command": "clamps.backwardSexp",
+        "title": "CLAMPS Paredit: Rückwärts"
+      },
+      {
+        "command": "clamps.wrapSexp",
+        "title": "CLAMPS Paredit: In Liste einschließen"
+      },
+      {
+        "command": "clamps.raiseSexp",
+        "title": "CLAMPS Paredit: Raise"
+      },
+      {
+        "command": "clamps.spliceSexp",
+        "title": "CLAMPS Paredit: Splice"
+      },
+      {
+        "command": "clamps.slurpForward",
+        "title": "CLAMPS Paredit: Slurp vorwärts"
+      },
+      {
+        "command": "clamps.barfForward",
+        "title": "CLAMPS Paredit: Barf vorwärts"
+      },
+      {
+        "command": "clamps.asdf.load",
+        "title": "CLAMPS ASDF: System laden"
+      },
+      {
+        "command": "clamps.asdf.compile",
+        "title": "CLAMPS ASDF: System kompilieren"
+      },
+      {
+        "command": "clamps.asdf.test",
+        "title": "CLAMPS ASDF: System testen"
+      },
+      {
+        "command": "clamps.inspectPresentation",
+        "title": "CLAMPS: REPL-Resultat inspizieren"
+      },
+      {
+        "command": "clamps.macrostep",
+        "title": "CLAMPS: Macrostep"
+      },
+      {
+        "command": "clamps.stickerWrap",
+        "title": "CLAMPS: Ausdruck als Sticker instrumentieren"
+      },
+      {
+        "command": "clamps.stickersShow",
+        "title": "CLAMPS: Stickers anzeigen"
+      },
+      {
+        "command": "clamps.stickersClear",
+        "title": "CLAMPS: Stickers löschen"
       }
     ],
     "languages": [
@@ -344,6 +389,14 @@
         "when": "editorTextFocus && (editorLangId == lisp || editorLangId == commonlisp)"
       }
     ],
+    "configurationDefaults": {
+      "[lisp]": {
+        "editor.formatOnType": true
+      },
+      "[commonlisp]": {
+        "editor.formatOnType": true
+      }
+    },
     "configuration": {
       "title": "CLAMPS",
       "properties": {
@@ -381,6 +434,16 @@
           "type": "boolean",
           "default": true,
           "description": "Kompiliert gespeicherte Lisp-Dateien über Swank und zeigt Compiler-Notes als Problems/Diagnostics an."
+        },
+        "clamps.richPresentations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Zeigt stabile Objekt-IDs zu REPL-Ergebnissen; verändert die Textausgabe nicht."
+        },
+        "clamps.imageIndentation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ergänzt Einrückungsregeln aus dem laufenden Lisp-Image."
         }
       }
     },
@@ -527,9 +590,9 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
-    "test": "node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/xref.test.js && node test/lispstring.test.js",
+    "test": "node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/xref.test.js && node test/lispstring.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
-    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp"
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

@@ -41,7 +41,10 @@
            #:eval-for-repl-debuggable #:incudine-node-tree-for-repl
            #:packages-for-repl #:classes-for-repl #:threads-for-repl
            #:xref-for-repl #:apropos-for-repl #:break-on-signals-for-repl
-           #:set-function-breakpoints-for-repl))
+           #:set-function-breakpoints-for-repl
+           #:indentation-rules-for-repl #:presentation-value
+           #:asdf-operation-for-repl #:sticker-record-for-repl
+           #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
 (defun %class-slot-names (class)
@@ -1207,6 +1210,130 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
       (error (e)
         (list :error (format nil "~A" e) (package-name pkg))))))
 
+
+
+;;; ---------------------------------------------------------------------
+;;; Additive tooling shared by the richer VS Code front-end.
+;;; ---------------------------------------------------------------------
+
+(defvar *presentation-table* (make-hash-table :test 'eql)
+  "Presentation-ID -> live Lisp object. Kept separate from the Inspector table.")
+(defvar *presentation-ids* (make-hash-table :test 'eq)
+  "Live Lisp object -> Presentation-ID, for stable identity.")
+(defvar *presentation-history* '())
+(defvar *presentation-counter* 0)
+(defparameter *presentation-capacity* 200)
+
+(defun %presentation-register (value)
+  "Keep VALUE in a presentation-specific bounded registry and return its stable id.
+
+The presentation registry is deliberately independent from the Inspector registry:
+closing an Inspector panel may release its navigation cache, but must not invalidate
+REPL results that are still visible and reusable."
+  (let ((known (gethash value *presentation-ids*)))
+    (when known
+      (setf *presentation-history* (cons known (remove known *presentation-history*)))
+      (return-from %presentation-register known)))
+  (let ((id (incf *presentation-counter*)))
+    (setf (gethash id *presentation-table*) value
+          (gethash value *presentation-ids*) id)
+    (push id *presentation-history*)
+    (when (> (length *presentation-history*) *presentation-capacity*)
+      (dolist (old (nthcdr *presentation-capacity* *presentation-history*))
+        (multiple-value-bind (victim found) (gethash old *presentation-table*)
+          (when (and found (eql (gethash victim *presentation-ids*) old))
+            (remhash victim *presentation-ids*)))
+        (remhash old *presentation-table*))
+      (setf *presentation-history*
+            (subseq *presentation-history* 0 *presentation-capacity*)))
+    id))
+
+(defun %presentation-type-label (value)
+  "Kurzes, lesbares Typ-Etikett fuer die REPL-Zeile.
+
+Nicht type-of: das liefert bei Zahlen und Sequenzen den exakten
+Typspezifizierer statt eines Namens — 2 wird zu
+\"(integer 0 4611686018427387903)\", \"abc\" zu \"(simple-array character
+(3))\", #(1 2) zu \"(simple-vector 2)\". In der Zeile
+\"[#4 (integer 0 4611686018427387903)] ,inspect 4\" ist das unbrauchbar.
+class-of gibt den Klassennamen, also fixnum bzw. simple-vector.
+
+Fuer die seltenen Faelle ohne Klassennamen (anonyme Klassen) bleibt
+type-of der Rueckfall — ein Etikett ist besser als keins."
+  (let ((*print-case* :downcase)
+        (*print-pretty* nil))
+    (or (ignore-errors
+          (let ((name (class-name (class-of value))))
+            (and (symbolp name) (princ-to-string name))))
+        (ignore-errors (princ-to-string (type-of value)))
+        "t")))
+
+(defun presentation-value (id)
+  "Return a live REPL result by id. Intended for explicit user actions only."
+  (multiple-value-bind (value found) (gethash id *presentation-table*)
+    (if found value (error "Presentation ~D ist nicht mehr verfuegbar (Registry haelt die letzten ~D Ergebnisse)."
+                   id *presentation-capacity*))))
+
+(defun indentation-rules-for-repl ()
+  "Return image-known macro indentation rules without requiring Swank internals.
+The front-end merges these with conservative Common Lisp defaults."
+  (let ((rules '()))
+    (do-all-symbols (symbol)
+      (when (macro-function symbol)
+        (let* ((name (string-downcase (symbol-name symbol)))
+               (pkg (symbol-package symbol))
+               (qualified (and pkg (format nil "~A::~A"
+                                           (string-downcase (package-name pkg)) name))))
+          ;; Unknown macros default to one distinguished argument. This is
+          ;; deliberately conservative; user/source declarations can override it.
+          (push (list (or qualified name) 1) rules))))
+    (list :ok (remove-duplicates rules :key #'first :test #'string=))))
+
+(defun asdf-operation-for-repl (operation system)
+  "Run a small, whitelisted ASDF operation.
+
+ASDF symbols are resolved only after REQUIRE has loaded the package.  This
+keeps RPC.LISP readable and compilable in a fresh Lisp image where ASDF does
+not yet exist."
+  (handler-case
+      (progn
+        (require :asdf)
+        (let* ((asdf-package (or (find-package "ASDF")
+                                 (error "ASDF was required but its package is unavailable")))
+               (operate-symbol (or (find-symbol "OPERATE" asdf-package)
+                                   (error "ASDF:OPERATE is unavailable")))
+               (operation-name (ecase operation
+                                 (:load "LOAD-OP")
+                                 (:compile "COMPILE-OP")
+                                 (:test "TEST-OP")))
+               (operation-symbol (or (find-symbol operation-name asdf-package)
+                                     (error "ASDF operation ~A is unavailable"
+                                            operation-name))))
+          (funcall operate-symbol operation-symbol system)
+          (list :ok (format nil "~(~A~) completed for ~A" operation system))))
+    (error (e) (list :error (format nil "~A" e)))))
+
+(defvar *sticker-records* (make-hash-table :test 'equal))
+(defparameter *sticker-capacity* 256)
+
+(defun sticker-record-for-repl (key value)
+  "Record VALUE in a bounded per-key ring-like history and return VALUE."
+  (let ((items (gethash key *sticker-records*)))
+    (push (list (get-universal-time) (%inspect-register value) (prin1-to-string value)) items)
+    (when (> (length items) *sticker-capacity*)
+      (setf items (subseq items 0 *sticker-capacity*)))
+    (setf (gethash key *sticker-records*) items))
+  value)
+
+(defun sticker-snapshot-for-repl ()
+  (list :ok
+        (loop for key being the hash-keys of *sticker-records* using (hash-value records)
+              collect (list key (reverse records)))))
+
+(defun sticker-clear-for-repl ()
+  (clrhash *sticker-records*)
+  (list :ok))
+
 (defun eval-for-repl-debuggable (code-string package-name)
   "Wie eval-for-repl, aber OHNE handler-case.
 
@@ -1230,7 +1357,8 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
            (*standard-output* out)
            (*error-output* out)
            (*trace-output* out)
-           (values-strings '()))
+           (values-strings '())
+           (presentations '()))
       (with-input-from-string (in code-string)
         (loop
           (let ((form (read in nil :eof)))
@@ -1238,7 +1366,14 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
             (let ((results (multiple-value-list (eval form))))
               (setf values-strings
                     (append values-strings
-                            (mapcar #'prin1-to-string results)))))))
+                            (mapcar #'prin1-to-string results)))
+              (setf presentations
+                    (append presentations
+                            (mapcar (lambda (v)
+                                      (list (%presentation-register v)
+                                            (prin1-to-string v)
+                                            (%presentation-type-label v)))
+                                    results)))))))
       (let* ((printed (get-output-stream-string out))
              (value-text (format nil "~{~A~^~%~}" values-strings))
              (combined (concatenate 'string printed
@@ -1248,7 +1383,7 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                                     value-text)))
         ;; *package* auslesen, nicht pkg: ein (in-package ...) im Code
         ;; hat es innerhalb dieser Bindung verändert.
-        (list :ok combined (package-name *package*))))))
+        (list :ok combined (package-name *package*) presentations)))))
 
 (defun eval-for-repl (code-string package-name)
   "Wertet CODE-STRING im Paket PACKAGE-NAME aus. Fängt Standard-Output
@@ -1276,7 +1411,8 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                (*debug-io* (make-two-way-stream (make-string-input-stream "") out))
                (*query-io* (make-two-way-stream (make-string-input-stream "") out))
                (*terminal-io* (make-two-way-stream (make-string-input-stream "") out))
-               (values-strings '()))
+               (values-strings '())
+               (presentations '()))
           ;; Mehrere Forms nacheinander lesen und auswerten, damit eine
           ;; REPL-Zeile wie "(defparameter *x* 1) *x*" komplett läuft.
           (with-input-from-string (in code-string)
@@ -1286,7 +1422,14 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                 (let ((results (multiple-value-list (eval form))))
                   (setf values-strings
                         (append values-strings
-                                (mapcar (lambda (v) (prin1-to-string v)) results)))))))
+                                (mapcar (lambda (v) (prin1-to-string v)) results)))
+                  (setf presentations
+                        (append presentations
+                                (mapcar (lambda (v)
+                                          (list (%presentation-register v)
+                                                (prin1-to-string v)
+                                                (%presentation-type-label v)))
+                                        results)))))))
           (let* ((printed (get-output-stream-string out))
                  (value-text (format nil "~{~A~^~%~}" values-strings))
                  (combined (concatenate 'string
@@ -1300,14 +1443,18 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                  ;; dieser Bindung geändert. pkg zeigt weiter aufs alte
                  ;; Paket — deshalb blieb der REPL-Prompt hängen.
                  (current-pkg-name (package-name *package*)))
-            (list :ok combined current-pkg-name)))
+            (list :ok combined current-pkg-name presentations)))
       (error (e)
         (let ((printed (get-output-stream-string out)))
+          ;; Vierter Wert NIL: derselbe Vertrag wie im Erfolgszweig.
+          ;; Vorher war der Fehlerzweig dreistellig, der Erfolgszweig
+          ;; vierstellig — jeder Aufrufer musste das selbst abfangen.
           (list :error
                 (concatenate 'string printed
                              (if (> (length printed) 0) (string #\Newline) "")
                              (format nil "~A" e))
-                (package-name pkg)))))))
+                (package-name pkg)
+                nil))))))
 
 
 ;;; ---------------------------------------------------------------------

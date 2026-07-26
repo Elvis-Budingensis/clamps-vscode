@@ -259,3 +259,49 @@
 
 (when (sb-ext:posix-getenv "TEST_EXIT")
   (sb-ext:exit :code 0))
+
+(format t "~&Presentation registry isolation …~%")
+(let* ((obj (list :presentation :survives-inspector-release))
+       (pid (clamps-bridge-rpc::%presentation-register obj)))
+  (clamps-bridge-rpc:inspect-for-repl "(list :temporary-inspector)" "COMMON-LISP-USER")
+  (clamps-bridge-rpc:inspect-release-for-repl)
+  (assert (eq obj (clamps-bridge-rpc:presentation-value pid)))
+  (assert (= pid (clamps-bridge-rpc::%presentation-register obj))))
+(format t "ok — Presentations überleben Inspector-Freigabe und behalten ihre ID.~%")
+
+(format t "~&Presentation-Typ-Etiketten …~%")
+;; Regression: die Etiketten kamen aus type-of und waren dadurch bei
+;; Zahlen und Sequenzen exakte Typspezifizierer statt Namen. In der
+;; REPL-Zeile stand dann "[#4 (integer 0 4611686018427387903)] ,inspect 4".
+;; Geprueft wird gegen die Werte, bei denen type-of daneben liegt.
+(dolist (case '((2   "fixnum")
+                (1   "fixnum")
+                ("abc" "simple-character-string")
+                (#(1 2) "simple-vector")))
+  (destructuring-bind (value expected) case
+    (let ((got (clamps-bridge-rpc::%presentation-type-label value)))
+      (unless (string= got expected)
+        (format t "~&FEHLER Etikett fuer ~S: erwartet ~S, bekommen ~S~%"
+                value expected got)
+        (sb-ext:exit :code 1))
+      (when (find #\( got)
+        (format t "~&FEHLER Etikett fuer ~S enthaelt Klammern: ~S~%" value got)
+        (sb-ext:exit :code 1)))))
+;; Etikett und ID muessen fuer JEDEN Wert kommen, auch fuer solche ohne
+;; Klassennamen — ein leeres Etikett waere in der Zeile nicht erkennbar.
+(dolist (value (list nil t 1/3 #\a 'foo (make-hash-table) #*01 (lambda () 1)))
+  (let ((label (clamps-bridge-rpc::%presentation-type-label value)))
+    (when (or (null label) (string= label ""))
+      (format t "~&FEHLER leeres Etikett fuer ~S~%" value)
+      (sb-ext:exit :code 1))))
+;; Gleiche Stelligkeit in beiden Zweigen von eval-for-repl: der
+;; Fehlerzweig war dreistellig, der Erfolgszweig vierstellig.
+(let ((ok (clamps-bridge-rpc:eval-for-repl "(+ 1 1)" "COMMON-LISP-USER"))
+      (bad (clamps-bridge-rpc:eval-for-repl "(car 1)" "COMMON-LISP-USER")))
+  (unless (= (length ok) (length bad))
+    (format t "~&FEHLER Stelligkeit: ok=~D fehler=~D~%" (length ok) (length bad))
+    (sb-ext:exit :code 1))
+  (unless (eq (first bad) :error)
+    (format t "~&FEHLER Fehlerzweig meldet ~S~%" (first bad))
+    (sb-ext:exit :code 1)))
+(format t "ok — Presentation-Etiketten lesbar, Stelligkeit in beiden Zweigen gleich.~%")

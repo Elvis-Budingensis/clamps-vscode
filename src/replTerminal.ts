@@ -4,6 +4,7 @@ import { LanguageClient, State } from 'vscode-languageclient/node';
 interface EvalResult {
   output: string;
   package: string;
+  presentations?: Array<{ id: number; preview: string; type: string }>;
 }
 
 
@@ -348,6 +349,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   private async requestEval(code: string): Promise<void> {
+    if (code.startsWith(',')) {
+      await this.handleCommaCommand(code);
+      return;
+    }
     const session = this.debugSession;
     const client = this.getClient();
     if (!session && (!client || client.state !== State.Running)) {
@@ -372,6 +377,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
             (output.endsWith('\n') ? '' : '\r\n')
           );
         }
+        const presentations = Array.isArray(r?.presentations) ? r.presentations : [];
+        for (const p of presentations) {
+          this.write(`\x1b[2m  [#${p.id} ${p.type}] ,inspect ${p.id}\x1b[0m\r\n`);
+        }
       } else {
         const result = await client!.sendRequest<EvalResult>('clamps/eval', {
           code,
@@ -379,8 +388,12 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
         });
         if (result.package) this.packageName = result.package;
         const output = result.output ?? '';
+        const presentations = result.presentations ?? [];
         if (output.length > 0) {
           this.write(`${this.normalizeNewlines(output)}${output.endsWith('\n') ? '' : '\r\n'}`);
+        }
+        if (presentations.length > 0) {
+          for (const p of presentations) this.write(`\x1b[2m  [#${p.id} ${p.type}] ,inspect ${p.id}\x1b[0m\r\n`);
         }
       }
     } catch (error) {
@@ -395,6 +408,23 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       void vscode.commands
         .executeCommand('clamps.incudineRefreshSoon')
         .then(undefined, () => undefined);
+    }
+  }
+
+  private async handleCommaCommand(code: string): Promise<void> {
+    const [name, ...args] = code.slice(1).trim().split(/\s+/);
+    switch ((name || 'help').toLowerCase()) {
+      case 'inspect': {
+        const id = Number(args[0]);
+        if (Number.isFinite(id)) await vscode.commands.executeCommand('clamps.inspectPresentation', id);
+        else this.write('Usage: ,inspect <id>\r\n');
+        break;
+      }
+      case 'load': case 'compile': case 'test':
+        await vscode.commands.executeCommand(`clamps.asdf.${name}`); break;
+      case 'stickers': await vscode.commands.executeCommand('clamps.stickersShow'); break;
+      case 'package': if (args[0]) this.packageName = args[0].toUpperCase(); else this.write(`${this.packageName}\r\n`); break;
+      default: this.write(',inspect ID · ,load · ,compile · ,test · ,stickers · ,package NAME\r\n');
     }
   }
 

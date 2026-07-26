@@ -26,13 +26,70 @@ export function topLevelFormAt(
   // 1. Rückwärts die öffnende Klammer der Top-Level-Form finden:
   // die erste '(' auf Spaltentiefe 0, an oder vor dem Cursor.
   const start = findFormStart(text, offset);
-  if (start < 0) return undefined;
+  if (start < 0) {
+    // Kein Klammerausdruck am Cursor — aber ein nacktes Atom auf
+    // Top-Level IST eine gültige Form. `*presentation-test*`, `6`,
+    // `t` in einer eigenen Zeile auswerten zu wollen ist normal, und
+    // sexpBeforePoint (evalLastExpression) kann das längst. Nur
+    // evalTopLevel meldete „Keine Top-Level-Form am Cursor gefunden“
+    // und tat nichts.
+    return topLevelAtomAt(text, offset);
+  }
 
   // 2. Von dort vorwärts bis zur passenden schließenden Klammer.
   const end = matchParen(text, start);
   if (end < 0) return undefined;
 
   return text.slice(start, end + 1);
+}
+
+/** Zeichen, die zu einem Lisp-Atom gehören. Wie in sexpBeforePoint. */
+const ATOM_CHAR = /[a-zA-Z0-9\-+*/<>=!?_%&^~.:#'@$[\]{}]/;
+
+/**
+ * Das Atom an oder unmittelbar vor OFFSET, sofern es wirklich auf
+ * Top-Level steht (Klammertiefe 0) und nicht in einem String oder
+ * Kommentar. Sonst undefined.
+ */
+function topLevelAtomAt(text: string, offset: number): string | undefined {
+  if (!isTopLevelCode(text, offset)) return undefined;
+
+  // Steht der Cursor hinter dem Atom (typisch: Zeilenende), nach links
+  // rücken — aber nur über Leerzeichen und Tabs, NICHT über
+  // Zeilenumbrüche. Sonst würde am Anfang einer leeren Zeile das Atom
+  // der Zeile darüber ausgewertet, ohne dass man das sieht.
+  let probe = offset;
+  while (probe > 0 && (text[probe - 1] === ' ' || text[probe - 1] === '\t')) probe--;
+
+  let start = probe;
+  while (start > 0 && ATOM_CHAR.test(text[start - 1])) start--;
+  let end = probe;
+  while (end < text.length && ATOM_CHAR.test(text[end])) end++;
+
+  if (end <= start) return undefined;
+  const atom = text.slice(start, end);
+  // Ein reiner Punkt oder ein einzelnes Anführungszeichen ist keine Form.
+  return /[a-zA-Z0-9*+\-/<>=!?_%&^~]/.test(atom) ? atom : undefined;
+}
+
+/**
+ * Ist OFFSET echter Code auf Klammertiefe 0 — also nicht innerhalb einer
+ * Form, eines Strings oder eines Kommentars?
+ */
+function isTopLevelCode(text: string, offset: number): boolean {
+  let depth = 0;
+  const state = new ScanState();
+  const limit = Math.min(offset, text.length);
+  for (let i = 0; i < limit; i++) {
+    if (state.step(text, i)) continue;
+    const ch = text[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  if (depth !== 0) return false;
+  // Zusätzlich prüfen, dass die Position selbst nicht in String oder
+  // Kommentar liegt: state.step hat den Zustand bis offset mitgeführt.
+  return !state.inactive;
 }
 
 /**
@@ -133,6 +190,11 @@ class ScanState {
   private inComment = false;
   private escapeNext = false;
   private skipCount = 0; // Zeichen nach #\ überspringen (Backslash + Literal)
+
+  /** Steht der Scanner gerade in String, Kommentar oder Zeichen-Literal? */
+  get inactive(): boolean {
+    return this.inString || this.inComment || this.skipCount > 0;
+  }
 
   step(text: string, i: number): boolean {
     const ch = text[i];

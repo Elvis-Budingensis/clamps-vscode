@@ -32,6 +32,9 @@ import { CompilerDiagnostics } from './compilerDiagnostics';
 import { xrefCommand, aproposCommand, breakOnSignalsCommand } from './slimeTools';
 import { XrefBrowserProvider, XrefEntry, openXrefEntry } from './xrefBrowser';
 import { xrefNavigationHistory } from './xrefNavigation';
+import { ImageIndentationProvider } from './imageIndentation';
+import { registerStructuralEditing } from './structuralEditing';
+import { registerAdvancedTools } from './advancedTools';
 
 let client: LanguageClient | undefined;
 let processManager: ClampsProcessManager | undefined;
@@ -81,6 +84,9 @@ export async function activate(context: vscode.ExtensionContext) {
   traceBrowser = new LispBrowserProvider('clamps/traced', () => client);
   xrefBrowser = new XrefBrowserProvider(() => client);
   compilerDiagnostics = new CompilerDiagnostics(() => client);
+  const imageIndentation = new ImageIndentationProvider(() => client);
+  registerStructuralEditing(context);
+  registerAdvancedTools(context, () => client);
   context.subscriptions.push(rtStatus, incudineNodes, packageBrowser, classBrowser, threadBrowser, traceBrowser, xrefBrowser, compilerDiagnostics);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('clamps.incudineNodes', incudineNodes),
@@ -96,6 +102,9 @@ export async function activate(context: vscode.ExtensionContext) {
       [{ language: 'commonlisp' }, { language: 'lisp' }],
       new ClampsInlineValuesProvider()
     ),
+    vscode.languages.registerOnTypeFormattingEditProvider([{ language: 'commonlisp' }, { language: 'lisp' }], imageIndentation, '\n'),
+    vscode.languages.registerDocumentRangeFormattingEditProvider([{ language: 'commonlisp' }, { language: 'lisp' }], imageIndentation),
+    vscode.commands.registerCommand('clamps.refreshIndentation', () => imageIndentation.refresh()),
     vscode.workspace.onDidSaveTextDocument(doc => {
       if (vscode.workspace.getConfiguration('clamps').get<boolean>('compilerDiagnosticsOnSave', true)) {
         void compilerDiagnostics?.update(doc);

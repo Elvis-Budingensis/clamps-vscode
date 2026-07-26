@@ -28,6 +28,14 @@ const vscodeStub = {
   TreeItem,
   // Nur so viel, wie die Sprungziel-Rechnung braucht.
   Position: class { constructor(line, character) { this.line = line; this.character = character; } },
+  // Range und TextEdit brauchen die Formatierungs-Provider. Bewusst
+  // minimal: nur was die Einrückungsrechnung erzeugt und abliest.
+  Range: class {
+    constructor(start, end) { this.start = start; this.end = end; }
+  },
+  TextEdit: {
+    replace: (range, newText) => ({ range, newText }),
+  },
   ThemeIcon: class { constructor(id) { this.id = id; } },
   TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
   Uri: { file: p => ({ fsPath: p, scheme: 'file' }) },
