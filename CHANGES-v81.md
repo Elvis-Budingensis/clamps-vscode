@@ -903,3 +903,100 @@ Datei steht. Der Suchbegriff muss die Argumentliste mitnehmen.
 grün, `tsc -p ./` ohne Fehler, 11 JS-Tests grün. `test-completion.lisp` um
 sieben Zusicherungen zur Bindungsstelle gewachsen, `test-bridge-context.lisp`
 neu mit acht. Am TypeScript-Code wurde nichts geändert.
+
+## v81.16 — Completion im REPL-Terminal
+
+Der letzte offene Punkt des Completion-Blocks. Damit ist die SLY-Liste
+abgehakt; was noch aussteht, steht in `ROADMAP.md` unter „Offen".
+
+### Warum es ein eigener Weg sein muss
+
+Der LSP-Pfad greift nur in Dateien: `textDocument/completion` braucht eine
+URI und einen Dokumentenpuffer, und das Terminal hat beides nicht. Es hat
+seinen eigenen Eingabepuffer und sein eigenes Paket, das über `,package`
+umgestellt wird.
+
+Neuer Bridge-Aufruf `clamps/replComplete` mit `prefix`, `package` und
+`context`. Dahinter steht bewusst dieselbe `completions-for-repl` wie im
+Editor — dieselbe Fuzzy-Bewertung, dieselbe Rangfolge, dieselben
+`&key`-Parameter der umschließenden Form. Zwei getrennte Implementierungen
+würden auseinanderlaufen, und zwar leise.
+
+Ein Unterschied bleibt: im Terminal **ist** die Reihenfolge der Liste das
+Ergebnis. Es gibt kein `sortText`, das etwas nachsortieren könnte, und
+keinen Client-Matcher, der etwas herausfiltert. Die Rangfolge aus
+`completion.lisp` wirkt hier also unmittelbar.
+
+### Verhalten
+
+Tab setzt ein, wenn es genau einen Kandidaten gibt. Bei mehreren wird auf
+den längsten gemeinsamen Anfang gekürzt. Bringt der nichts mehr, zeigt der
+**zweite** Tab die Liste — wie in readline und in SLY. Getippt wird zwischen
+zwei Tabs, setzt das die Merkung zurück: es soll keine Liste erscheinen,
+nur weil vorher irgendwann Tab kam.
+
+Tab legt damit kein Tabulatorzeichen mehr in den Puffer. Das war ohnehin
+nichts, was man in Lisp-Quelltext tippen will.
+
+Die Kandidatenliste geht über die Eingabezeile und zeichnet die Eingabe
+danach neu, wie `cancelInput()` es macht. Bei mehr als 40 Einträgen wird
+gekürzt und die Restzahl genannt, statt das Terminal zu fluten.
+
+### Die Stelle, an der es still schiefgehen kann
+
+Der Client schneidet das Präfix selbst ab. Weicht seine Zeichenklasse von
+`symbol-constituent-p` in `bridge-server.lisp` ab, dann filtert der Server
+nach einem anderen Präfix als der Benutzer getippt hat — und zwar ohne
+Fehlermeldung, es kommen einfach die falschen Vorschläge.
+`test/replcomplete.test.js` nagelt die Klasse deshalb fest: Bindestriche,
+Paketpräfixe, Keywords und `!` gehören dazu, Klammern und
+Anführungszeichen trennen.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün (98 Funktionen, 36 Bridge-Methoden), 10
+Lisp-Testläufe grün, `tsc -p ./` ohne Fehler, 12 JS-Tests grün. Der neue
+Test deckt auch die Fälle ab, in denen nichts passieren darf: kein
+Kandidat, kein laufender Client, laufende Auswertung, und ein Fehler in der
+Bridge — keiner davon darf die Eingabe anfassen.
+
+## v81.17 — REPL bleibt beim Start im Panel
+
+Beim Start hängt sich der Debugger nach 800 ms automatisch an. VS Code
+öffnet dabei die Debug-Konsole und schiebt die REPL aus dem Panel. Man
+landete nach jedem Start auf einer Konsole, die man nicht braucht, und
+musste erst auf „Terminal" klicken.
+
+Zwei Änderungen, weil eine nicht reicht: jede Attach-Konfiguration trägt
+jetzt `internalConsoleOptions: 'neverOpen'` — auch die vom
+`DebugConfigurationProvider` gelieferte und, sofern der Benutzer nichts
+anderes angibt, eine aus `launch.json` geerbte. Und die REPL wird **nach**
+dem Anhängen erneut nach vorn geholt, weil `neverOpen` nur das Aufklappen
+der Konsole verhindert, nicht den Panel-Wechsel selbst.
+
+`clamps.openReplOnStart` steuert weiterhin beides; wer die REPL nicht
+automatisch will, bekommt sie auch nach dem Anhängen nicht.
+
+### Ein Test, der nie lief
+
+Der Regressionstest dafür landete zuerst hinter dem abschließenden
+`process.exit` von `session.test.js` — die Zusicherungen liefen also nie,
+und die Datei meldete trotzdem „ok". Aufgefallen ist es nur, weil die
+Gegenprobe (Zusicherung absichtlich brechen) ebenfalls grün blieb.
+
+`gatecoverage.test.js` prüft das jetzt für alle JS-Tests: Code nach einem
+**unbedingten** `process.exit` am Zeilenanfang ist tot und wird gemeldet.
+Das übliche Muster mit `if (failed > 0) { … process.exit(1); }` gefolgt von
+der Erfolgsmeldung bleibt erlaubt, denn dort läuft die Meldung ja gerade
+dann, wenn nicht ausgestiegen wurde.
+
+Das ist derselbe Fehlertyp wie das rote `loadcheck`-Gate in v81.12 und das
+fehlende `sortText` in v81.14: nicht das laute Scheitern kostet Zeit,
+sondern das stille Danebenlaufen.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün, 10 Lisp-Testläufe grün, `tsc -p ./` ohne
+Fehler, 12 JS-Tests grün. Der neue Panel-Test zählt Attach-Konfigurationen
+gegen `neverOpen`-Angaben, damit eine später hinzugefügte Konfiguration
+nicht stillschweigend ohne die Option bleibt.

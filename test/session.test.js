@@ -72,5 +72,37 @@ check('Grund genannt', /Quellen/.test(decide({ fingerprintMatches: false }).reas
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// --- Panel-Fokus beim Start (v81.17) ---------------------------------
+//
+// Beim Start haengt sich der Debugger automatisch an. VS Code oeffnet
+// dabei die Debug-Konsole und schiebt die REPL aus dem Panel — man landete
+// nach jedem Start auf einer Konsole, die man nicht braucht, und musste
+// erst auf "Terminal" klicken. Zwei Dinge muessen deshalb im Quelltext
+// stehen, und beide sind leicht wieder herauszueditieren, ohne dass es
+// auffaellt: die Debug-Konfiguration braucht internalConsoleOptions
+// 'neverOpen', und die REPL muss NACH dem Anhaengen erneut nach vorn
+// geholt werden.
+{
+  const fs = require('fs');
+  const path = require('path');
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8'
+  );
+
+  const attachCount = (source.match(/request:\s*'attach'/g) || []).length;
+  const neverOpenCount = (source.match(/internalConsoleOptions:\s*'neverOpen'/g) || []).length;
+  check(
+    'jede Attach-Konfiguration unterdrueckt die Debug-Konsole',
+    neverOpenCount,
+    attachCount
+  );
+
+  // Die Reihenfolge zaehlt: erst anhaengen, dann die REPL zeigen. Steht
+  // das Zeigen davor, gewinnt die Debug-Ansicht.
+  const attachAt = source.indexOf("name: 'CLAMPS: Debugger anhängen',\n                internalConsoleOptions");
+  const showAfter = source.indexOf('ClampsReplTerminal.show', attachAt);
+  check('REPL wird nach dem Anhaengen erneut gezeigt', showAfter > attachAt, true);
+}
+
 if (failed === 0) console.log('ok — alle Session-Tests bestanden');
 process.exit(failed === 0 ? 0 : 1);

@@ -93,6 +93,14 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private busy = false;
 
   /**
+   * Puffer beim letzten Tab. Zweimal Tab ohne Aenderung dazwischen listet
+   * die Kandidaten auf — dasselbe Verhalten wie in readline und in SLY.
+   * Ohne diese Merkung muesste man raten, ob der Benutzer die Liste sehen
+   * will, und man kaeme entweder zu schnell oder nie dazu.
+   */
+  private lastCompletionAt: string | undefined;
+
+  /**
    * Terminalbreite in Spalten. Ohne sie lässt sich nicht ausrechnen, wie
    * viele BILDSCHIRMzeilen eine Eingabe belegt: eine Lisp-Zeile ist
    * regelmäßig breiter als das Panel und wird umbrochen. Die frühere
@@ -170,7 +178,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.write('\x1b[1mCLAMPS REPL\x1b[0m\r\n');
     this.write('Dieselbe laufende SBCL-/Swank-Session wie der Editor.\r\n');
     this.write('Enter: auswerten (unvollständige Formen laufen weiter) · Ctrl+J: neue Zeile\r\n');
-    this.write('Ctrl+L: leeren · Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n');
+    this.write('Tab: vervollständigen (zweimal Tab listet) · Ctrl+L: leeren\r\n');
+    this.write('Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n');
     if (vscode.workspace.getConfiguration('clamps').get<boolean>('replUsesDebugger', true)) {
       this.write('Bei angehängtem Debugger öffnen Fehler den Lisp-Debugger.\r\n\r\n');
     } else {
@@ -246,8 +255,14 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
             this.write('\x1b[2J\x1b[H');
             this.renderInput();
             break;
+          case '\t':
+            // Tab vervollstaendigt, statt ein Tabulatorzeichen in den
+            // Puffer zu legen. Ein Tab im Lisp-Quelltext ist ohnehin
+            // nichts, was man tippen will.
+            void this.complete();
+            break;
           default:
-            if (ch >= ' ' || ch === '\t') this.insert(ch);
+            if (ch >= ' ') this.insert(ch);
         }
       }
     }
@@ -428,13 +443,120 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     }
   }
 
+  /** Zeichen, die zu einem Lisp-Symbol gehoeren. Spiegelt
+   *  symbol-constituent-p in bridge-server.lisp. Laufen die beiden
+   *  auseinander, schneidet der Client ein anderes Praefix ab als der
+   *  Server erwartet — und die Vorschlaege passen still nicht mehr. */
+  private static readonly SYMBOL_CHARS = /[A-Za-z0-9\-+*/<>=!?_%&^~.:@]*$/;
+
+  /** Der getippte Symbolanfang links vom Cursor. */
+  private currentToken(): string {
+    const upToCursor = this.buffer.slice(0, this.cursor);
+    return ClampsReplTerminal.SYMBOL_CHARS.exec(upToCursor)?.[0] ?? '';
+  }
+
+  /**
+   * Tab-Completion. Ein Kandidat wird eingesetzt, mehrere werden auf ihren
+   * laengsten gemeinsamen Anfang gekuerzt, und bringt der nichts mehr,
+   * zeigt der zweite Tab die Liste.
+   */
+  private async complete(): Promise<void> {
+    if (this.busy) return;
+    const client = this.getClient();
+    if (!client || client.state !== State.Running) return;
+
+    const token = this.currentToken();
+    const before = this.buffer.slice(0, this.cursor);
+    const wantList = this.lastCompletionAt === this.buffer;
+
+    let items: { label: string; detail?: string }[];
+    try {
+      const r = await client.sendRequest<{ items?: { label: string; detail?: string }[] }>(
+        'clamps/replComplete',
+        { prefix: token, package: this.packageName, context: before }
+      );
+      items = r?.items ?? [];
+    } catch {
+      // Eine fehlgeschlagene Completion ist kein Grund, die Eingabe zu
+      // stoeren. Still bleiben und weitertippen lassen.
+      return;
+    }
+    if (items.length === 0) return;
+
+    const labels = items.map(i => i.label);
+    const insertion = labels.length === 1
+      ? labels[0]
+      : ClampsReplTerminal.commonPrefix(labels);
+
+    if (insertion.length > token.length) {
+      this.replaceToken(token, insertion);
+      // Nach dem Einsetzen ist die Merkung hinfaellig: der naechste Tab
+      // soll erneut fragen, nicht sofort listen.
+      this.lastCompletionAt = undefined;
+      return;
+    }
+
+    if (wantList) {
+      this.writeCandidates(items);
+      this.lastCompletionAt = undefined;
+    } else {
+      this.lastCompletionAt = this.buffer;
+    }
+  }
+
+  /**
+   * Laengster gemeinsamer Anfang. Zeichengenau verglichen: die Bridge
+   * liefert Symbolnamen immer klein geschrieben, ein Vergleich ohne
+   * Ruecksicht auf Gross-/Kleinschreibung wuerde also nichts gewinnen und
+   * koennte gemischte Schreibweise einsetzen.
+   */
+  private static commonPrefix(labels: string[]): string {
+    let prefix = labels[0] ?? '';
+    for (const label of labels.slice(1)) {
+      let i = 0;
+      while (i < prefix.length && i < label.length && prefix[i] === label[i]) i++;
+      prefix = prefix.slice(0, i);
+      if (prefix.length === 0) break;
+    }
+    return prefix;
+  }
+
+  private replaceToken(token: string, replacement: string): void {
+    const start = this.cursor - token.length;
+    this.buffer = this.buffer.slice(0, start) + replacement + this.buffer.slice(this.cursor);
+    this.cursor = start + replacement.length;
+    this.renderInput();
+  }
+
+  /**
+   * Kandidaten ueber der Eingabezeile ausgeben und danach die Eingabe neu
+   * zeichnen — wie cancelInput() es macht, sonst bleibt die alte
+   * Prompt-Zeile stehen.
+   */
+  private writeCandidates(items: { label: string; detail?: string }[]): void {
+    const shown = items.slice(0, 40);
+    const width = Math.max(...shown.map(i => i.label.length), 1);
+    this.clearInputLine();
+    this.write('\r\n');
+    for (const item of shown) {
+      const detail = item.detail ? `  \x1b[2m${item.detail}\x1b[0m` : '';
+      this.write(`  ${item.label.padEnd(width)}${detail}\r\n`);
+    }
+    if (items.length > shown.length) {
+      this.write(`  \x1b[2m… ${items.length - shown.length} weitere\x1b[0m\r\n`);
+    }
+    this.renderInput();
+  }
+
   private insert(text: string): void {
+    this.lastCompletionAt = undefined;
     this.buffer = this.buffer.slice(0, this.cursor) + text + this.buffer.slice(this.cursor);
     this.cursor += text.length;
     this.renderInput();
   }
 
   private backspace(): void {
+    this.lastCompletionAt = undefined;
     if (this.cursor === 0) return;
     this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
     this.cursor--;

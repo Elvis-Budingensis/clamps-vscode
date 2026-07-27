@@ -134,13 +134,22 @@ export async function activate(context: vscode.ExtensionContext) {
     // Port und Wurzelverzeichnis aus dem Prozess-Manager kommen.
     vscode.debug.registerDebugConfigurationProvider('clamps', {
       provideDebugConfigurations() {
-        return [{ type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen' }];
+        return [{
+          type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen',
+          internalConsoleOptions: 'neverOpen',
+        }];
       },
       resolveDebugConfiguration(_folder, config) {
         if (!config.type) {
           config.type = 'clamps';
           config.request = 'attach';
           config.name = 'CLAMPS: Debugger anhängen';
+        }
+        // Auch bei einer aus launch.json geerbten Konfiguration: die
+        // Debug-Konsole soll die REPL nicht aus dem Panel schieben.
+        // Eine ausdrückliche Angabe des Benutzers bleibt stehen.
+        if (config.internalConsoleOptions === undefined) {
+          config.internalConsoleOptions = 'neverOpen';
         }
         return config;
       },
@@ -265,6 +274,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.debugAttach', () =>
       vscode.debug.startDebugging(undefined, {
         type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen',
+        internalConsoleOptions: 'neverOpen',
       })
     ),
     vscode.commands.registerCommand('clamps.debugRestarts', () => chooseRestart()),
@@ -420,7 +430,9 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         // REPL gleich mitöffnen: sie ist der Ort, an dem man arbeitet,
         // und sie erst über die Befehlspalette holen zu müssen ist ein
         // unnötiger Zwischenschritt.
-        if (vscode.workspace.getConfiguration('clamps').get<boolean>('openReplOnStart', true)) {
+        const openRepl =
+          vscode.workspace.getConfiguration('clamps').get<boolean>('openReplOnStart', true);
+        if (openRepl) {
           ClampsReplTerminal.show(() => client);
         }
 
@@ -434,12 +446,24 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
           // Kleiner Verzug, damit die Bridge zuerst ihre Verbindung
           // aufbaut und die beiden Swank-Verbindungen sich nicht ins
           // Gehege kommen.
-          setTimeout(() => {
+          setTimeout(async () => {
             if (!vscode.debug.activeDebugSession) {
-              void vscode.debug.startDebugging(undefined, {
+              await vscode.debug.startDebugging(undefined, {
                 type: 'clamps', request: 'attach',
                 name: 'CLAMPS: Debugger anhängen',
+                // Ohne das öffnet VS Code beim Start einer Debug-Session
+                // die Debug-Konsole und schiebt damit die REPL aus dem
+                // Panel. Man landete nach jedem Start auf einer Konsole,
+                // die man nicht braucht, und musste erst auf „Terminal“
+                // klicken.
+                internalConsoleOptions: 'neverOpen',
               });
+            }
+            // Zusätzlich die REPL wieder nach vorn holen: das Anhängen
+            // aktiviert die Debug-Ansicht, und „neverOpen“ verhindert nur
+            // das Aufklappen der Konsole, nicht den Wechsel des Panels.
+            if (openRepl) {
+              ClampsReplTerminal.show(() => client);
             }
           }, 800);
         }

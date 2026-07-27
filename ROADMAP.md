@@ -35,9 +35,9 @@ angefangen — Halbfertiges steht unter „Teilweise" mit der konkreten Lücke.
       (öffnende Klammer in Spalte 0) statt fester 120 Zeilen, mit 500
       Zeilen als Rückfalldeckel.
 
-### Teilweise
-
-- [ ] **Completion im REPL-Terminal.** Der LSP-Pfad greift nur in Dateien.
+- [x] **Completion im REPL-Terminal** — v81.16.
+      Tab vervollständigt, zweimal Tab listet. Eigener Bridge-Aufruf
+      `clamps/replComplete`, aber dieselbe Quelle wie die Editor-Completion.
 
 ### Offen
 

@@ -116,6 +116,32 @@ for (const file of jsTests) {
   }
 }
 
+// Toter Code hinter process.exit. Wer einen Test unten anhaengt, landet
+// leicht HINTER dem abschliessenden process.exit — die Zusicherungen
+// laufen dann nie, und die Datei meldet trotzdem "ok". Genau das ist beim
+// Panel-Fokus-Test in session.test.js passiert.
+for (const file of jsTests) {
+  const src = fs.readFileSync(path.join(root, 'test', file), 'utf8');
+  // Nur ein UNBEDINGTER Ausstieg zaehlt, also einer ohne Einrueckung.
+  // Das uebliche Muster
+  //   if (failed > 0) { ...; process.exit(1); }
+  //   console.log('ok — ...');
+  // ist voellig in Ordnung: die Meldung laeuft ja gerade dann, wenn nicht
+  // ausgestiegen wurde.
+  const lines = src.split('\n');
+  const exitLine = lines.reduce(
+    (found, line, i) => (/^process\.exit\(/.test(line) ? i : found), -1
+  );
+  if (exitLine === -1) continue;
+  const alive = lines
+    .slice(exitLine + 1)
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith('//') && !/^[)}\];]*$/.test(line));
+  if (alive.length > 0) {
+    fail(`test/${file}: Code nach dem unbedingten process.exit laeuft nie — z.B. "${alive[0].slice(0, 60)}"`);
+  }
+}
+
 if (failed > 0) {
   console.log(`\n${failed} Test(s) fehlgeschlagen.`);
   process.exit(1);

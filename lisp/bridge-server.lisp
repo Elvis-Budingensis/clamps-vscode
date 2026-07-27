@@ -1316,6 +1316,40 @@ als jeweils ein Argument der aeusseren Form."
             (or (gethash "package" params) "COMMON-LISP-USER")
             (or (gethash "kind" params) "definitions"))))
 
+(defun handle-repl-complete (id params)
+  "clamps/replComplete — Completion fuer das REPL-Terminal.
+
+   Das Terminal hat keinen Dokumentenpuffer, aus dem sich Praefix, Paket
+   und Kontext ableiten liessen; es schickt alle drei selbst mit.  Die
+   Quelle ist bewusst dieselbe wie bei der Editor-Completion, damit die
+   Vorschlaege nicht auseinanderlaufen: dieselbe Fuzzy-Bewertung, dieselbe
+   Rangfolge, dieselben &key-Parameter der umschliessenden Form.  Die
+   Reihenfolge der Liste IST das Ergebnis — anders als im Editor gibt es
+   hier kein sortText, das etwas nachsortieren koennte."
+  (let ((prefix (or (gethash "prefix" params) ""))
+        (pkg (or (gethash "package" params) "COMMON-LISP-USER"))
+        (context (or (gethash "context" params) "")))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S ~S)"
+             prefix pkg context)
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                (= (length value) 3))
+           (destructuring-bind (ok truncated items) value
+             (declare (ignore ok))
+             (send-response id
+               (make-jobj
+                "truncated" (if truncated :true :false)
+                "items"
+                (coerce
+                 (mapcar (lambda (it)
+                           (make-jobj "label" (or (first it) "")
+                                      "detail" (or (third it) "")))
+                         items)
+                 'vector))))
+           (send-response id (make-jobj "truncated" :false "items" (vector))))))))
+
 (defun handle-apropos (id params)
   (handle-tool-result id
     (format nil "(clamps-bridge-rpc:apropos-for-repl ~S ~S ~A)"
@@ -1377,6 +1411,7 @@ als jeweils ein Argument der aeusseren Form."
           ((string= method "clamps/untraceAll") (handle-untrace-all id params))
           ((string= method "clamps/xref") (handle-xref id params))
           ((string= method "clamps/apropos") (handle-apropos id params))
+          ((string= method "clamps/replComplete") (handle-repl-complete id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
