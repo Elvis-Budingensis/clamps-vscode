@@ -511,6 +511,39 @@ BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
               do (decf start))
         (subseq line-text start end)))))
 
+(defparameter *completion-context-max-lines* 500
+  "Rueckfalldeckel fuer das Kontextfenster der Completion.
+
+Normalerweise reicht der Kontext bis zum Anfang der umschliessenden
+Top-Level-Form.  Fehlt die — etwa in einer Datei ohne Klammer in Spalte 0
+oder waehrend man gerade tippt — greift diese Grenze, damit nicht bei jedem
+Tastendruck eine ganze Datei durch die Bridge geht.")
+
+(defun completion-context-start-line (text line)
+  "Zeilennummer des Anfangs der umschliessenden Top-Level-Form.
+
+Konvention wie in Emacs: eine oeffnende Klammer in Spalte 0 beginnt eine
+Top-Level-Form.  Bis v81.14 wurde stattdessen ein festes Fenster von 120
+Zeilen genommen; bei einem laengeren DEFUN fielen dessen Parameter damit
+aus dem Kontext und wurden nicht mehr vervollstaendigt."
+  (let ((floor-line (max 0 (- line *completion-context-max-lines*))))
+    (loop for ln downfrom line to floor-line
+          for text-line = (nth-line text ln)
+          when (and text-line (plusp (length text-line))
+                    (char= (char text-line 0) #\())
+            do (return ln)
+          finally (return floor-line))))
+
+(defun completion-context (text line character)
+  "Quelltext vom Anfang der umschliessenden Top-Level-Form bis zum Cursor."
+  (let ((start (completion-context-start-line text line)))
+    (with-output-to-string (out)
+      (loop for ln from start to line
+            for l = (or (nth-line text ln) "")
+            do (if (= ln line)
+                   (write-string (subseq l 0 (min character (length l))) out)
+                   (progn (write-string l out) (terpri out)))))))
+
 (defun handle-completion (id params)
   "textDocument/completion — Symbolvervollständigung.
 
@@ -533,18 +566,7 @@ BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
         (swank-rex
          (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S ~S)"
                  prefix pkg
-                 ;; Nur ein begrenztes Fenster vor dem Cursor übertragen.
-                 ;; Genug für lokale Bindungen und Kopf-/Argumentposition,
-                 ;; ohne bei großen Dateien jeden Tastendruck aufzublähen.
-                 (let* ((line-start (max 0 (- line 120)))
-                        (lines (loop for ln from line-start to line
-                                     collect (or (nth-line text ln) ""))))
-                   (with-output-to-string (out)
-                     (loop for l in lines
-                           for ln from line-start
-                           do (if (= ln line)
-                                  (write-string (subseq l 0 (min character (length l))) out)
-                                  (progn (write-string l out) (terpri out)))))))
+                 (completion-context text line character))
          :callback
          (lambda (status value)
            (if (and (eq status :ok) (consp value) (eq (first value) :ok)

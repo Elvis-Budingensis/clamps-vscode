@@ -128,6 +128,13 @@ Die Incudine-Formen stehen hier gleichberechtigt: in einem dsp!-Koerper
 sind FREQ, AMP und die with-samples-Variablen die Namen, die man
 tatsaechlich tippt.  Bis v81.13 kannte der Scanner sie nicht.")
 
+(defparameter *completion-sequential-binders*
+  '("let*" "with-samples" "with" "do*" "prog*")
+  "Binder, deren Namen schon in den folgenden Initialformen sichtbar sind.
+
+Incudines WITH-SAMPLES und WITH binden sequenziell wie LET*, nicht
+parallel wie LET.")
+
 (defun %completion-atom-p (node) (stringp node))
 
 (defun %completion-clean-name (token)
@@ -233,6 +240,55 @@ weder HELPER noch ACC kaemen als Kandidat heraus."
       (setf built (cons (if built (append form (list (first built))) form)
                         built)))))
 
+(defun %completion-open-scope-names (open-chain)
+  "Namen der Formen, die den Cursor enthalten — mit Beachtung der Bindungsstelle.
+
+Bis v81.14 galt jeder Name einer umschliessenden Bindungsform als sichtbar,
+auch wenn der Cursor noch in der Bindungsliste selbst stand.  In
+
+  (let ((alpha 1) (beta al
+
+ist ALPHA bei LET gerade NICHT sichtbar — der Wert von BETA wird im
+aeusseren Scope berechnet.  Bei LET* und bei Incudines WITH-SAMPLES ist er
+es.  Diese Funktion unterscheidet das."
+  (let ((augmented (%completion-attach-open open-chain))
+        (out '()))
+    (loop for rest on open-chain
+          for aug in augmented
+          for raw = (first rest)
+          for deeper = (second rest)
+          do (let* ((head (and (consp raw) (%completion-atom-p (first raw))
+                               (string-downcase (first raw))))
+                    (rule (and head (cdr (assoc head *completion-binding-forms*
+                                                :test #'string=))))
+                    ;; An welcher Argumentposition steht die Bindungs- bzw.
+                    ;; Lambda-Liste?  Bei LET und LAMBDA an 1, bei DEFUN und
+                    ;; dsp! an 2 (dort steht der Name davor).  FLET, LABELS
+                    ;; und LOOP bleiben aussen vor: dort ist der Cursor in der
+                    ;; Bindungsliste bereits im Rumpf einer lokalen Funktion,
+                    ;; deren Parameter sichtbar sind.
+                    (binding-index (case rule
+                                     ((:bindings :lambda-list :iteration) 1)
+                                     (:named-lambda 2)
+                                     (t nil)))
+                    (in-binding-part (and deeper binding-index
+                                          (= (length raw) binding-index))))
+               (cond
+                 ((null rule))
+                 ((not in-binding-part)
+                  (setf out (nconc out (copy-list (%completion-form-names aug)))))
+                 ((and (eq rule :bindings)
+                       (member head *completion-sequential-binders* :test #'string=))
+                  ;; Sequenzieller Binder: die bereits abgeschlossenen
+                  ;; frueheren Bindungen sind sichtbar, die gerade getippte
+                  ;; noch nicht.
+                  (setf out (nconc out (%completion-binding-list-names deeper))))
+                 (t
+                  ;; Paralleler Binder oder Lambda-Liste: hier ist noch
+                  ;; nichts von dieser Form sichtbar.
+                  nil))))
+    out))
+
 (defun %completion-local-names (source)
   "Lexikalische Namen aus SOURCE.
 
@@ -243,10 +299,10 @@ denselben starken Bonus, und ein zufaellig aufgeschnappter Aufrufkopf aus
 einem laengst geschlossenen Formular rankte ueber dem richtigen Symbol."
   (multiple-value-bind (tree open-chain) (%completion-tokenize (or source ""))
     (let ((in-scope '()) (nearby '()))
+      (setf in-scope (%completion-open-scope-names open-chain))
+      ;; Auch abgeschlossene Unterformen im selben Rumpf koennen binden,
+      ;; etwa ein frueheres LET im selben DEFUN.
       (dolist (form (%completion-attach-open open-chain))
-        (setf in-scope (nconc in-scope (copy-list (%completion-form-names form))))
-        ;; Auch abgeschlossene Unterformen im selben Rumpf koennen binden,
-        ;; etwa ein frueheres LET im selben DEFUN.
         (dolist (child form)
           (when (consp child)
             (setf nearby (nconc nearby (%completion-collect-names child))))))

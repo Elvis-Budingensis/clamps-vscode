@@ -125,6 +125,24 @@
     (assert rank () "mvb findet multiple-value-bind nicht.")
     (assert (< rank 5) () "multiple-value-bind rankte erst auf ~D." rank))
 
+  ;; v81.15 — Sichtbarkeit an der Bindungsstelle.
+  ;; Bei LET wird der Wert der zweiten Bindung im aeusseren Scope berechnet,
+  ;; ALPHA ist dort also noch nicht sichtbar.
+  (assert (not (member "alpha" (labels-of "al" "(let ((alpha 1) (beta al") :test #'string=))
+          () "LET darf ALPHA in der Bindungsliste nicht anbieten.")
+  ;; Bei LET* schon.
+  (assert (member "alpha" (labels-of "al" "(let* ((alpha 1) (beta al") :test #'string=)
+          () "LET* muss ALPHA in der Bindungsliste anbieten.")
+  ;; Incudines WITH-SAMPLES bindet sequenziell wie LET*.
+  (assert (member "car1" (labels-of "ca" "(with-samples ((car1 (sine 330)) (mod (* car1 ca") :test #'string=))
+  ;; Im Rumpf sind bei beiden alle Namen sichtbar.
+  (assert (member "alpha" (labels-of "al" "(let ((alpha 1) (beta 2)) al") :test #'string=))
+  ;; In der eigenen Lambda-Liste ist noch nichts gebunden.
+  (assert (not (member "alpha" (labels-of "al" "(defun f (alpha al") :test #'string=))
+          () "Lambda-Liste darf ihre eigenen Namen noch nicht anbieten.")
+  ;; Im Rumpf dann doch.
+  (assert (member "alpha" (labels-of "al" "(defun f (alpha) al") :test #'string=))
+
   ;; Paketqualifizierte Praefixe unterscheiden extern und intern weiterhin.
   (assert (member "common-lisp:mapcar" (labels-of "common-lisp:mapc" "(common-lisp:mapc")
                   :test #'string=)))

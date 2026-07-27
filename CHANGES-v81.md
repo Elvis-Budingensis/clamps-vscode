@@ -828,3 +828,78 @@ Kommentare und Zeichenliterale, offene Formenkette, Operatorposition,
 Incudine-Binder, Scope-Vorrang, `&key`-Kontext, Stille ohne
 `&key`-Parameter, Wortanfangs-Ranking. Am TypeScript-Code wurde nichts
 geändert.
+
+## v81.15 — Completion: Bindungsstelle und Kontextfenster
+
+Die zwei Punkte, die in v81.14 unter „Teilweise" stehen geblieben sind.
+
+### Sichtbarkeit an der Bindungsstelle
+
+v81.14 hielt jeden Namen einer umschließenden Bindungsform für sichtbar,
+auch wenn der Cursor noch in der Bindungsliste selbst stand. In
+
+```lisp
+(let ((alpha 1) (beta al
+```
+
+ist `alpha` bei `let` gerade **nicht** sichtbar — der Wert von `beta` wird
+im äußeren Scope berechnet. Bei `let*` ist er es. `%completion-open-scope-names`
+unterscheidet das jetzt: pro offener Form wird geprüft, ob der Cursor in der
+Bindungs- bzw. Lambda-Liste steht, und wenn ja, ob der Binder sequenziell
+ist.
+
+Zu den sequenziellen Bindern zählen neben `let*`, `do*` und `prog*` auch
+Incudines `with-samples` und `with`. Das ist keine Kosmetik: in
+
+```lisp
+(with-samples ((car1 (sine 330)) (mod (* car1 ca
+```
+
+muss `car1` angeboten werden, weil `with-samples` wie `let*` bindet.
+
+Wo die Bindungsliste steht, hängt von der Form ab — bei `let` und `lambda`
+an Argumentposition 1, bei `defun` und `dsp!` an 2, weil dort der Name davor
+steht. `flet`, `labels` und `loop` bleiben ausgenommen: dort ist der Cursor
+innerhalb der Bindungsliste bereits im Rumpf einer lokalen Funktion, deren
+Parameter sichtbar sind.
+
+### Kontextfenster bis zur Top-Level-Form
+
+Die Bridge übertrug 120 Zeilen vor dem Cursor. Bei einem längeren `defun`
+fielen dessen Parameter damit aus dem Kontext und wurden nicht mehr
+vervollständigt — leise, ohne Hinweis, abhängig davon wie weit oben man
+gerade tippt.
+
+Jetzt reicht der Kontext bis zum Anfang der umschließenden Top-Level-Form,
+erkannt an der öffnenden Klammer in Spalte 0, wie in Emacs. `*completion-context-max-lines*`
+= 500 bleibt als Rückfalldeckel, damit in einer Datei ohne Klammer in
+Spalte 0 nicht bei jedem Tastendruck alles durch die Bridge geht.
+
+Nebeneffekt, der die Vorschläge zusätzlich schärft: der Kontext endet jetzt
+am Anfang der aktuellen Top-Level-Form, statt in die vorige hineinzureichen.
+Namen aus der Funktion darüber landen also nicht mehr in der Liste.
+
+### Ein Testproblem und seine Lösung
+
+`bridge-server.lisp` lässt sich im Gate-Container nicht laden — es braucht
+usocket, bordeaux-threads und eine Swank-Verbindung. Bisher war die Datei
+deshalb nur strukturell durch `loadcheck.lisp` abgedeckt, und
+`completion-context` wäre ungetestet geblieben.
+
+`lisp/test-bridge-context.lisp` holt sich stattdessen genau die vier
+benötigten Top-Level-Formen aus dem ausgelieferten Quelltext — per
+klammerzählendem Scan, Strings und Kommentare ausgenommen — und wertet nur
+diese aus. Damit wird die echte Datei geprüft und nicht eine Kopie, die
+auseinanderlaufen kann.
+
+Eine Falle dabei, an der der Test zuerst hängen blieb und die für künftige
+Erweiterungen zählt: `(search "(defun completion-context" text)` trifft
+`completion-context-start-line` zuerst, weil die Funktion früher in der
+Datei steht. Der Suchbegriff muss die Argumentliste mitnehmen.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün (98 Funktionen, 36 Exporte), 10 Lisp-Testläufe
+grün, `tsc -p ./` ohne Fehler, 11 JS-Tests grün. `test-completion.lisp` um
+sieben Zusicherungen zur Bindungsstelle gewachsen, `test-bridge-context.lisp`
+neu mit acht. Am TypeScript-Code wurde nichts geändert.

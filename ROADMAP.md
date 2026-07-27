@@ -26,17 +26,17 @@ angefangen — Halbfertiges steht unter „Teilweise" mit der konkreten Lücke.
       `&key`-Parameter der umschließenden Form stehen ganz oben, mit
       Herkunftsangabe im Detail. Vorher gab `:` das gesamte `KEYWORD`-Paket.
 
+- [x] **Lexikalischer Scope exakt** — v81.14 (Scope gegen Nachbarschaft),
+      v81.15 (Bindungsstelle). `let` bietet seine Namen in der eigenen
+      Bindungsliste nicht an, `let*` und Incudines `with-samples` schon,
+      und eine Lambda-Liste bindet ihre Namen erst im Rumpf.
+- [x] **Kontextfenster** — v81.15.
+      Der Kontext reicht bis zum Anfang der umschließenden Top-Level-Form
+      (öffnende Klammer in Spalte 0) statt fester 120 Zeilen, mit 500
+      Zeilen als Rückfalldeckel.
+
 ### Teilweise
 
-- [ ] **Lexikalischer Scope exakt.** v81.14 unterscheidet Namen aus den
-      Formen, in denen der Cursor steht, von Namen aus benachbarten
-      geschlossenen Formen. Was noch fehlt: `let` gegen `let*`
-      (sequenzielle Sichtbarkeit) und Sichtbarkeit vor der Bindungsstelle.
-      Ein `let`-Name wird auch dann angeboten, wenn der Cursor noch in der
-      Bindungsliste steht.
-- [ ] **Kontextfenster.** Die Bridge überträgt 120 Zeilen vor dem Cursor.
-      Bindungen aus einem längeren `defun` fallen heraus. Sauber wäre, vom
-      Cursor rückwärts bis zur Top-Level-Form zu gehen.
 - [ ] **Completion im REPL-Terminal.** Der LSP-Pfad greift nur in Dateien.
 
 ### Offen
