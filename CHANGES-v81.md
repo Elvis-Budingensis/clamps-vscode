@@ -731,3 +731,100 @@ das, statt stillschweigend grün zu bleiben.
 `python3 lisp/check.py` grün (85 Funktionen, 36 Exporte), 9 Lisp-Testläufe
 grün, `tsc -p ./` ohne Fehler, 11 JS-Tests grün. Am TypeScript-Code wurde
 nichts geändert.
+
+## v81.14 — Completion: Rangfolge, echter Parser, &key-Kontext
+
+Von den sechs Punkten der SLY-Liste waren vier bereits gebaut. Diese
+Revision schließt die restlichen zwei und repariert zwei Defekte, die die
+vorhandenen Punkte teilweise wirkungslos machten. Der Stand steht ab jetzt
+in `ROADMAP.md` mit Haken, damit nichts doppelt gebaut wird.
+
+### Das Ranking kam nie an
+
+`handle-completion` schickte `label`, `kind`, `detail`, `documentation` —
+und kein `sortText`. Ohne dieses Feld sortiert VS Code die Liste mit seinem
+eigenen Matcher neu. Die gesamte Rangfolge aus `completion.lisp` — Score,
+Kopfpositions-Bias, lokale Namen — wurde also berechnet und dann verworfen.
+Jetzt geht der Rang als fünfstellige Nummer mit.
+
+Das ist derselbe Fehlertyp wie das rote Gate aus v81.12: die Arbeit war
+getan, nur kam sie nirgends an, und nichts hat es gemeldet.
+
+### Der Locals-Scanner war eine Heuristik
+
+Die alte Fassung suchte nach `let`/`flet`/`defun` und nahm dann im
+600-Zeichen-Fenster dahinter das erste Token nach *jeder* öffnenden
+Klammer. Damit erwischte sie auch Aufrufköpfe im Rumpf — und diese
+Fehltreffer bekamen Bias −100, den stärksten Bonus überhaupt. Ein zufällig
+aufgeschnapptes `sine` stand also über dem echten Symbol.
+
+Ersetzt durch `%completion-tokenize`: ein Formenparser ohne Reader, der
+Strings, Zeilenkommentare und Zeichenliterale überspringt und
+unabgeschlossene Formen als Normalfall behandelt. Er liefert zwei Dinge —
+den Baum der geschlossenen Formen und die Kette der am Cursor noch offenen.
+Letztere ist genau der Pfad der Formen, in denen der Cursor steht.
+
+Daraus folgt dreierlei:
+
+Namen aus diesem Pfad sind im Scope und ranken vorn (−100), Namen aus
+benachbarten geschlossenen Formen deutlich schwächer (−20). Vorher war
+beides gleich stark.
+
+Operatorposition wird nicht mehr durch Rückwärtssuche nach der nächsten
+Klammer geraten, sondern daran erkannt, dass die innerste offene Form außer
+dem getippten Präfix noch nichts enthält.
+
+Die Binder-Tabelle ist explizit und enthält jetzt auch `dsp!`,
+`with-samples`, `define-vug` und `define-ugen`. In einem `dsp!`-Körper sind
+`freq`, `amp` und die `with-samples`-Variablen die Namen, die man
+tatsächlich tippt — bis v81.13 kannte der Scanner sie nicht.
+
+Ein Detail, das beim Bauen zweimal Zeit gekostet hat: der Tokenizer trägt
+Kinder erst beim Schließen in die Elternform ein, also fehlen genau die
+offenen Formen, die den Cursor enthalten. Bei `(labels ((helper (acc) ac`
+wäre die Bindungsliste leer. `%completion-attach-open` hängt deshalb jede
+offene Form als letztes Kind ihrer Elternform an, bevor extrahiert wird.
+
+### Keyword Completion mit Kontext
+
+`:` lieferte bisher das gesamte `KEYWORD`-Paket — im laufenden CLAMPS-Image
+sind das zehntausende Einträge. Jetzt wird die Lambda-Liste der
+umschließenden Form ausgewertet und deren `&key`-Parameter mit Bias −200
+vorangestellt, mit Herkunft im Detail (`&key von make-array`).
+
+Dazu kommt `" "` als Trigger und die Freigabe des leeren Präfixes. Hinter
+`(make-array 3 ` erscheinen damit die Keywords, ohne dass man `:` tippen
+muss. Bei leerem Symbolteil liefert die Bridge **ausschließlich** diese
+Keywords — sonst müsste hinter jedem Leerzeichen das halbe Image kommen und
+der Trigger wäre unbrauchbar. Hat die umschließende Form keine
+`&key`-Parameter, bleibt die Liste leer und die Ergänzungsbox erscheint gar
+nicht erst.
+
+Die Antwort auf ein leeres Präfix trägt immer `isIncomplete`, damit der
+Client nach dem nächsten Zeichen neu fragt statt lokal auf dieser
+absichtlich beschnittenen Teilmenge zu filtern.
+
+### Fuzzy-Feinschliff
+
+Treffer auf Wortanfängen — Position 0 oder direkt nach `-`, `*`, `%`, `+` —
+zählen jetzt −8 pro Zeichen. `mvb` findet damit `multiple-value-bind` und
+nicht irgendein Symbol, in dem m, v und b zufällig in dieser Reihenfolge
+vorkommen. Der Test fordert Rang unter 5.
+
+### Was bewusst offen bleibt
+
+`let` gegen `let*` wird nicht unterschieden, und ein Name ist auch dann
+schon sichtbar, wenn der Cursor noch in seiner eigenen Bindungsliste steht.
+Das Kontextfenster der Bridge bleibt bei 120 Zeilen, längere `defun`-Körper
+verlieren also ihre oberen Bindungen. Beides steht in `ROADMAP.md` unter
+„Teilweise", mit der konkreten Lücke statt eines Hakens.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün (97 Funktionen, 36 Exporte), 9 Lisp-Testläufe
+grün, `tsc -p ./` ohne Fehler, 11 JS-Tests grün. `lisp/test-completion.lisp`
+ist um sechzehn Zusicherungen gewachsen: Tokenizer gegen Strings,
+Kommentare und Zeichenliterale, offene Formenkette, Operatorposition,
+Incudine-Binder, Scope-Vorrang, `&key`-Kontext, Stille ohne
+`&key`-Parameter, Wortanfangs-Ranking. Am TypeScript-Code wurde nichts
+geändert.

@@ -456,9 +456,13 @@ BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
                      "hoverProvider" :true
                      ;; ":" als Trigger, damit "incudine:" sofort die
                      ;; externen Symbole des Pakets anbietet, ohne dass
-                     ;; man erst einen Buchstaben tippen muss.
+                     ;; man erst einen Buchstaben tippen muss.  " " kommt
+                     ;; dazu, damit hinter einem Argument die &key-Namen der
+                     ;; umschliessenden Form erscheinen; bei leerem Praefix
+                     ;; liefert die Bridge ausschliesslich diese, sonst
+                     ;; nichts, also bleibt der Trigger sonst still.
                      "completionProvider" (make-jobj
-                                           "triggerCharacters" (vector ":"))
+                                           "triggerCharacters" (vector ":" " "))
                      "signatureHelpProvider" (make-jobj
                                                "triggerCharacters" (vector " " "("))
                      "definitionProvider" :true
@@ -522,8 +526,9 @@ BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
          (pkg (if text
                   (package-at-position text line character)
                   *swank-package*)))
-    (if (string= prefix "")
-        ;; Ohne Präfix nicht das ganze Image schicken.
+    (if (null text)
+        ;; Ohne bekannten Puffertext gibt es keinen Kontext, also auch
+        ;; nichts Sinnvolles anzubieten.
         (send-response id (make-jobj "isIncomplete" :true "items" (vector)))
         (swank-rex
          (format nil "(clamps-bridge-rpc:completions-for-repl ~S ~S ~S)"
@@ -555,16 +560,24 @@ BYTES, also werden Bytes gelesen und danach als UTF-8 dekodiert."
                     "items"
                     (coerce
                      (mapcar
-                      (lambda (it)
-                        (destructuring-bind (label kind detail docu) it
-                          (let ((obj (make-jobj "label" label "kind" kind)))
-                            ;; Leere Felder weglassen: VS Code zeigt sonst
-                            ;; eine leere Detailzeile neben jedem Eintrag.
-                            (when (and detail (string/= detail ""))
-                              (setf (gethash "detail" obj) detail))
-                            (when (and docu (string/= docu ""))
-                              (setf (gethash "documentation" obj) docu))
-                            obj)))
+                      (let ((rank -1))
+                        (lambda (it)
+                          (destructuring-bind (label kind detail docu) it
+                            (let ((obj (make-jobj "label" label "kind" kind)))
+                              ;; sortText ist nicht optional.  Ohne dieses Feld
+                              ;; sortiert VS Code die Liste mit seinem eigenen
+                              ;; Matcher neu, und die gesamte Rangfolge aus
+                              ;; completion.lisp — Scope, Kopfposition,
+                              ;; &key-Kontext, Fuzzy-Score — wird verworfen.
+                              (setf (gethash "sortText" obj)
+                                    (format nil "~5,'0D" (incf rank)))
+                              ;; Leere Felder weglassen: VS Code zeigt sonst
+                              ;; eine leere Detailzeile neben jedem Eintrag.
+                              (when (and detail (string/= detail ""))
+                                (setf (gethash "detail" obj) detail))
+                              (when (and docu (string/= docu ""))
+                                (setf (gethash "documentation" obj) docu))
+                              obj))))
                       items)
                      'vector))))
                (send-response id
