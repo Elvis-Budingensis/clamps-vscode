@@ -304,6 +304,10 @@
       {
         "command": "clamps.stickersClear",
         "title": "CLAMPS: Stickers löschen"
+      },
+      {
+        "command": "clamps.meterShow",
+        "title": "CLAMPS: Pegel anzeigen"
       }
     ],
     "languages": [
@@ -424,6 +428,12 @@
           "type": "boolean",
           "default": true,
           "description": "Hängt den Lisp-Debugger automatisch an, sobald CLAMPS startet, damit Fehler ohne manuelles Einhängen im Debugger landen."
+        },
+        "clamps.meterIntervalMs": {
+          "type": "number",
+          "default": 100,
+          "minimum": 20,
+          "description": "Abholtakt der Pegelanzeige in Millisekunden. Kleiner heißt flüssiger und mehr Verkehr über die Bridge; unter dem Dezimierungsfenster des Rings bringt es nichts, weil dann nichts Neues da ist."
         },
         "clamps.openReplOnStart": {
           "type": "boolean",
@@ -590,7 +600,7 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
-    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/lispstring.test.js",
+    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/lispstring.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
     "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp"
   },

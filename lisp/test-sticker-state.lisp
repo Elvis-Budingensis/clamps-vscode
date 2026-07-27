@@ -163,4 +163,104 @@
              consed iterations limit))
     (format t "sticker-state: ~D Byte bei ~D RMS-Aufrufen~%" consed iterations)))
 
+
+;;; 11. Inkrementelles Abholen: nur was seit der letzten Abfrage dazukam.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "pull" state)
+  ;; Leerer Ring: nichts da, Sequenz 0.
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 0)
+    (declare (ignore ok))
+    (assert (= 0 seq)) (assert (= 0 dropped)) (assert (null values)))
+  ;; Drei Werte, alle neu.
+  (dotimes (i 3)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce i 'double-float)))
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 0)
+    (declare (ignore ok))
+    (assert (= 3 seq)) (assert (= 0 dropped))
+    (assert (equal values '(0.0d0 1.0d0 2.0d0))))
+  ;; Nichts Neues seit Sequenz 3.
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 3)
+    (declare (ignore ok seq dropped))
+    (assert (null values)))
+  ;; Zwei weitere: nur die zwei kommen, nicht der ganze Ring.
+  (dotimes (i 2)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce (+ 3 i) 'double-float)))
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 3)
+    (declare (ignore ok))
+    (assert (= 5 seq)) (assert (= 0 dropped))
+    (assert (equal values '(3.0d0 4.0d0)))))
+
+;;; 12. Ueberlauf wird gemeldet, nicht verschwiegen. Eine Anzeige, die
+;;;     verlorene Werte als lueckenlosen Verlauf zeichnet, luegt.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "overflow" state)
+  (dotimes (i 10)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce i 'double-float)))
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "overflow" 0)
+    (declare (ignore ok))
+    (assert (= 10 seq))
+    (assert (= 6 dropped) () "Verlorene Werte: ~D statt 6." dropped)
+    (assert (equal values '(6.0d0 7.0d0 8.0d0 9.0d0)))))
+
+;;; 13. Ein zurueckgesetzter oder neu angelegter Ring: SINCE ist groesser
+;;;     als SEQUENCE. Dann alles Vorhandene neu schicken statt eine
+;;;     negative Differenz zu rechnen.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "restart" state)
+  (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 1.0d0)
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "restart" 999)
+    (declare (ignore ok seq dropped))
+    (assert (equal values '(1.0d0)))))
+
+;;; 14. Limit begrenzt die Uebertragung und meldet den Rest als verloren.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "limited" state)
+  (dotimes (i 6)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce i 'double-float)))
+  (destructuring-bind (ok seq dropped values)
+      (clamps-bridge-rpc:sticker-samples-since-for-repl "limited" 0 2)
+    (declare (ignore ok seq))
+    (assert (= 2 (length values)))
+    (assert (= 4 dropped))
+    ;; Die juengsten, nicht die aeltesten: bei einem Pegel ist das Jetzt
+    ;; wichtiger als das Damals.
+    (assert (equal values '(4.0d0 5.0d0)))))
+
+;;; 15. NaN und Unendlich duerfen nicht als JSON hinausgehen.
+(assert (= 0.0d0 (clamps-bridge-rpc::%finite-sample
+                  (sb-kernel:make-double-float -524288 0))))   ; -Infinity-Bitmuster
+(assert (= 0.5d0 (clamps-bridge-rpc::%finite-sample 0.5d0)))
+
+;;; 16. Kenndaten ohne die Werte selbst.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 16 441)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "meter" state)
+  (destructuring-bind (ok entries) (clamps-bridge-rpc:sticker-keys-for-repl)
+    (declare (ignore ok))
+    (assert (= 1 (length entries)))
+    (destructuring-bind (key capacity decimation element-type sequence) (first entries)
+      (assert (string= "meter" key))
+      (assert (= 16 capacity))
+      (assert (= 441 decimation))
+      (assert (string= "double-float" element-type))
+      (assert (= 0 sequence)))))
+
+;;; 17. Unbekannter Schluessel liefert Leere statt eines Fehlers. Die
+;;;     Anzeige fragt periodisch; ein noch nicht registrierter Ring ist
+;;;     der Normalfall und kein Grund zu klappern.
+(destructuring-bind (ok seq dropped values)
+    (clamps-bridge-rpc:sticker-samples-since-for-repl "gibtsnicht" 0)
+  (declare (ignore ok))
+  (assert (= 0 seq)) (assert (= 0 dropped)) (assert (null values)))
+
 (format t "sticker-state: ok~%")

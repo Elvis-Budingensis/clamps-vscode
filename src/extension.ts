@@ -20,6 +20,8 @@ import {
 } from 'vscode-languageclient/node';
 import { ClampsProcessManager } from './processManager';
 import { ClampsReplTerminal, readState } from './replTerminal';
+import { StickerPoller } from './stickerPoll';
+import { MeterView } from './meterView';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -42,6 +44,18 @@ let outputChannel: vscode.OutputChannel;
 let clientStartPromise: Promise<void> | undefined;
 let lifecycleQueue: Promise<void> = Promise.resolve();
 let rtStatus: ClampsRtStatus | undefined;
+
+/**
+ * Abholtakt für Sticker-Ringe. Der Audio-Thread schiebt nichts von sich
+ * aus — er darf weder senden noch blockieren —, also holt der Client ab.
+ * Läuft nur, solange eine Anzeige zusieht.
+ */
+const stickerPoller = new StickerPoller(async (key, since, limit) => {
+  if (!client || client.state !== State.Running) return undefined;
+  return client.sendRequest<{ sequence: number; dropped: number; values: number[] }>(
+    'clamps/stickerSamples', { key, since, limit }
+  );
+});
 let incudineNodes: IncudineNodeProvider | undefined;
 let packageBrowser: LispBrowserProvider | undefined;
 let classBrowser: LispBrowserProvider | undefined;
@@ -189,6 +203,28 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand('clamps.openRepl', () => ClampsReplTerminal.show(() => client)),
+    vscode.commands.registerCommand('clamps.meterShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS läuft nicht. Führe „CLAMPS: Start“ aus.');
+        return;
+      }
+      MeterView.show(stickerPoller, async () => {
+        const c = client;
+        if (!c || c.state !== State.Running) return [];
+        const r = await c.sendRequest<{ entries?: { key: string; elementType: string }[] }>(
+          'clamps/stickerKeys', {}
+        );
+        // Nur unboxte Ringe: ein Sticker mit :element-type t enthält
+        // beliebige Werte, aus denen sich kein Pegel rechnen lässt.
+        return (r.entries ?? [])
+          .filter(e => e.elementType === 'double-float')
+          .map(e => e.key);
+      });
+      // Der Takt läuft nur, solange jemand zusieht.
+      stickerPoller.start(
+        vscode.workspace.getConfiguration('clamps').get<number>('meterIntervalMs', 100)
+      );
+    }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
@@ -595,6 +631,7 @@ async function stopClamps(): Promise<void> {
   // Zuerst das Polling anhalten: sonst laufen Requests gegen einen
   // Client, der gerade abgebaut wird.
   rtStatus?.stop();
+  stickerPoller.stop();
   await stopLanguageClient();
   await processManager?.stop();
   outputChannel.appendLine('CLAMPS gestoppt.');
@@ -602,6 +639,7 @@ async function stopClamps(): Promise<void> {
 
 export async function deactivate(): Promise<void> {
   rtStatus?.stop();
+  stickerPoller.dispose();
   // Bewusst NICHT den Bootstrap-Prozess (SBCL/Incudine) mitkillen —
   // der soll den Editor überleben. Nur der LanguageClient/Bridge-Prozess
   // wird beendet, den startet die nächste Session einfach neu.

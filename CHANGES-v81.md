@@ -1000,3 +1000,121 @@ sondern das stille Danebenlaufen.
 Fehler, 12 JS-Tests grün. Der neue Panel-Test zählt Attach-Konfigurationen
 gegen `neverOpen`-Angaben, damit eine später hinzugefügte Konfiguration
 nicht stillschweigend ohne die Option bleibt.
+
+## v81.18 — Abholtakt und Echtzeit-Pegel
+
+Der erste Punkt der Audio-Liste. Er hängt an drei Teilen, die seit
+v81.11–v81.13 stehen: dem allokationsfreien Ring im Audio-Thread, der
+RMS-Aggregation über ein Dezimierungsfenster, und jetzt dem Abholtakt.
+
+### Warum abgeholt und nicht geschickt wird
+
+Der Audio-Thread darf weder senden noch blockieren. Er schreibt in einen
+vorbelegten Ring und sonst nichts. Also muss die Anzeige fragen — und die
+Frage muss billig sein, sonst trägt sie nicht bei 10 Bildern pro Sekunde,
+geschweige denn bei den 30, die ein Spektrogramm bräuchte.
+
+`sticker-samples-since-for-repl` überträgt deshalb nur den Zuwachs. Der
+Aufrufer hält die zuletzt gesehene Sequenznummer, bekommt sie neu zurück
+und schickt sie beim nächsten Mal mit. Bei 256 Werten wäre der ganze Ring
+egal; bei einem Spektrogramm ist er es nicht.
+
+Neu auf der Bridge: `clamps/stickerSamples` und `clamps/stickerKeys`.
+
+### Was gemeldet werden muss, statt es zu verschweigen
+
+Fällt zwischen zwei Abfragen etwas aus dem Ring, nennt die Antwort die
+Anzahl in `dropped`. Eine Anzeige, die eine Lücke als lückenlosen Verlauf
+zeichnet, lügt — und zwar genau dann, wenn es interessant wird, nämlich
+wenn das System nicht hinterherkommt. Die Pegelanzeige schreibt die Zahl
+neben den Balken.
+
+Zwei weitere Fälle, die still danebengehen könnten und deshalb Tests
+haben: eine gefallene Sequenznummer (der Ring wurde neu angelegt oder
+geleert) muss den Client zurücksetzen, sonst kommt nie wieder etwas an.
+Und `limit` schneidet die jüngsten Werte ab, nicht die ältesten — bei
+einem Pegel ist das Jetzt wichtiger als das Damals.
+
+### NaN im JSON
+
+Der JSON-Schreiber der Bridge gibt Fließkommazahlen mit `~F` aus. Ein NaN
+oder eine Unendlichkeit erzeugt dort ungültiges JSON und legt die
+Verbindung lahm. Genau diese Werte entstehen aber, wenn eine Rückkopplung
+im DSP hochläuft — also in dem Moment, in dem man auf den Pegel schaut.
+`%finite-sample` bildet sie auf 0 ab.
+
+### Der Takt
+
+`StickerPoller` hält den Sequenzstand pro Schlüssel und lässt immer nur
+eine Abfrage laufen. Ohne diese Sperre stapeln sich Anfragen, sobald die
+Bridge langsamer ist als der Takt, und die Anzeige läuft mit der Zeit
+immer weiter hinterher — ein Fehler, den man erst nach Minuten bemerkt.
+Eine gescheiterte Abfrage beendet den Takt nicht und verschiebt den Stand
+nicht; beim nächsten Durchlauf geht es weiter.
+
+Der Takt läuft nur, solange eine Anzeige zusieht, und wird beim Stoppen
+der Session angehalten.
+
+### Die Anzeige
+
+`CLAMPS: Pegel anzeigen` öffnet einen Balken pro registriertem
+`double-float`-Ring: dBFS mit −60 als Boden, Peak-Hold für 1,5 Sekunden,
+rot ab −3 dB, ausgegraut wenn zwei Sekunden nichts kam. Ringe mit
+`:element-type t` bleiben draußen — aus beliebigen Werten lässt sich kein
+Pegel rechnen.
+
+Der Boden ist nicht Kosmetik: ohne ihn liefert `log10(0)` minus unendlich,
+die Balkenbreite wird `NaN`, und die Anzeige verschwindet still, statt
+Stille zu zeigen.
+
+`clamps.meterIntervalMs` steuert den Takt, Vorgabe 100 ms. Kleiner als das
+Dezimierungsfenster des Rings bringt nichts, weil dann nichts Neues da
+ist.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün (102 Funktionen, 38 Exporte, 38
+Bridge-Methoden, 67 Befehle), 10 Lisp-Testläufe grün, `tsc -p ./` ohne
+Fehler, 13 JS-Tests grün. `test-sticker-state.lisp` um sieben
+Zusicherungen zum inkrementellen Abholen gewachsen,
+`test/stickerpoll.test.js` neu mit siebzehn.
+
+## v81.19 — „3341 verloren" neben einem gesunden Balken
+
+Beim ersten Blick auf die neue Pegelanzeige stand neben einem völlig
+korrekten Balken (−16.8 dBFS für einen RMS von 0.1414, rechnerisch −17.0)
+die Meldung „3341 verloren". Der Pegel stimmte, die Meldung war falsch.
+
+### Warum
+
+Beim allerersten Abholen steht der Ring meist längst voll da: der DSP
+läuft seit Minuten, die Anzeige wird gerade erst geöffnet. Der Client
+fragt mit `since = 0`, die Sequenz steht bei einigen Tausend, im Ring
+liegen 256 Werte — die Differenz meldet `sticker-samples-since-for-repl`
+korrekt als `dropped`.
+
+Korrekt, aber unbrauchbar. Das ist keine Lücke, das ist schlicht die Zeit
+vor dem Hinsehen. Und weil sie beim Öffnen jeder Anzeige auftritt, stünde
+die Meldung immer da und wäre damit wertlos — man würde sie nach dem
+zweiten Mal ignorieren, und dann auch dann, wenn sie einmal etwas
+bedeutet.
+
+### Behoben
+
+`StickerPoller` merkt sich, für welche Schlüssel schon einmal abgeholt
+wurde, und meldet beim ersten Mal `dropped = 0`. Alles danach geht
+unverändert durch, also bleibt ein echter Überlauf sichtbar. Nach Abmelden
+und erneutem Abonnieren zählt es wieder als erstes Mal, denn dann sieht
+man ja auch wieder neu hin.
+
+Die Entscheidung liegt bewusst im Client, nicht in der Lisp-Seite: die
+RPC-Antwort bleibt roh und vollständig, und wer sie anders auswerten will
+— ein Spektrogramm etwa, das den Rückstand kennen muss — bekommt weiterhin
+die echte Zahl.
+
+### Gate-Stand
+
+Vier Zusicherungen dazu in `test/stickerpoll.test.js`: erste Abfrage ohne
+Verlustmeldung, echter Überlauf danach sichtbar, Zurücksetzen nach
+Neuabonnieren, und der bestehende Überlauftest um eine vorangestellte
+Abfrage ergänzt. Alle Gates grün: 13 JS, 10 Lisp, `tsc` ohne Fehler.

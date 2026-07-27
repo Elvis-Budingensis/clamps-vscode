@@ -1316,6 +1316,53 @@ als jeweils ein Argument der aeusseren Form."
             (or (gethash "package" params) "COMMON-LISP-USER")
             (or (gethash "kind" params) "definitions"))))
 
+(defun handle-sticker-samples (id params)
+  "clamps/stickerSamples — neue Werte eines Sticker-Rings seit SINCE.
+
+Der Aufrufer haelt die zuletzt gesehene Sequenznummer und bekommt nur den
+Zuwachs.  DROPPED nennt die Werte, die zwischen zwei Abfragen aus dem Ring
+gefallen sind; die Anzeige muss das sichtbar machen, statt eine Luecke als
+lueckenlosen Verlauf zu zeichnen."
+  (let ((key (or (gethash "key" params) ""))
+        (since (or (gethash "since" params) 0))
+        (limit (or (gethash "limit" params) 4096)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:sticker-samples-since-for-repl ~S ~D ~D)"
+             key (truncate since) (truncate limit))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                (= (length value) 4))
+           (destructuring-bind (ok sequence dropped values) value
+             (declare (ignore ok))
+             (send-response id
+               (make-jobj "sequence" sequence
+                          "dropped" dropped
+                          "values" (coerce values 'vector))))
+           (send-response id
+             (make-jobj "sequence" 0 "dropped" 0 "values" (vector))))))))
+
+(defun handle-sticker-keys (id params)
+  "clamps/stickerKeys — registrierte Ringe mit Kenndaten, ohne die Werte."
+  (declare (ignore params))
+  (swank-rex "(clamps-bridge-rpc:sticker-keys-for-repl)"
+    :callback
+    (lambda (status value)
+      (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+          (send-response id
+            (make-jobj "entries"
+                       (coerce (mapcar (lambda (e)
+                                         (destructuring-bind (key capacity decimation
+                                                              element-type sequence) e
+                                           (make-jobj "key" key
+                                                      "capacity" capacity
+                                                      "decimation" decimation
+                                                      "elementType" element-type
+                                                      "sequence" sequence)))
+                                       (second value))
+                               'vector)))
+          (send-response id (make-jobj "entries" (vector)))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — Completion fuer das REPL-Terminal.
 
@@ -1412,6 +1459,8 @@ als jeweils ein Argument der aeusseren Form."
           ((string= method "clamps/xref") (handle-xref id params))
           ((string= method "clamps/apropos") (handle-apropos id params))
           ((string= method "clamps/replComplete") (handle-repl-complete id params))
+          ((string= method "clamps/stickerSamples") (handle-sticker-samples id params))
+          ((string= method "clamps/stickerKeys") (handle-sticker-keys id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Nicht implementiert: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

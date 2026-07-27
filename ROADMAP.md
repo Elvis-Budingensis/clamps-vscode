@@ -50,18 +50,19 @@ angefangen — Halbfertiges steht unter „Teilweise" mit der konkreten Lücke.
 
 Der eigentliche Differenzierungspunkt. Nichts davon ist fertig.
 
+- [x] **Echtzeit-Pegel** — v81.18. Der erste Punkt, den SLIME und SLY nie
+      hatten. `CLAMPS: Pegel anzeigen`, dBFS-Balken mit Peak-Hold pro
+      registriertem Ring, verlorene Werte sichtbar.
+
 ### Fundament vorhanden
 
-- [ ] **Echtzeit-Pegel.** Der RT-sichere Sticker-Ring aus v81.11–v81.13
-      liefert die Daten bereits allokationsfrei (`…-record-rms-for-repl`).
-      Es fehlt: Pull-Takt vom Webview ohne REPL-Runde, und `sequence`
-      auswerten, damit nur neue Einträge übertragen werden statt jedes Mal
-      der ganze Ring.
 - [ ] **Live Spectrogram.** Derselbe Ring, Fensterlänge über `capacity`
-      statt `decimation`, FFT auf der Kontrollseite. Braucht denselben
-      Pull-Takt, aber mit deutlich höherer Rate.
+      statt `decimation`, FFT auf der Kontrollseite. Abholtakt steht seit
+      v81.18; offen ist die höhere Rate und die FFT.
 - [ ] **MIDI Monitor** — allgemeiner Sticker-Pfad mit `:element-type t`,
-      da Ereignisse statt Samples.
+      da Ereignisse statt Samples. Abholtakt steht seit v81.18, aber
+      `clamps/stickerSamples` liefert bisher nur Zahlen; Ereignisse
+      brauchen einen eigenen Rückgabeweg.
 - [ ] **OSC Monitor** — dito.
 
 ### Eigene Infrastruktur nötig

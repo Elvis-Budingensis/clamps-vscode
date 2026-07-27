@@ -48,6 +48,7 @@
            #:register-sticker-state-for-repl
            #:sticker-state-record-for-repl #:sticker-state-record-sample-for-repl
            #:sticker-state-record-rms-for-repl
+           #:sticker-samples-since-for-repl #:sticker-keys-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -1551,6 +1552,70 @@ dsp! bodies use STICKER-STATE-RECORD-SAMPLE-FOR-REPL instead."
           collect (if double-p
                       (aref (sticker-state-samples state) index)
                       (svref (sticker-state-values state) index)))))
+
+(defun %sticker-state-tail (state n)
+  "Die N juengsten Werte des Rings, aeltester zuerst."
+  (let* ((count (sticker-state-count state))
+         (n (max 0 (min n count)))
+         (capacity (sticker-state-capacity state))
+         (double-p (eq (sticker-state-element-type state) 'double-float))
+         (start (mod (- (sticker-state-write-index state) n) capacity)))
+    (loop for offset below n
+          for index = (mod (+ start offset) capacity)
+          collect (if double-p
+                      (aref (sticker-state-samples state) index)
+                      (svref (sticker-state-values state) index)))))
+
+(defun %finite-sample (value)
+  "NaN und Unendlich auf 0 abbilden.
+
+Der JSON-Schreiber der Bridge gibt Fliesskommazahlen mit ~F aus; ein NaN
+oder eine Unendlichkeit erzeugt dort ungueltiges JSON und legt die
+Verbindung lahm.  Genau diese Werte entstehen aber, wenn eine Rueckkopplung
+im DSP hochlaeuft — also gerade in dem Moment, in dem man auf den Pegel
+schaut."
+  (handler-case
+      (let ((x (float value 1.0d0)))
+        (if (and (= x x) (< (abs x) 1.0d38)) x 0.0d0))
+    (error () 0.0d0)))
+
+(defun sticker-samples-since-for-repl (key since &optional (limit 4096))
+  "Neue Werte eines registrierten Rings seit Sequenznummer SINCE.
+
+Rueckgabe: (:ok SEQUENCE DROPPED VALUES).  SEQUENCE ist der neue Stand,
+den der Aufrufer beim naechsten Mal mitschickt.  DROPPED sagt, wie viele
+Werte zwischen zwei Abfragen aus dem Ring gefallen sind — die Anzeige darf
+das nicht als Luecke verschweigen, sonst sieht ein ueberlaufener Ring aus
+wie ein lueckenloser Verlauf.
+
+Ohne dieses Verfahren muesste bei jeder Abfrage der ganze Ring uebertragen
+werden.  Bei 256 Werten ist das egal, bei einem Spektrogramm mit 30
+Abfragen pro Sekunde nicht."
+  (let ((state (gethash key *sticker-records*)))
+    (if (not (typep state 'sticker-state))
+        (list :ok 0 0 nil)
+        (let* ((sequence (sticker-state-sequence state))
+               (count (sticker-state-count state))
+               ;; SINCE > SEQUENCE heisst: der Ring wurde neu angelegt oder
+               ;; die Sequenz ist uebergelaufen.  Dann alles Vorhandene neu
+               ;; schicken statt eine negative Differenz zu rechnen.
+               (pending (if (> since sequence) count (- sequence since)))
+               (available (min pending count))
+               (take (min available limit))
+               (dropped (- pending take)))
+          (list :ok sequence dropped
+                (mapcar #'%finite-sample (%sticker-state-tail state take)))))))
+
+(defun sticker-keys-for-repl ()
+  "Registrierte Ringe mit ihren Kenndaten, ohne die Werte selbst."
+  (list :ok
+        (loop for key being the hash-keys of *sticker-records* using (hash-value state)
+              when (typep state 'sticker-state)
+                collect (list key
+                              (sticker-state-capacity state)
+                              (sticker-state-decimation state)
+                              (string-downcase (symbol-name (sticker-state-element-type state)))
+                              (sticker-state-sequence state)))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok
