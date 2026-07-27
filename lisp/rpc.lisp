@@ -44,6 +44,10 @@
            #:set-function-breakpoints-for-repl
            #:indentation-rules-for-repl #:presentation-value
            #:asdf-operation-for-repl #:sticker-record-for-repl
+           #:make-sticker-state-for-repl #:make-sticker-sample-state-for-repl
+           #:register-sticker-state-for-repl
+           #:sticker-state-record-for-repl #:sticker-state-record-sample-for-repl
+           #:sticker-state-record-rms-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -1316,21 +1320,260 @@ not yet exist."
 (defvar *sticker-records* (make-hash-table :test 'equal))
 (defparameter *sticker-capacity* 256)
 
+;; Realtime stickers use an explicitly allocated state object.  The DSP hot
+;; path only writes into a preallocated array and updates fixnum indices.  It
+;; performs no consing, printing, hash lookup, clock access or inspector
+;; registration.  Registration and presentation happen on the control/REPL
+;; side.
+;;
+;; Two storage layouts exist because they have different allocation
+;; behaviour:
+;;
+;;   :element-type t             VALUES is a SIMPLE-VECTOR.  Storing a
+;;                               double-float into it boxes the float, i.e.
+;;                               it allocates.  Fine for control-thread and
+;;                               fixnum/symbol use, not for a DSP hot path.
+;;
+;;   :element-type 'double-float SAMPLES is a specialised
+;;                               (SIMPLE-ARRAY DOUBLE-FLOAT (*)).  The store
+;;                               is unboxed and allocates nothing.  This is
+;;                               the layout for dsp! bodies.
+;;
+;; The unused array is allocated with length 0 so that both slots stay
+;; monomorphic and the hot path needs no type dispatch.
+;;
+;; DECIMATION exists so that the caller never has to write a conditional in
+;; the DSP body.  A form like
+;;
+;;   (when (zerop counter) (sticker-state-record-sample-for-repl s in))
+;;
+;; is not merely inelegant: it changes what the Incudine VUG compiler
+;; produces.  The update code of a VUG variable is emitted at its first
+;; textual reference, so putting that first reference inside WHEN moves the
+;; oscillator update into the branch and the variable is only advanced when
+;; the branch is taken.  Recording every 441st sample then turns a 330 Hz
+;; sine into a 100 Hz sample-and-hold staircase — an audible pulse.  Calling
+;; the recorder unconditionally and letting it drop samples internally keeps
+;; the reference unconditional and the audio intact.
+(defstruct (sticker-state
+             (:constructor %make-sticker-state
+                 (values samples capacity element-type decimation
+                         window-scale)))
+  (values #() :type simple-vector)
+  (samples (make-array 0 :element-type 'double-float)
+   :type (simple-array double-float (*)))
+  (capacity 0 :type fixnum)
+  (element-type t :type symbol)
+  (decimation 1 :type fixnum)
+  (phase 0 :type fixnum)
+  ;; Aggregating recorders sum into ACCUMULATOR over one decimation window
+  ;; and store once at its end.  WINDOW-SCALE is 1/DECIMATION, precomputed so
+  ;; the hot path needs no division and no fixnum-to-float conversion.
+  (accumulator 0.0d0 :type double-float)
+  (window-scale 1.0d0 :type double-float)
+  (write-index 0 :type fixnum)
+  (count 0 :type fixnum)
+  (sequence 0 :type fixnum))
+
+(defun make-sticker-state-for-repl (&optional (capacity *sticker-capacity*)
+                                    &key (element-type t) (decimation 1))
+  "Allocate a bounded sticker ring once, outside the realtime thread.
+
+ELEMENT-TYPE is T (any value, boxed) or DOUBLE-FLOAT (unboxed samples).
+DECIMATION N keeps every Nth recorded value and discards the rest, so the
+DSP body can call the recorder unconditionally."
+  (check-type capacity (and fixnum (integer 1)))
+  (check-type decimation (and fixnum (integer 1)))
+  (unless (member element-type '(t double-float))
+    (error "sticker element-type muss T oder DOUBLE-FLOAT sein, nicht ~S."
+           element-type))
+  (let ((double-p (eq element-type 'double-float)))
+    (%make-sticker-state
+     (make-array (if double-p 0 capacity) :initial-element nil)
+     (make-array (if double-p capacity 0)
+                 :element-type 'double-float
+                 :initial-element 0.0d0)
+     capacity element-type decimation
+     (/ 1.0d0 (float decimation 1.0d0)))))
+
+(defun make-sticker-sample-state-for-repl
+    (&optional (capacity *sticker-capacity*) (decimation 1))
+  "Convenience constructor for the unboxed DSP layout."
+  (make-sticker-state-for-repl capacity
+                               :element-type 'double-float
+                               :decimation decimation))
+
+(defun register-sticker-state-for-repl (key state)
+  "Expose preallocated STATE under KEY for later REPL snapshots.
+Call this before starting DSP processing."
+  (check-type key string)
+  (check-type state sticker-state)
+  (setf (gethash key *sticker-records*) state)
+  state)
+
+(declaim (inline %sticker-state-advance))
+(defun %sticker-state-advance (state)
+  "Advance ring indices after a store.  Fixnum arithmetic only."
+  (declare (type sticker-state state)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (let ((index (sticker-state-write-index state))
+        (capacity (sticker-state-capacity state)))
+    (declare (type fixnum index capacity))
+    (setf (sticker-state-write-index state)
+          (let ((next (the fixnum (1+ index))))
+            (if (= next capacity) 0 next)))
+    (when (< (sticker-state-count state) capacity)
+      (setf (sticker-state-count state)
+            (the fixnum (1+ (sticker-state-count state)))))
+    ;; Sequence is diagnostic only.  Wrap before fixnum overflow rather than
+    ;; promoting to a bignum, which would allocate.
+    (setf (sticker-state-sequence state)
+          (if (= (sticker-state-sequence state) most-positive-fixnum)
+              0
+              (the fixnum (1+ (sticker-state-sequence state)))))
+    (values)))
+
+(declaim (inline %sticker-state-due-p))
+(defun %sticker-state-due-p (state)
+  "True when this call falls on a kept phase.  Always advances the phase."
+  (declare (type sticker-state state)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (let ((phase (sticker-state-phase state)))
+    (declare (type fixnum phase))
+    (setf (sticker-state-phase state)
+          (let ((next (the fixnum (1+ phase))))
+            (if (>= next (sticker-state-decimation state)) 0 next)))
+    (= phase 0)))
+
+(declaim (inline %sticker-state-store-sample))
+(defun %sticker-state-store-sample (state value)
+  "Write VALUE into the unboxed ring and advance.  Allocates nothing."
+  (declare (type sticker-state state)
+           (type double-float value)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (setf (aref (sticker-state-samples state)
+              (sticker-state-write-index state))
+        value)
+  (%sticker-state-advance state)
+  (values))
+
+(declaim (inline sticker-state-record-sample-for-repl))
+(defun sticker-state-record-sample-for-repl (state value)
+  "Store sample VALUE in preallocated STATE and return VALUE.
+
+This is the dsp!-safe path: it allocates nothing.  STATE must have been made
+with :ELEMENT-TYPE 'DOUBLE-FLOAT.  Call it unconditionally on every sample;
+use the state's DECIMATION to thin the recording out."
+  (declare (type sticker-state state)
+           (type double-float value)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (when (%sticker-state-due-p state)
+    (%sticker-state-store-sample state value))
+  value)
+
+(declaim (inline sticker-state-record-rms-for-repl))
+(defun sticker-state-record-rms-for-repl (state value)
+  "Accumulate VALUE and store one RMS figure per decimation window.
+
+STICKER-STATE-RECORD-SAMPLE-FOR-REPL keeps one instantaneous sample per
+window and throws the rest away.  For a periodic signal that is aliasing,
+not metering: at 330 Hz with a window of 441 the kept samples land on ten
+fixed phase points and say nothing about level, and at 300 Hz they would all
+land on the same phase and read as a constant.
+
+This recorder squares every sample, so no sample is discarded, and writes
+sqrt(mean(x^2)) over the window.  It is the dsp!-safe path and allocates
+nothing.  Call it unconditionally on every sample; STATE must have been made
+with :ELEMENT-TYPE 'DOUBLE-FLOAT.
+
+Unlike the sample path this stores at the *end* of a window, so the first
+value appears after DECIMATION calls rather than on the first one."
+  (declare (type sticker-state state)
+           (type double-float value)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (let ((sum (+ (sticker-state-accumulator state)
+                (* value value)))
+        (phase (the fixnum (1+ (sticker-state-phase state))))
+        (window (sticker-state-decimation state)))
+    (declare (type double-float sum)
+             (type fixnum phase window))
+    (cond ((>= phase window)
+           (%sticker-state-store-sample
+            state
+            (sqrt (* sum (sticker-state-window-scale state))))
+           (setf (sticker-state-accumulator state) 0.0d0
+                 (sticker-state-phase state) 0))
+          (t
+           (setf (sticker-state-accumulator state) sum
+                 (sticker-state-phase state) phase))))
+  value)
+
+(declaim (inline sticker-state-record-for-repl))
+(defun sticker-state-record-for-repl (state value)
+  "Store VALUE in preallocated STATE and return VALUE.
+
+General path for arbitrary values.  Storing a float here boxes it, so for
+dsp! bodies use STICKER-STATE-RECORD-SAMPLE-FOR-REPL instead."
+  (declare (type sticker-state state)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (when (%sticker-state-due-p state)
+    (if (eq (sticker-state-element-type state) 'double-float)
+        (setf (aref (sticker-state-samples state)
+                    (sticker-state-write-index state))
+              (float value 1.0d0))
+        (setf (svref (sticker-state-values state)
+                     (sticker-state-write-index state))
+              value))
+    (%sticker-state-advance state))
+  value)
+
 (defun sticker-record-for-repl (key value)
-  "Record VALUE in a bounded per-key ring-like history and return VALUE."
+  "Legacy control-thread sticker.  This allocates and is not DSP-safe."
   (let ((items (gethash key *sticker-records*)))
+    (when (typep items 'sticker-state)
+      (return-from sticker-record-for-repl
+        (sticker-state-record-for-repl items value)))
     (push (list (get-universal-time) (%inspect-register value) (prin1-to-string value)) items)
     (when (> (length items) *sticker-capacity*)
       (setf items (subseq items 0 *sticker-capacity*)))
     (setf (gethash key *sticker-records*) items))
   value)
 
+(defun %sticker-state-values-oldest-first (state)
+  "Copy live ring entries for control-thread presentation."
+  (let* ((count (sticker-state-count state))
+         (capacity (sticker-state-capacity state))
+         (write-index (sticker-state-write-index state))
+         (double-p (eq (sticker-state-element-type state) 'double-float))
+         (start (if (= count capacity) write-index 0)))
+    (loop for offset below count
+          for index = (mod (+ start offset) capacity)
+          collect (if double-p
+                      (aref (sticker-state-samples state) index)
+                      (svref (sticker-state-values state) index)))))
+
 (defun sticker-snapshot-for-repl ()
   (list :ok
         (loop for key being the hash-keys of *sticker-records* using (hash-value records)
-              collect (list key (reverse records)))))
+              collect
+              (list key
+                    (if (typep records 'sticker-state)
+                        (loop for value in (%sticker-state-values-oldest-first records)
+                              for n from 1
+                              collect (list n (%inspect-register value)
+                                            (prin1-to-string value)))
+                        (reverse records))))))
 
 (defun sticker-clear-for-repl ()
+  (loop for records being the hash-values of *sticker-records*
+        when (typep records 'sticker-state)
+          do (fill (sticker-state-values records) nil)
+             (fill (sticker-state-samples records) 0.0d0)
+             (setf (sticker-state-write-index records) 0
+                   (sticker-state-count records) 0
+                   (sticker-state-phase records) 0
+                   (sticker-state-accumulator records) 0.0d0
+                   (sticker-state-sequence records) 0))
   (clrhash *sticker-records*)
   (list :ok))
 

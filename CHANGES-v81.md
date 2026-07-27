@@ -518,3 +518,216 @@ Stickers bleiben ebenfalls offen: `stickerWrap` schreibt in die
 Quelldatei, und `sticker-record-for-repl` alloziert — für `dsp!`-Körper
 unbrauchbar, also für den Hauptzweck, für den ich Stickers empfohlen
 hatte.
+
+## v81.11 — expliziter Sticker-State für DSP-Hot-Paths
+
+Die bisherige Funktion `sticker-record-for-repl` bleibt als bequemes
+Control-/REPL-Instrument erhalten, ist aber ausdrücklich nicht realtime-sicher:
+sie konsiert, registriert Inspector-Objekte und druckt Werte.
+
+Für `dsp!`-Körper gibt es nun einen getrennten Pfad:
+
+```lisp
+(defparameter *meter-sticker*
+  (clamps-bridge-rpc:make-sticker-state-for-repl 256))
+
+(clamps-bridge-rpc:register-sticker-state-for-repl
+ "meter" *meter-sticker*)
+
+;; Im Hot-Path nur noch:
+(clamps-bridge-rpc:sticker-state-record-for-repl *meter-sticker* sample)
+```
+
+Der State wird vor dem Start der Audiokette einmal angelegt. Der Schreibpfad
+führt danach nur `svref`-Speicherung und Fixnum-Indexupdates aus. Hashzugriff,
+Zeitabfrage, Listenbau, Inspector-Registrierung und `prin1-to-string` wurden in
+den späteren Snapshot auf dem Kontrollthread verschoben.
+
+Neu exportiert:
+
+- `make-sticker-state-for-repl`
+- `register-sticker-state-for-repl`
+- `sticker-state-record-for-repl`
+
+`sticker-clear-for-repl` leert registrierte Ringpuffer und entfernt anschließend
+die Registrierung. `lisp/test-sticker-state.lisp` prüft Begrenzung,
+Überschreiben und Reihenfolge des Ringpuffers. Der Test ist in `npm run lisp`
+eingehängt.
+
+Ehrliche Grenze: Im vorliegenden Build-Container war SBCL nicht installiert;
+der neue Lisp-Test konnte dort daher nicht ausgeführt werden. `npm run check`
+und die Gate-Coverage-Prüfung liefen grün. Der TypeScript-Build war wegen einer
+unvollständig installierten lokalen `node_modules`-Struktur nicht aussagekräftig;
+am TypeScript-Code wurde für diese Änderung nichts verändert.
+
+## v81.12 — Pulse statt Sinus: die VUG-Falle, das Boxing und ein rotes Gate
+
+### Der gemeldete Fehler
+
+```lisp
+(dsp! simple (freq amp)
+  (with-samples ((in (sine freq amp 0)))
+    (when (zerop *meter-counter*)                 ; <- hier
+      (clamps-bridge-rpc:sticker-state-record-for-repl *meter-sticker* in))
+    (setf *meter-counter* (if (= *meter-counter* 440) 0 (1+ *meter-counter*)))
+    (out in in)))
+```
+
+Diese Fassung klingt als Puls, die Fassung ohne `when` als Sinus. Der
+Unterschied ist nicht der Sticker, sondern das `when`.
+
+Incudines VUG-Compiler emittiert den Update-Code einer VUG-Variablen an der
+Stelle ihrer **ersten textuellen Referenz**, nicht an der Bindungsstelle. Die
+erste Referenz auf `in` steht hier im `when`-Zweig. Damit wandert der
+Oszillator-Update mit in den Zweig: `in` wird nur noch fortgeschrieben, wenn
+`*meter-counter*` null ist, also einmal pro 441 Samples. Bei 44100 Hz sind das
+100 Hz. `(out in in)` gibt dazwischen den gehaltenen Wert aus — eine
+Sample-and-Hold-Treppe mit 100 Hz Grundperiode. Der 330-Hz-Sinus verschwindet
+darin und übrig bleibt der Puls.
+
+Es sind also 440 von 441 Samples verlorene Oszillator-Schritte; die Audiokette
+selbst ist intakt, es gab keinen Xrun und keine GC-Pause.
+
+### Zwei Auswege
+
+Unmittelbar, ohne Änderung an der Extension:
+
+```lisp
+(with-samples ((in (sine freq amp 0)))
+  (maybe-expand in)                ; Update hier erzwingen
+  (when (zerop *meter-counter*) …)
+  (out in in))
+```
+
+Ab dieser Revision besser, weil die Falle gar nicht erst aufgestellt wird: die
+Dezimierung steckt im Sticker-State, der Aufruf im DSP-Körper bleibt
+bedingungslos.
+
+```lisp
+(defparameter *meter-sticker*
+  (clamps-bridge-rpc:make-sticker-sample-state-for-repl 256 441))
+
+(clamps-bridge-rpc:register-sticker-state-for-repl "meter" *meter-sticker*)
+
+(dsp! simple (freq amp)
+  (with-samples ((in (sine freq amp 0)))
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl *meter-sticker* in)
+    (out in in)))
+```
+
+Kein `when`, kein globaler Zähler, keine verschobene Referenz. Der State hält
+jeden 441. Wert.
+
+### Boxing im angeblich allokationsfreien Pfad
+
+v81.11 schrieb den Wert per `svref` in einen `simple-vector`. Ein
+`double-float` dorthin zu speichern heißt, ihn zu boxen — 16 Byte Allokation
+pro Aufruf, im Realtime-Thread, genau das, was die Revision auszuschließen
+behauptete. Symptomlos bei jedem 441. Sample, nicht symptomlos bei jedem.
+
+`make-sticker-sample-state-for-repl` legt jetzt ein
+`(simple-array double-float (*))` an; der Store ist unboxed. Der ungenutzte
+Zweig wird mit Länge 0 alloziert, damit beide Slots monomorph bleiben und der
+Hot-Path keine Typprüfung braucht.
+
+Gemessen statt behauptet: `lisp/test-sticker-state.lisp` klammert 200000
+Aufrufe in `sb-ext:get-bytes-consed` und schlägt oberhalb von 64 KB fehl.
+Aktueller Stand: **0 Byte**. Gegengeprüft — mit der v81.11-Speicherung
+zurückgebaut, schlägt der Test fehl.
+
+### Das rote Gate
+
+`npm run gates` war in v81.11 rot und ist es nicht aufgefallen, weil im
+damaligen Container kein SBCL lag:
+
+```
+FEHLER: rpc.lisp ist nicht lesbar: can't read #. while *READ-EVAL* is NIL
+  rpc.lisp: 0 Formen gelesen.
+```
+
+`(check-type capacity (integer 1 #.most-positive-fixnum))` war die einzige
+`#.`-Stelle im ganzen Lisp-Baum. `loadcheck.lisp` liest mit abgeschaltetem
+`*read-eval*` — absichtlich, damit das Prüfen nichts ausführt — und konnte
+`rpc.lisp` deshalb ab v81.11 überhaupt nicht mehr lesen. Nicht nur der
+Sticker-Code war ungeprüft, sondern die Datei komplett. Ersetzt durch
+`(and fixnum (integer 1))`.
+
+Das ist die teurere Lektion von beiden: ein Gate, das mangels Werkzeug nicht
+läuft, meldet nicht „unbekannt", sondern gar nichts.
+
+### Neu exportiert
+
+- `make-sticker-sample-state-for-repl`
+- `sticker-state-record-sample-for-repl`
+
+`make-sticker-state-for-repl` nimmt zusätzlich `:element-type` (`t` oder
+`double-float`) und `:decimation`. Bestehende Aufrufe bleiben gültig.
+`sticker-state-record-for-repl` bleibt der allgemeine Pfad für beliebige
+Werte und respektiert die Dezimierung ebenfalls; für `dsp!`-Körper ist der
+Sample-Pfad zu nehmen.
+
+### Gate-Stand
+
+Diesmal vollständig gelaufen, mit SBCL 2.2.9 und installierten
+`node_modules`: `python3 lisp/check.py` grün, 9 Lisp-Testläufe grün,
+`tsc -p ./` ohne Fehler, 11 JS-Tests grün. Am TypeScript-Code wurde nichts
+geändert.
+
+## v81.13 — RMS statt Momentanwert
+
+### Warum
+
+v81.12 hat den Puls beseitigt, und die Aufzeichnung war danach korrekt — aber
+als Pegelanzeige unbrauchbar. Die gespeicherten Werte eines 330-Hz-Sinus mit
+Fenster 441 waren ausschließlich `{±0.19021, ±0.11756, ~0}`, also
+`0.2 · sin(k · 108°)`. 441 Samples bei 44100 Hz sind 3,3 Perioden; pro
+Aufzeichnung also 0,3 Zyklus Versatz, nach zehn Aufzeichnungen wieder am
+Ausgangspunkt. Der Sample-Pfad tastet mit 100 Hz ab und liefert damit
+rotierende Phasenpunkte, keine Amplitude. Bei 300 Hz — genau 3,0 Perioden pro
+Fenster — stünde eine Konstante im Ring, bei 331 Hz eine langsam wandernde
+Folge. Alle drei Fälle sind rechnerisch richtig und sagen über den Pegel
+nichts.
+
+Der Grund ist nicht die Dezimierung als solche, sondern dass sie 440 von 441
+Samples wegwirft. Ein Aggregat über das Fenster wirft keines weg.
+
+### Neu
+
+```lisp
+(clamps-bridge-rpc:sticker-state-record-rms-for-repl *meter-sticker* in)
+```
+
+Gleiche Signatur, gleicher Aufrufort, gleiche Bedingungslosigkeit wie der
+Sample-Pfad — die VUG-Falle aus v81.12 bleibt also zu. Jeder Sample wird
+quadriert und aufsummiert; am Fensterende wird `sqrt(mean(x²))` in den Ring
+geschrieben und der Akkumulator zurückgesetzt.
+
+Ein Verhaltensunterschied, der dokumentiert gehört: der Sample-Pfad speichert
+auf dem **ersten** Aufruf eines Fensters, der RMS-Pfad auf dem **letzten**.
+Der erste RMS-Wert erscheint nach `decimation` Aufrufen, nicht sofort.
+
+Der Akkumulator liegt als `double-float`-Slot im State, ebenso der
+vorberechnete Kehrwert `1/decimation` — damit braucht der Hot-Path weder eine
+Division noch eine Fixnum-nach-Float-Wandlung. Messung wie in v81.12:
+200000 Aufrufe, **0 Byte** konsiert.
+
+### Genauigkeit
+
+Bei nicht ganzzahligem Periodenverhältnis ist das Fenster angeschnitten und
+der Fenster-RMS weicht um wenige Prozent vom Idealwert ab; bei 330 Hz und
+Fenster 441 gemessene 0.1389 gegen ideale 0.1414, also 1,8 %, mit leichter
+Schwankung von Fenster zu Fenster. Das ist Eigenschaft des Verfahrens und
+kein Implementierungsfehler. Wer es exakt braucht, wählt ein Fenster, das ein
+ganzzahliges Vielfaches der Periode ist, oder ein deutlich längeres.
+
+Der Test hält beides fest: jeder RMS-Wert innerhalb von 5 % am Idealwert und
+die Werte untereinander innerhalb von 5 % — und, als Gegenprobe am selben
+Signal, der Sample-Pfad streut über mehr als die volle Amplitude. Wenn diese
+Gegenprobe je fehlschlägt, trägt der Vergleich nicht mehr und der Test sagt
+das, statt stillschweigend grün zu bleiben.
+
+### Gate-Stand
+
+`python3 lisp/check.py` grün (85 Funktionen, 36 Exporte), 9 Lisp-Testläufe
+grün, `tsc -p ./` ohne Fehler, 11 JS-Tests grün. Am TypeScript-Code wurde
+nichts geändert.
