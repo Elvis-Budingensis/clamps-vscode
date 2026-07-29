@@ -1,0 +1,30 @@
+.git/**
+.github/**
+.vscode/**
+node_modules/**
+src/**
+test/**
+**/.DS_Store
+**/__MACOSX/**
+CHANGES-v80.md
+CHANGES-v81.md
+ROADMAP.md
+*.vsix
+*.zip
+
+# Development and release-only files
+.gitignore
+.gitattributes
+RELEASE.md
+tsconfig.json
+package-lock.json
+
+# Source maps are not required at runtime
+out/**/*.js.map
+
+# Lisp validation and test files
+lisp/check.py
+lisp/loadcheck.lisp
+lisp/framingtest.lisp
+lisp/swankframing.lisp
+lisp/test-*.lisp
