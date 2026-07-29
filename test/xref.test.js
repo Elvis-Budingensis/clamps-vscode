@@ -1,10 +1,10 @@
 // test/xref.test.js
 //
-// Regressionstests für die Fehler, die in v76/v77 unbemerkt ausgeliefert
-// wurden. Alle drei fielen nicht auf, weil kein Test sie berührte: die
-// Suite kannte weder xref noch das rekursive Aufklappen.
+// Regression tests for the bugs shipped unnoticed in v76/v77. None of the
+// three was noticed because no test touched them: the suite knew neither
+// xref nor the recursive expansion.
 //
-// Aufruf: npx tsc -p ./ && node test/xref.test.js
+// Run: npx tsc -p ./ && node test/xref.test.js
 
 require('./vscode-stub');
 
@@ -15,35 +15,35 @@ let failed = 0;
 const check = (name, actual, expected) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     failed++;
-    console.log(`FEHLER ${name}\n  erwartet: ${JSON.stringify(expected)}\n  bekommen: ${JSON.stringify(actual)}`);
+    console.log(`FAILED ${name}\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(actual)}`);
   }
 };
 const truthy = (name, actual) => check(name, !!actual, true);
 
 // ---------------------------------------------------------------------
-// Sprungziel: der Offset darf nicht von einer Zeile verdeckt werden
+// The jump target: the offset must not be masked by a line
 // ---------------------------------------------------------------------
-// Attrappe eines Dokuments: Offset 4711 liegt auf Zeile 100, Spalte 7.
+// A stand-in document: offset 4711 is on line 100, column 7.
 const doc = { positionAt: o => ({ line: 100, character: 7, _offset: o }) };
 const pos = (entry) => entryPosition(entry, doc);
 
-// Der eigentliche Fehler: SBCL liefert (:position N); rutscht daneben ein
-// line=1 durch, landete jeder Sprung am Dateianfang.
-check('Offset schlaegt Zeile',
+// The actual bug: SBCL supplies (:position N); if a line=1 slips through
+// next to it, every jump landed at the start of the file.
+check('the offset beats the line',
   pos({ file: '/x.lisp', line: 1, character: 0, offset: 4711 })._offset, 4710);
 check('Offset allein',
   pos({ file: '/x.lisp', offset: 4711 })._offset, 4710);
-check('Zeile allein, einsbasiert -> nullbasiert',
+check('a line alone, one-based -> zero-based',
   [pos({ file: '/x.lisp', line: 12, character: 3 }).line,
    pos({ file: '/x.lisp', line: 12, character: 3 }).character], [11, 3]);
-check('null zaehlt nicht als Angabe',
+check('null does not count as a value',
   [pos({ file: '/x.lisp', line: null, character: null, offset: null }).line,
    pos({ file: '/x.lisp', line: null, offset: null }).character], [0, 0]);
-check('gar keine Angabe',
+check('no value at all',
   [pos({ file: '/x.lisp' }).line, pos({ file: '/x.lisp' }).character], [0, 0]);
-// Offset 0 ist eine Angabe, keine Abwesenheit — und darf nicht negativ werden.
-check('Offset 0 bleibt bei 0', pos({ file: '/x.lisp', offset: 0 })._offset, 0);
-check('Zeile 0 wird nicht negativ', pos({ file: '/x.lisp', line: 0 }).line, 0);
+// Offset 0 is a value, not an absence — and must not go negative.
+check('offset 0 stays at 0', pos({ file: '/x.lisp', offset: 0 })._offset, 0);
+check('line 0 does not go negative', pos({ file: '/x.lisp', line: 0 }).line, 0);
 
 // ---------------------------------------------------------------------
 // Inspector-Rendering
@@ -62,30 +62,31 @@ const result = (over = {}) => Object.assign({
   parts: [], meta: [], package: 'COMMON-LISP-USER',
 }, over);
 
-// Anführungszeichen in Labels: prin1-to-string liefert String-Schlüssel
-// einer Hashtable immer als "key" — das landet in data-label="…" und
-// title="…" und brach dort das Attribut auf.
+// Quotation marks in labels: prin1-to-string always delivers a string key
+// of a hash table as "key" — that ends up in data-label="…" and title="…"
+// and broke the attribute open there.
 {
   resetI();
   const html = I.render(result({
     parts: [{ label: '"key"', index: 0, preview: '1', navigable: true }],
   }));
   truthy('Anfuehrungszeichen maskiert', html.includes('&quot;key&quot;'));
-  check('kein rohes Anfuehrungszeichen im Label', /data-label="[^"]*"[^ >]/.test(html), false);
+  check('no raw quotation mark in the label', /data-label="[^"]*"[^ >]/.test(html), false);
 }
 {
   resetI();
   const html = I.render(result({
     parts: [{ label: `" onmouseover="alert(1)`, index: 0, preview: 'x', navigable: true }],
   }));
-  // Der Text 'onmouseover=' steht maskiert im Label und ist dort harmlos;
-  // gefährlich wäre er nur mit einem echten Anführungszeichen dahinter.
-  check('kein Ausbruch aus dem Attribut', html.includes('onmouseover="'), false);
+  // The text 'onmouseover=' stands escaped in the label and is harmless
+  // there; it would only be dangerous with a real quotation mark behind
+  // it.
+  check('no escape from the attribute', html.includes('onmouseover="'), false);
   check('einfaches Anfuehrungszeichen maskiert',
     I.render(result({ parts: [{ label: "it's", index: 0, navigable: true }] })).includes('&#39;'), true);
 }
 
-// Aufklapp-Pfeil nur an Teilen, die selbst Teile haben.
+// The expand arrow only on parts that have parts themselves.
 {
   resetI();
   const html = I.render(result({
@@ -94,21 +95,21 @@ const result = (over = {}) => Object.assign({
       { label: 'b', index: 1, preview: '(1 2)', navigable: true, expandable: true },
     ],
   }));
-  check('genau ein Pfeil', (html.match(/data-expand-path=/g) || []).length, 1);
-  truthy('Platzhalter fuer den Rest', html.includes('twisty spacer'));
+  check('exactly one arrow', (html.match(/data-expand-path=/g) || []).length, 1);
+  truthy('a placeholder for the rest', html.includes('twisty spacer'));
 }
 {
-  // Älteres Image ohne das Feld: Verhalten wie vorher, Pfeil an allem
-  // Gebundenen — lieber ein Pfeil zu viel als ein fehlender.
+  // An older image without the field: behaviour as before, an arrow on
+  // everything bound — better one arrow too many than a missing one.
   resetI();
   const html = I.render(result({
     parts: [{ label: 'a', index: 0, navigable: true },
             { label: 'b', index: 1, navigable: false }],
   }));
-  check('ohne Feld: Pfeil am gebundenen Teil', (html.match(/data-expand-path=/g) || []).length, 1);
+  check('without the field: an arrow on the bound part', (html.match(/data-expand-path=/g) || []).length, 1);
 }
 
-// Filter: eine id pro Ebene, nicht dieselbe mehrfach.
+// Filters: one id per level, not the same one several times.
 {
   resetI();
   const many = n => Array.from({ length: n }, (_, i) => ({
@@ -123,18 +124,18 @@ const result = (over = {}) => Object.assign({
   const inputs = html.match(/data-filter-input="([^"]+)"/g) || [];
   check('zwei Filter, zwei Namensraeume', inputs.length, 2);
   check('Namensraeume verschieden', new Set(inputs).size, 2);
-  check('keine doppelte id="filter"', (html.match(/id="filter"/g) || []).length, 0);
-  // Nur die Treffer im Markup zählen — im <script> steht der Selektor
-  // ebenfalls als Text.
+  check('no duplicate id="filter"', (html.match(/id="filter"/g) || []).length, 0);
+  // Count only the hits in the markup — the selector also appears as text
+  // in the <script>.
   const lists = html.match(/<div class="recursive-list" data-filter-list="([^"]+)"/g) || [];
   check('jede Liste adressierbar', lists.length, 2);
-  check('Listen passen zu den Feldern',
+  check('the lists match the fields',
     lists.map(l => l.match(/data-filter-list="([^"]+)"/)[1]).sort(),
     inputs.map(i => i.match(/data-filter-input="([^"]+)"/)[1]).sort());
 }
 
-// Zyklus: das Image gibt für dasselbe Objekt dieselbe ID zurück, erst
-// dadurch ist der Rückverweis überhaupt erkennbar.
+// A cycle: the image returns the same ID for the same object, and only
+// that makes the back reference recognisable at all.
 {
   resetI();
   I.recursiveExpanded = new Set(['0']);
@@ -146,13 +147,13 @@ const result = (over = {}) => Object.assign({
     id: 42, kind: 'object', type: 'person',
     parts: [{ label: 'owner', index: 0, preview: '#<person>', navigable: true, expandable: true }],
   }));
-  truthy('Zyklus wird gemeldet', html.includes('Zyklus zu Objekt #42'));
-  // Auf das Markup prüfen, nicht auf den Klassennamen: der steht auch im
-  // CSS-Block derselben Seite.
-  check('Unterbaum nicht aufgeklappt', html.includes('class="recursive-head"'), false);
+  truthy('the cycle is reported', html.includes('cycle back to object #42'));
+  // Check against the markup, not against the class name: that also
+  // appears in the CSS block of the same page.
+  check('the subtree is not expanded', html.includes('class="recursive-head"'), false);
 }
 {
-  // Kein Zyklus: fremde ID, Unterbaum wird gezeichnet.
+  // No cycle: a foreign ID, the subtree is drawn.
   resetI();
   I.recursiveExpanded = new Set(['0']);
   I.recursiveChildren = new Map([['0', {
@@ -165,10 +166,10 @@ const result = (over = {}) => Object.assign({
     parts: [{ label: 'address', index: 0, preview: '#<address>', navigable: true, expandable: true }],
   }));
   truthy('Unterbaum inline', html.includes('class="recursive-head"'));
-  check('kein falscher Zyklus', html.includes('Zyklus'), false);
+  check('no false cycle', html.includes('cycle back to object'), false);
   truthy('Label des Enkels maskiert', html.includes('&quot;Hauptstr.&quot;'));
 }
 resetI();
 
-if (failed === 0) console.log('ok — alle XREF- und Inspector-Tests bestanden');
+if (failed === 0) console.log('ok — all XREF and inspector tests passed');
 process.exit(failed === 0 ? 0 : 1);

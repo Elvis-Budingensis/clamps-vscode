@@ -6,13 +6,13 @@ export interface FormRange {
   parentStart?: number;
   parentEnd?: number;
   /**
-   * Klammerausdruck (true) oder Atom (false).
+   * Parenthesised expression (true) or atom (false).
    *
-   * Atome MUESSEN mitgezaehlt werden: in (mapcar #'car liste) gibt es
-   * keinen einzigen Unterausdruck in Klammern, und ohne Atome taten
-   * forwardSexp, backwardSexp, slurp und barf dort schlicht nichts.
-   * Umgekehrt darf spliceSexp nur auf Listen wirken — bei einem Atom
-   * wuerde es dessen erstes und letztes Zeichen loeschen.
+   * Atoms MUST be counted: in (mapcar #'car list) there is not a single
+   * parenthesised subexpression, and without atoms forwardSexp,
+   * backwardSexp, slurp and barf simply did nothing there. Conversely
+   * spliceSexp may only act on lists — on an atom it would delete its
+   * first and last character.
    */
   list: boolean;
 }
@@ -27,8 +27,8 @@ export function formRanges(text: string): FormRange[] {
     if (string) {
       if (c === '\\') i++;
       else if (c === '"') {
-        // Der String ist ein Atom wie jedes andere: slurp und
-        // forwardSexp muessen ihn ueberspringen koennen.
+        // The string is an atom like any other: slurp and forwardSexp
+        // must be able to step over it.
         string = false;
         out.push({ start: stringStart, end: i + 1, list: false });
       }
@@ -51,9 +51,9 @@ export function formRanges(text: string): FormRange[] {
       }
       continue;
     }
-    // Atom: alles, was kein Trenner ist. Fuehrende Reader-Makros
-    // (#', ', `, ,, ,@) gehoeren zum Atom, sonst zerfaellt #'car in
-    // zwei Stuecke und slurp zieht die Haelfte mit.
+    // Atom: anything that is not a separator. Leading reader macros
+    // (#', ', `, ,, ,@) belong to the atom, otherwise #'car falls apart
+    // into two pieces and slurp drags half of it along.
     if (!/[\s()]/.test(c)) {
       const start = i;
       while (i < text.length && !/[\s()";]/.test(text[i])) i++;
@@ -81,20 +81,20 @@ export function containing(ranges: FormRange[], offset: number): FormRange | und
   return ranges.filter(r => r.start <= offset && r.end >= offset).sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];
 }
 
-/** Kleinste KLAMMERFORM um OFFSET. Fuer slurp, barf und splice. */
+/** The smallest PARENTHESISED FORM around OFFSET. For slurp, barf and splice. */
 export function containingList(ranges: FormRange[], offset: number): FormRange | undefined {
   return ranges.filter(r => r.list && r.start <= offset && r.end >= offset)
     .sort((a,b)=>(a.end-a.start)-(b.end-b.start))[0];
 }
 
-/** Nachbarform hinter der Klammer von R — Ziel von slurpForward. */
+/** Neighbouring form behind the paren of R — target of slurpForward. */
 export function slurpTarget(ranges: FormRange[], r: FormRange): FormRange | undefined {
   return ranges
     .filter(x => x.start >= r.end && x.parentStart === r.parentStart)
     .sort((x, y) => x.start - y.start)[0];
 }
 
-/** Letztes direktes Kind von R — Ziel von barfForward. */
+/** Last direct child of R — target of barfForward. */
 export function barfTarget(ranges: FormRange[], r: FormRange): FormRange | undefined {
   const children = ranges
     .filter(x => x.parentStart === r.start)
@@ -110,8 +110,8 @@ export function registerStructuralEditing(context: vscode.ExtensionContext): voi
   }));
   context.subscriptions.push(vscode.commands.registerCommand('clamps.selectParentSexp', () => {
     const a = active(); if (!a) return;
-    // parentStart === 0 ist falsy: die erste Form jeder Datei beginnt
-    // bei Offset 0, und !r.parentStart brach dort ab.
+    // parentStart === 0 is falsy: the first form of every file starts at
+    // offset 0, and !r.parentStart aborted there.
     const r = containing(formRanges(a.text), a.offset);
     if (!r || r.parentStart === undefined || r.parentEnd === undefined) return;
     a.editor.selection = new vscode.Selection(a.editor.document.positionAt(r.parentStart), a.editor.document.positionAt(r.parentEnd));
@@ -131,8 +131,8 @@ export function registerStructuralEditing(context: vscode.ExtensionContext): voi
   }));
   context.subscriptions.push(vscode.commands.registerCommand('clamps.spliceSexp', async () => {
     const a = active(); if (!a) return;
-    // Nur Listen: bei einem Atom wuerde splice erstes und letztes
-    // Zeichen des Namens loeschen.
+    // Lists only: on an atom, splice would delete the first and last
+    // character of the name.
     const r = containingList(formRanges(a.text), a.offset); if (!r) return;
     await a.editor.edit(e => { e.delete(new vscode.Range(a.editor.document.positionAt(r.end - 1), a.editor.document.positionAt(r.end))); e.delete(new vscode.Range(a.editor.document.positionAt(r.start), a.editor.document.positionAt(r.start + 1))); });
   }));

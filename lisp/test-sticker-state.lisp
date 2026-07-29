@@ -2,7 +2,7 @@
 
 (in-package :cl-user)
 
-;;; 1. Allgemeiner Pfad: Begrenzung, Ueberschreiben, Reihenfolge.
+;;; 1. General path: bounding, overwriting, ordering.
 (let ((state (clamps-bridge-rpc:make-sticker-state-for-repl 3)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "rt" state)
   (assert (= 10 (clamps-bridge-rpc:sticker-state-record-for-repl state 10)))
@@ -15,7 +15,7 @@
     (assert (equal previews '("20" "30" "40"))))
   (assert (equal (clamps-bridge-rpc:sticker-clear-for-repl) '(:ok))))
 
-;;; 2. Sample-Pfad: unboxed Ring, gleiche Ring-Semantik.
+;;; 2. Sample path: unboxed ring, same ring semantics.
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 3)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "meter" state)
   (assert (= 1.0d0 (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 1.0d0)))
@@ -28,10 +28,10 @@
     (assert (equal values* '(2.0d0 3.0d0 4.0d0))))
   (clamps-bridge-rpc:sticker-clear-for-repl))
 
-;;; 3. Dezimierung: der Aufrufer ruft bedingungslos, der State duennt aus.
-;;;    Das ist der Punkt, an dem die Incudine-VUG-Falle vermieden wird —
-;;;    ein (when ... ) im dsp!-Koerper wuerde das Update der VUG-Variablen
-;;;    mit in den Zweig ziehen.
+;;; 3. Decimation: the caller calls unconditionally, the state thins out.
+;;;    This is the point at which the Incudine VUG trap is avoided — a
+;;;    (when ... ) in the dsp! body would drag the update of the VUG
+;;;    variable into the branch.
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 4)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "decimated" state)
   (dotimes (i 12)
@@ -39,25 +39,25 @@
   (let* ((snapshot (clamps-bridge-rpc:sticker-snapshot-for-repl))
          (records (second (first (second snapshot))))
          (values* (mapcar (lambda (r) (read-from-string (third r))) records)))
-    ;; i = 0, 4, 8 werden behalten.
+    ;; i = 0, 4, 8 are kept.
     (assert (equal values* '(0.0d0 4.0d0 8.0d0))))
   (clamps-bridge-rpc:sticker-clear-for-repl))
 
-;;; 4. Dezimierung 1 behaelt jeden Wert.
+;;; 4. Decimation 1 keeps every value.
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 1)))
   (dotimes (i 3)
     (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce i 'double-float)))
   (assert (= 3 (clamps-bridge-rpc::sticker-state-count state))))
 
-;;; 5. Der eigentliche Realtime-Gate: der Sample-Pfad darf nicht konsen.
-;;;    Ein geboxtes double-float kostet 16 Byte pro Aufruf; die Schwelle
-;;;    unten liegt weit darunter und weit ueber dem Messrauschen.
+;;; 5. The actual realtime gate: the sample path must not cons.  A boxed
+;;;    double-float costs 16 bytes per call; the threshold below is far
+;;;    beneath that and far above the measurement noise.
 #+sbcl
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 64 441))
       (iterations 200000)
       (limit 65536))
   (declare (type fixnum iterations limit))
-  ;; Warmlauf, damit einmalige Effekte nicht in die Messung fallen.
+  ;; A warm-up run, so that one-off effects do not fall into the measurement.
   (dotimes (i 1000)
     (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 0.5d0))
   (let* ((before (sb-ext:get-bytes-consed))
@@ -66,53 +66,53 @@
          (consed (- (sb-ext:get-bytes-consed) before)))
     (declare (ignore ignore))
     (unless (< consed limit)
-      (error "sticker-state-record-sample-for-repl konsiert ~D Byte bei ~D Aufrufen ~
-              (Grenze ~D). Der DSP-Hot-Path alloziert wieder — vermutlich wird ~
-              das double-float geboxt."
+      (error "sticker-state-record-sample-for-repl conses ~D bytes over ~D calls ~
+              (limit ~D). The DSP hot path is allocating again — probably the ~
+              double-float is being boxed."
              consed iterations limit))
-    (format t "sticker-state: ~D Byte bei ~D Sample-Aufrufen~%" consed iterations)))
+    (format t "sticker-state: ~D bytes over ~D sample calls~%" consed iterations)))
 
-;;; 6. Der allgemeine Pfad bleibt fuer Nicht-Fliesskommawerte nutzbar.
+;;; 6. The general path stays usable for non-floating-point values.
 (let ((state (clamps-bridge-rpc:make-sticker-state-for-repl 4 :decimation 2)))
   (dotimes (i 4)
     (clamps-bridge-rpc:sticker-state-record-for-repl state i))
   (assert (= 2 (clamps-bridge-rpc::sticker-state-count state))))
 
-;;; 7. Fehlerhafte Parameter werden abgewiesen, nicht stillschweigend geschluckt.
+;;; 7. Faulty parameters are rejected, not silently swallowed.
 (assert (nth-value 1 (ignore-errors (clamps-bridge-rpc:make-sticker-state-for-repl 0))))
 (assert (nth-value 1 (ignore-errors (clamps-bridge-rpc:make-sticker-state-for-repl 4 :decimation 0))))
 (assert (nth-value 1 (ignore-errors (clamps-bridge-rpc:make-sticker-state-for-repl 4 :element-type 'single-float))))
 
 
-;;; 8. RMS-Pfad: ein Wert pro Fenster, am Fensterende, kein Sample verworfen.
+;;; 8. RMS path: one value per window, at the end of the window, no sample discarded.
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 4)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "rms" state)
-  ;; Erste drei Aufrufe fuellen nur den Akkumulator.
+  ;; The first three calls only fill the accumulator.
   (dotimes (i 3) (clamps-bridge-rpc:sticker-state-record-rms-for-repl state 1.0d0))
   (assert (= 0 (clamps-bridge-rpc::sticker-state-count state)))
-  ;; Der vierte schliesst das Fenster: RMS von (1 1 1 1) = 1.
+  ;; The fourth one closes the window: RMS of (1 1 1 1) = 1.
   (clamps-bridge-rpc:sticker-state-record-rms-for-repl state 1.0d0)
   (assert (= 1 (clamps-bridge-rpc::sticker-state-count state)))
   (assert (< (abs (- 1.0d0 (first (clamps-bridge-rpc::%sticker-state-values-oldest-first state))))
              1.0d-12))
-  ;; Vorzeichen spielt keine Rolle: RMS von (1 -1 1 -1) ist ebenfalls 1.
+  ;; The sign does not matter: the RMS of (1 -1 1 -1) is 1 as well.
   (dotimes (i 4)
     (clamps-bridge-rpc:sticker-state-record-rms-for-repl state (if (evenp i) 1.0d0 -1.0d0)))
   (assert (< (abs (- 1.0d0 (second (clamps-bridge-rpc::%sticker-state-values-oldest-first state))))
              1.0d-12))
   (clamps-bridge-rpc:sticker-clear-for-repl))
 
-;;; 9. RMS eines Sinus liegt bei Amplitude/sqrt(2), unabhaengig von der
-;;;    Fensterlage.  Genau das kann der Sample-Pfad nicht: er liest bei 330 Hz
-;;;    und Fenster 441 immer nur einen einzelnen Phasenpunkt und schwankt
-;;;    daher ueber die volle Amplitude.  Der Test vergleicht beide Pfade am
-;;;    selben Signal.
+;;; 9. The RMS of a sine is amplitude/sqrt(2), independently of the
+;;;    window position.  That is exactly what the sample path cannot do:
+;;;    at 330 Hz with a window of 441 it only ever reads a single phase
+;;;    point and therefore swings over the full amplitude.  The test
+;;;    compares both paths on the same signal.
 ;;;
-;;;    441 Samples bei 330 Hz sind 3,3 Perioden, also kein ganzzahliges
-;;;    Vielfaches.  Der RMS eines angeschnittenen Fensters weicht deshalb um
-;;;    wenige Prozent vom Idealwert ab und schwankt leicht von Fenster zu
-;;;    Fenster.  Das ist Eigenschaft des Verfahrens, nicht Fehler der
-;;;    Implementierung, und die Toleranzen unten bilden es ab.
+;;;    441 samples at 330 Hz are 3.3 periods, so not an integer multiple.
+;;;    The RMS of a truncated window therefore deviates from the ideal
+;;;    value by a few percent and varies slightly from window to window.
+;;;    That is a property of the method, not a fault of the
+;;;    implementation, and the tolerances below reflect it.
 (let* ((amplitude 0.2d0)
        (window 441)
        (expected (/ amplitude (sqrt 2.0d0)))
@@ -132,19 +132,19 @@
          (rms-spread (- (reduce #'max rms-values) (reduce #'min rms-values)))
          (raw-spread (- (reduce #'max raw-values) (reduce #'min raw-values))))
     (assert (= 8 (length rms-values)))
-    ;; Jeder RMS-Wert liegt innerhalb von 5 % am Idealwert.
+    ;; Every RMS value lies within 5 % of the ideal value.
     (dolist (v rms-values)
       (assert (< (abs (- v expected)) (* 0.05d0 expected))
-              () "RMS ~,6F weicht zu weit von ~,6F ab." v expected))
-    ;; Und die Werte untereinander schwanken kaum.
+              () "RMS ~,6F deviates too far from ~,6F." v expected))
+    ;; And the values vary hardly at all among themselves.
     (assert (< rms-spread (* 0.05d0 expected))
             () "RMS-Streuung ~,6F zu gross." rms-spread)
-    ;; Der Sample-Pfad dagegen streut ueber praktisch die ganze Amplitude.
+    ;; The sample path, by contrast, scatters over practically the whole amplitude.
     (assert (> raw-spread amplitude)
-            () "Sample-Pfad streut nur ~,6F — der Vergleich traegt nicht mehr."
+            () "Sample path only scatters by ~,6F — the comparison no longer holds."
             raw-spread)))
 
-;;; 10. Auch der RMS-Pfad darf nicht konsen.
+;;; 10. The RMS path must not cons either.
 #+sbcl
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 64 441))
       (iterations 200000)
@@ -158,22 +158,22 @@
          (consed (- (sb-ext:get-bytes-consed) before)))
     (declare (ignore ignore))
     (unless (< consed limit)
-      (error "sticker-state-record-rms-for-repl konsiert ~D Byte bei ~D Aufrufen ~
+      (error "sticker-state-record-rms-for-repl conses ~D bytes over ~D calls ~
               (Grenze ~D)."
              consed iterations limit))
-    (format t "sticker-state: ~D Byte bei ~D RMS-Aufrufen~%" consed iterations)))
+    (format t "sticker-state: ~D bytes over ~D RMS calls~%" consed iterations)))
 
 
-;;; 11. Inkrementelles Abholen: nur was seit der letzten Abfrage dazukam.
+;;; 11. Incremental fetching: only what arrived since the last query.
 (clamps-bridge-rpc:sticker-clear-for-repl)
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 1)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "pull" state)
-  ;; Leerer Ring: nichts da, Sequenz 0.
+  ;; An empty ring: nothing there, sequence 0.
   (destructuring-bind (ok seq dropped values)
       (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 0)
     (declare (ignore ok))
     (assert (= 0 seq)) (assert (= 0 dropped)) (assert (null values)))
-  ;; Drei Werte, alle neu.
+  ;; Three values, all new.
   (dotimes (i 3)
     (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce i 'double-float)))
   (destructuring-bind (ok seq dropped values)
@@ -186,7 +186,7 @@
       (clamps-bridge-rpc:sticker-samples-since-for-repl "pull" 3)
     (declare (ignore ok seq dropped))
     (assert (null values)))
-  ;; Zwei weitere: nur die zwei kommen, nicht der ganze Ring.
+  ;; Two more: only those two arrive, not the whole ring.
   (dotimes (i 2)
     (clamps-bridge-rpc:sticker-state-record-sample-for-repl state (coerce (+ 3 i) 'double-float)))
   (destructuring-bind (ok seq dropped values)
@@ -195,8 +195,8 @@
     (assert (= 5 seq)) (assert (= 0 dropped))
     (assert (equal values '(3.0d0 4.0d0)))))
 
-;;; 12. Ueberlauf wird gemeldet, nicht verschwiegen. Eine Anzeige, die
-;;;     verlorene Werte als lueckenlosen Verlauf zeichnet, luegt.
+;;; 12. Overflow is reported, not concealed. A display that draws lost
+;;;     values as an unbroken course is lying.
 (clamps-bridge-rpc:sticker-clear-for-repl)
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4 1)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "overflow" state)
@@ -206,12 +206,12 @@
       (clamps-bridge-rpc:sticker-samples-since-for-repl "overflow" 0)
     (declare (ignore ok))
     (assert (= 10 seq))
-    (assert (= 6 dropped) () "Verlorene Werte: ~D statt 6." dropped)
+    (assert (= 6 dropped) () "Lost values: ~D instead of 6." dropped)
     (assert (equal values '(6.0d0 7.0d0 8.0d0 9.0d0)))))
 
-;;; 13. Ein zurueckgesetzter oder neu angelegter Ring: SINCE ist groesser
-;;;     als SEQUENCE. Dann alles Vorhandene neu schicken statt eine
-;;;     negative Differenz zu rechnen.
+;;; 13. A ring that has been reset or newly created: SINCE is greater
+;;;     than SEQUENCE. Then send everything present again instead of
+;;;     computing a negative difference.
 (clamps-bridge-rpc:sticker-clear-for-repl)
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4 1)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "restart" state)
@@ -221,7 +221,7 @@
     (declare (ignore ok seq dropped))
     (assert (equal values '(1.0d0)))))
 
-;;; 14. Limit begrenzt die Uebertragung und meldet den Rest als verloren.
+;;; 14. The limit caps the transfer and reports the rest as lost.
 (clamps-bridge-rpc:sticker-clear-for-repl)
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8 1)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "limited" state)
@@ -232,16 +232,16 @@
     (declare (ignore ok seq))
     (assert (= 2 (length values)))
     (assert (= 4 dropped))
-    ;; Die juengsten, nicht die aeltesten: bei einem Pegel ist das Jetzt
-    ;; wichtiger als das Damals.
+    ;; The newest, not the oldest: for a level meter the now matters more
+    ;; than the back then.
     (assert (equal values '(4.0d0 5.0d0)))))
 
-;;; 15. NaN und Unendlich duerfen nicht als JSON hinausgehen.
+;;; 15. NaN and infinity must not go out as JSON.
 (assert (= 0.0d0 (clamps-bridge-rpc::%finite-sample
                   (sb-kernel:make-double-float -524288 0))))   ; -Infinity-Bitmuster
 (assert (= 0.5d0 (clamps-bridge-rpc::%finite-sample 0.5d0)))
 
-;;; 16. Kenndaten ohne die Werte selbst.
+;;; 16. Parameters without the values themselves.
 (clamps-bridge-rpc:sticker-clear-for-repl)
 (let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 16 441)))
   (clamps-bridge-rpc:register-sticker-state-for-repl "meter" state)
@@ -255,9 +255,9 @@
       (assert (string= "double-float" element-type))
       (assert (= 0 sequence)))))
 
-;;; 17. Unbekannter Schluessel liefert Leere statt eines Fehlers. Die
-;;;     Anzeige fragt periodisch; ein noch nicht registrierter Ring ist
-;;;     der Normalfall und kein Grund zu klappern.
+;;; 17. An unknown key returns emptiness rather than an error. The
+;;;     display polls periodically; a ring that is not registered yet is
+;;;     the normal case and no reason to rattle.
 (destructuring-bind (ok seq dropped values)
     (clamps-bridge-rpc:sticker-samples-since-for-repl "gibtsnicht" 0)
   (declare (ignore ok))

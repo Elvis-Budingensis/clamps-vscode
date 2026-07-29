@@ -1,24 +1,23 @@
 // test/lispstring.test.js
 //
-// Regressionstest für die Maskierung von Strings, die als LISP-QUELLTEXT
-// über den Swank-Draht gehen.
+// A regression test for the escaping of strings that go over the Swank
+// wire as LISP SOURCE.
 //
-// Der Fehler: JSON.stringify erzeugt \n, \t und \uXXXX. Der Lisp-Reader
-// kennt in Strings nur \\ und \" — jedes andere \x liest er als das
-// nackte Zeichen x. Aus einem Zeilenumbruch wurde damit der Buchstabe n,
-// und eine mehrzeilige REPL-Eingabe
+// The bug: JSON.stringify produces \n, \t and \uXXXX. Inside strings the
+// Lisp reader knows only \\ and \" — every other \x it reads as the bare
+// character x. A newline thereby became the letter n, and a multi-line
+// REPL input
 //
 //     (dsp! simple (freq amp)
 //       (with-samples ((in (sine freq amp 0)))
 //         (out in in)))
 //
-// kam im Image als (dsp! simple (freq amp) n (with-samples … n …)) an.
-// SBCL meldete "undefined variable: n" — an einem Symbol, das im
-// Quelltext nirgends steht. Backslash und Anführungszeichen maskieren
-// beide Schreibweisen gleich, deshalb fiel es bei einzeiligen Eingaben
-// nie auf.
+// arrived in the image as (dsp! simple (freq amp) n (with-samples … n …).
+// SBCL reported "undefined variable: n" — on a symbol that appears nowhere
+// in the source. Backslash and quotation mark are escaped the same way by
+// both spellings, which is why it never showed up with single-line input.
 //
-// Aufruf: npx tsc -p ./ && node test/lispstring.test.js
+// Run: npx tsc -p ./ && node test/lispstring.test.js
 
 require('./vscode-stub');
 
@@ -30,28 +29,28 @@ let failed = 0;
 const check = (name, actual, expected) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     failed++;
-    console.log(`FEHLER ${name}\n  erwartet: ${JSON.stringify(expected)}\n  bekommen: ${JSON.stringify(actual)}`);
+    console.log(`FAILED ${name}\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(actual)}`);
   }
 };
 
 // ---------------------------------------------------------------------
-// lispString: nur \\ und \" werden maskiert
+// lispString: only \\ and \" are escaped
 // ---------------------------------------------------------------------
 check('einfacher Text', lispString('abc'), '"abc"');
-// Der Kern: ein echter Umbruch bleibt ein echter Umbruch. Er ist in einem
-// Lisp-Stringliteral gültig, und der Swank-Rahmen zählt Bytes.
+// The core of it: a real newline stays a real newline. It is valid inside
+// a Lisp string literal, and the Swank frame counts bytes.
 check('Umbruch bleibt Umbruch', lispString('a\nb'), '"a\nb"');
-check('kein Backslash-n', lispString('a\nb').includes('\\n'), false);
+check('no backslash-n', lispString('a\nb').includes('\\n'), false);
 check('Tabulator bleibt Tabulator', lispString('a\tb'), '"a\tb"');
 check('Anfuehrungszeichen maskiert', lispString('sag "hallo"'), '"sag \\"hallo\\""');
 check('Backslash maskiert', lispString('c:\\pfad'), '"c:\\\\pfad"');
-// Umlaute gehen als UTF-8 durch; der Rahmen zählt Bytes, nicht Zeichen.
-check('Umlaut unveraendert', lispString('grün'), '"grün"');
+// Umlauts pass through as UTF-8; the frame counts bytes, not characters.
+check('an umlaut is unchanged', lispString('grün'), '"grün"');
 
-// Gegenprobe: genau hier weicht JSON.stringify ab.
-check('JSON weicht bei Umbruch ab',
+// The cross-check: this is exactly where JSON.stringify differs.
+check('JSON differs on a newline',
   JSON.stringify('a\nb') === lispString('a\nb'), false);
-check('JSON und Lisp gleich bei Anfuehrungszeichen',
+check('JSON and Lisp agree on a quotation mark',
   JSON.stringify('sag "hallo"') === lispString('sag "hallo"'), true);
 
 // ---------------------------------------------------------------------
@@ -60,39 +59,38 @@ check('JSON und Lisp gleich bei Anfuehrungszeichen',
 check('printSexpr String', printSexpr('a\nb'), '"a\nb"');
 check('printSexpr Liste',
   printSexpr([new Sym(':foo'), 'a\nb', 12]), '(:foo "a\nb" 12)');
-check('printSexpr Symbol bleibt roh', printSexpr(new Sym('t')), 't');
+check('printSexpr leaves a symbol raw', printSexpr(new Sym('t')), 't');
 
 // ---------------------------------------------------------------------
-// Das erwartete Ergebnis am Beispiel der gemeldeten Eingabe
+// The expected result, using the reported input as the example
 // ---------------------------------------------------------------------
 {
   const code = '(dsp! simple (freq amp)\n  (with-samples ((in (sine freq amp 0)))\n    (out in in)))';
   const form = `(clamps-bridge-rpc:eval-for-repl-debuggable ${lispString(code)} ${lispString('CLAMPS')})`;
   check('Form enthaelt echte Umbrueche', (form.match(/\n/g) || []).length, 2);
-  check('Form enthaelt kein Backslash-n', form.includes('\\n'), false);
-  // Zeilenweise gelesen ist die Form unvollständig — genau deshalb zählt
-  // der Swank-Rahmen Bytes und liest nicht bis zum Zeilenende.
-  check('Form ist mehrzeilig', form.split('\n').length, 3);
+  check('the form contains no backslash-n', form.includes('\\n'), false);
+  // Read line by line the form is incomplete — which is exactly why the
+  // Swank frame counts bytes and does not read to the end of the line.
+  check('the form is multi-line', form.split('\n').length, 3);
 }
 
 // ---------------------------------------------------------------------
-// Statische Sperre: kein JSON.stringify in Lisp-Quelltext
+// A static guard: no JSON.stringify in Lisp source
 // ---------------------------------------------------------------------
-// Der eigentliche Schutz. Die Regel ist nicht "lispString existiert",
-// sondern "wer Lisp-Quelltext baut, benutzt es auch" — und die lässt sich
-// nur an den Aufrufstellen prüfen.
+// The actual protection. The rule is not "lispString exists" but "whoever
+// builds Lisp source uses it too" — and that can only be checked at the
+// call sites.
 {
   const lispish = ['(swank:', '(swank/', '(clamps-bridge-rpc:', ':emacs-rex',
                    ':emacs-return-string', '(setf ', '(intern '];
   const offenders = [];
-  // ALLE .ts unter src/ scannen, nicht eine gepflegte Liste.
+  // Scan ALL .ts under src/, not a maintained list.
   //
-  // Die erste Fassung hatte 15 Dateinamen fest eingetragen. Als v81 drei
-  // Module hinzufuegte, standen die nicht darin — und advancedTools.ts
-  // baute prompt wieder einen Lisp-String mit JSON.stringify. Der
-  // Waechter lief gruen durch, weil er die Datei nie gelesen hat. Eine
-  // Whitelist verfaellt genau dann, wenn man sie am dringendsten
-  // braucht: bei neuem Code.
+  // The first version had 15 file names entered in it. When v81 added
+  // three modules, those were not in it — and advancedTools.ts promptly
+  // built a Lisp string with JSON.stringify again. The guard came through
+  // green because it never read the file. A whitelist decays exactly when
+  // it is needed most urgently: with new code.
   const srcDir = path.join(__dirname, '..', 'src');
   for (const file of fs.readdirSync(srcDir).filter(f => f.endsWith('.ts')).sort()) {
     const full = path.join(srcDir, file);
@@ -104,8 +102,8 @@ check('printSexpr Symbol bleibt roh', printSexpr(new Sym('t')), 't');
       }
     });
   }
-  check('kein JSON.stringify in Lisp-Formen', offenders, []);
+  check('no JSON.stringify in Lisp forms', offenders, []);
 }
 
-if (failed === 0) console.log('ok — Lisp-Maskierung stimmt, mehrzeilige Eingaben bleiben heil');
+if (failed === 0) console.log('ok — Lisp escaping is right, multi-line input stays intact');
 process.exit(failed === 0 ? 0 : 1);

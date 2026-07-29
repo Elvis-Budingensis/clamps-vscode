@@ -7,14 +7,14 @@ interface MacroexpandResult {
 }
 
 /**
- * Findet die Top-Level-Form, in der sich der Cursor befindet, indem von
- * der Cursor-Position aus rückwärts die umschließende öffnende Klammer
- * gesucht und dann bis zur passenden schließenden Klammer gelesen wird.
+ * Finds the top-level form the cursor is in, by searching backwards from
+ * the cursor position for the enclosing opening paren and then reading
+ * forward to the matching closing paren.
  *
- * Bewusst simpel gehalten: respektiert Strings, Zeichen-Literale (#\x)
- * und Zeilenkommentare (;), aber keine Block-Kommentare (#| |#). Für
- * typischen Lisp-Code am Cursor reicht das; der Rand-Fall Block-Kommentar
- * ist selten genug, um ihn hier nicht zu verkomplizieren.
+ * Deliberately kept simple: respects strings, character literals (#\x)
+ * and line comments (;), but not block comments (#| |#). That is enough
+ * for typical Lisp code at the cursor; the block-comment edge case is
+ * rare enough not to complicate matters here.
  */
 export function topLevelFormAt(
   document: vscode.TextDocument,
@@ -23,41 +23,40 @@ export function topLevelFormAt(
   const text = document.getText();
   const offset = document.offsetAt(position);
 
-  // 1. Rückwärts die öffnende Klammer der Top-Level-Form finden:
-  // die erste '(' auf Spaltentiefe 0, an oder vor dem Cursor.
+  // 1. Search backwards for the opening paren of the top-level form:
+  // the first '(' at depth 0, at or before the cursor.
   const start = findFormStart(text, offset);
   if (start < 0) {
-    // Kein Klammerausdruck am Cursor — aber ein nacktes Atom auf
-    // Top-Level IST eine gültige Form. `*presentation-test*`, `6`,
-    // `t` in einer eigenen Zeile auswerten zu wollen ist normal, und
-    // sexpBeforePoint (evalLastExpression) kann das längst. Nur
-    // evalTopLevel meldete „Keine Top-Level-Form am Cursor gefunden“
-    // und tat nichts.
+    // No parenthesised expression at the cursor — but a bare atom at top
+    // level IS a valid form. Wanting to evaluate `*presentation-test*`,
+    // `6` or `t` on a line of its own is normal, and sexpBeforePoint
+    // (evalLastExpression) has long been able to do it. Only evalTopLevel
+    // reported "No top-level form found at the cursor" and did nothing.
     return topLevelAtomAt(text, offset);
   }
 
-  // 2. Von dort vorwärts bis zur passenden schließenden Klammer.
+  // 2. From there forward to the matching closing paren.
   const end = matchParen(text, start);
   if (end < 0) return undefined;
 
   return text.slice(start, end + 1);
 }
 
-/** Zeichen, die zu einem Lisp-Atom gehören. Wie in sexpBeforePoint. */
+/** Characters that belong to a Lisp atom. As in sexpBeforePoint. */
 const ATOM_CHAR = /[a-zA-Z0-9\-+*/<>=!?_%&^~.:#'@$[\]{}]/;
 
 /**
- * Das Atom an oder unmittelbar vor OFFSET, sofern es wirklich auf
- * Top-Level steht (Klammertiefe 0) und nicht in einem String oder
- * Kommentar. Sonst undefined.
+ * The atom at or immediately before OFFSET, provided it really is at top
+ * level (paren depth 0) and not inside a string or comment. Otherwise
+ * undefined.
  */
 function topLevelAtomAt(text: string, offset: number): string | undefined {
   if (!isTopLevelCode(text, offset)) return undefined;
 
-  // Steht der Cursor hinter dem Atom (typisch: Zeilenende), nach links
-  // rücken — aber nur über Leerzeichen und Tabs, NICHT über
-  // Zeilenumbrüche. Sonst würde am Anfang einer leeren Zeile das Atom
-  // der Zeile darüber ausgewertet, ohne dass man das sieht.
+  // If the cursor is behind the atom (typically at end of line), move
+  // left — but only across spaces and tabs, NOT across newlines.
+  // Otherwise at the start of an empty line the atom of the line above
+  // would be evaluated without anyone seeing it.
   let probe = offset;
   while (probe > 0 && (text[probe - 1] === ' ' || text[probe - 1] === '\t')) probe--;
 
@@ -68,13 +67,13 @@ function topLevelAtomAt(text: string, offset: number): string | undefined {
 
   if (end <= start) return undefined;
   const atom = text.slice(start, end);
-  // Ein reiner Punkt oder ein einzelnes Anführungszeichen ist keine Form.
+  // A bare dot or a single quotation mark is not a form.
   return /[a-zA-Z0-9*+\-/<>=!?_%&^~]/.test(atom) ? atom : undefined;
 }
 
 /**
- * Ist OFFSET echter Code auf Klammertiefe 0 — also nicht innerhalb einer
- * Form, eines Strings oder eines Kommentars?
+ * Is OFFSET real code at paren depth 0 — that is, not inside a form, a
+ * string or a comment?
  */
 function isTopLevelCode(text: string, offset: number): boolean {
   let depth = 0;
@@ -87,17 +86,17 @@ function isTopLevelCode(text: string, offset: number): boolean {
     else if (ch === ')') depth--;
   }
   if (depth !== 0) return false;
-  // Zusätzlich prüfen, dass die Position selbst nicht in String oder
-  // Kommentar liegt: state.step hat den Zustand bis offset mitgeführt.
+  // Additionally check that the position itself is not inside a string
+  // or comment: state.step has carried the state along up to offset.
   return !state.inactive;
 }
 
 /**
- * Findet die S-Expression, die unmittelbar vor der Cursor-Position endet
- * — das SLIME-Verhalten von C-x C-e (eval-last-expression). Sucht von
- * der Position aus rückwärts das erste ')' (überspringt Whitespace) und
- * dann die passende öffnende '('. Für ein Atom direkt vor dem Cursor
- * (z.B. eine Zahl oder ein Symbol) wird dieses Atom zurückgegeben.
+ * Finds the s-expression that ends immediately before the cursor
+ * position — the SLIME behaviour of C-x C-e (eval-last-expression).
+ * Searches backwards from the position for the first ')' (skipping
+ * whitespace) and then the matching opening '('. For an atom directly
+ * before the cursor (a number or a symbol, say) that atom is returned.
  */
 export function sexpBeforePoint(
   document: vscode.TextDocument,
@@ -106,19 +105,19 @@ export function sexpBeforePoint(
   const text = document.getText();
   let offset = document.offsetAt(position);
 
-  // Whitespace links vom Cursor überspringen.
+  // Skip whitespace to the left of the cursor.
   while (offset > 0 && /\s/.test(text[offset - 1])) offset--;
   if (offset === 0) return undefined;
 
   const prev = text[offset - 1];
   if (prev === ')') {
-    // Klammerausdruck: von der schließenden Klammer zur passenden
-    // öffnenden zurückbalancieren.
+    // Parenthesised expression: balance back from the closing paren to
+    // the matching opening one.
     let depth = 0;
     for (let i = offset - 1; i >= 0; i--) {
       const ch = text[i];
-      // simple Version: Strings/Kommentare hier ignoriert, weil der
-      // Cursor typischerweise direkt hinter einer echten Form steht.
+      // simple version: strings/comments ignored here, because the
+      // cursor typically sits directly behind a real form.
       if (ch === ')') depth++;
       else if (ch === '(') {
         depth--;
@@ -127,7 +126,7 @@ export function sexpBeforePoint(
     }
     return undefined;
   }
-  // Atom: rückwärts bis zum Symbol-/Zahlanfang.
+  // Atom: backwards to the start of the symbol or number.
   let start = offset;
   while (start > 0 && /[a-zA-Z0-9\-+*/<>=!?_%&^~.:]/.test(text[start - 1])) {
     start--;
@@ -136,9 +135,9 @@ export function sexpBeforePoint(
 }
 
 function findFormStart(text: string, offset: number): number {
-  // Wir scannen vom Dateianfang und merken uns den Beginn jeder
-  // Top-Level-Form (depth 0 -> 1). Die letzte Form, die bei oder vor
-  // dem Cursor beginnt und ihn noch enthält, ist die gesuchte.
+  // We scan from the start of the file and remember the beginning of
+  // every top-level form (depth 0 -> 1). The last form that begins at or
+  // before the cursor and still contains it is the one we want.
   let depth = 0;
   let formStart = -1;
   let lastEnclosingStart = -1;
@@ -153,7 +152,7 @@ function findFormStart(text: string, offset: number): number {
     } else if (ch === ')') {
       depth--;
       if (depth === 0 && formStart >= 0) {
-        // Form lief von formStart..i. Enthält sie den Cursor?
+        // Form ran from formStart..i. Does it contain the cursor?
         if (formStart <= offset && offset <= i + 1) {
           lastEnclosingStart = formStart;
         }
@@ -180,18 +179,18 @@ function matchParen(text: string, openIndex: number): number {
 }
 
 /**
- * Kleiner Scanner-Zustand, der erkennt, ob ein Zeichen "inaktiv" ist,
- * weil es in einem String, Zeilenkommentar oder Zeichen-Literal steht.
- * step() gibt true zurück, wenn das Zeichen an Index i übersprungen
- * werden soll (nicht als Klammer zählen).
+ * A small scanner state that recognises whether a character is
+ * "inactive" because it sits inside a string, a line comment or a
+ * character literal. step() returns true when the character at index i
+ * should be skipped (not counted as a paren).
  */
 class ScanState {
   private inString = false;
   private inComment = false;
   private escapeNext = false;
-  private skipCount = 0; // Zeichen nach #\ überspringen (Backslash + Literal)
+  private skipCount = 0; // skip characters after #\ (backslash + literal)
 
-  /** Steht der Scanner gerade in String, Kommentar oder Zeichen-Literal? */
+  /** Is the scanner currently inside a string, comment or character literal? */
   get inactive(): boolean {
     return this.inString || this.inComment || this.skipCount > 0;
   }
@@ -199,9 +198,9 @@ class ScanState {
   step(text: string, i: number): boolean {
     const ch = text[i];
 
-    // Die zwei Zeichen unmittelbar nach '#' bei #\X (also '\' und 'X',
-    // z. B. bei #\( das '\' und das '(') gelten als Literal, nie als
-    // Klammer.
+    // The two characters immediately after '#' in #\X (that is, '\' and
+    // 'X', for example in #\( the '\' and the '(') count as a literal,
+    // never as a paren.
     if (this.skipCount > 0) {
       this.skipCount--;
       return true;
@@ -221,7 +220,7 @@ class ScanState {
       }
       return true;
     }
-    // nicht in String/Kommentar
+    // not inside a string or comment
     if (ch === ';') {
       this.inComment = true;
       return true;
@@ -230,10 +229,10 @@ class ScanState {
       this.inString = true;
       return true;
     }
-    // Zeichen-Literal #\X : dieses '#' ist neutral, aber das '\' und das
-    // darauffolgende Zeichen sollen nicht als Klammer zählen.
+    // Character literal #\X : this '#' is neutral, but the '\' and the
+    // character following it must not count as a paren.
     if (ch === '#' && text[i + 1] === '\\') {
-      this.skipCount = 2; // überspringt '\' und das Literal-Zeichen
+      this.skipCount = 2; // skips '\' and the literal character
       return true;
     }
     return false;
@@ -241,11 +240,11 @@ class ScanState {
 }
 
 /**
- * Ermittelt das für die Cursor-Position gültige Paket, indem die letzte
- * (in-package ...)-Form vor oder an der Position aus dem Dokument gelesen
- * wird. Fällt auf COMMON-LISP-USER zurück, wenn keine gefunden wird.
+ * Determines the package in effect at the cursor position by reading the
+ * last (in-package ...) form before or at the position from the
+ * document. Falls back to COMMON-LISP-USER when none is found.
  *
- * Erkennt die üblichen Schreibweisen:
+ * Recognises the usual spellings:
  *   (in-package :foo)  (in-package #:foo)  (in-package "FOO")  (in-package foo)
  */
 export function packageAt(
@@ -254,7 +253,7 @@ export function packageAt(
 ): string {
   const offset = document.offsetAt(position);
   const textBefore = document.getText().slice(0, offset + 1);
-  // Alle in-package-Formen bis zum Cursor finden; die letzte gewinnt.
+  // Find all in-package forms up to the cursor; the last one wins.
   const re = /\(\s*in-package\s+(?:#?:)?"?([a-zA-Z0-9\-+*/<>=!?_.%&^~]+)"?\s*\)/gi;
   let match: RegExpExecArray | null;
   let pkg = 'COMMON-LISP-USER';
@@ -286,7 +285,7 @@ export async function macroexpandCommand(
   const client = getClient();
   if (!client || client.state !== State.Running) {
     vscode.window.showErrorMessage(
-      'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start“ aus.'
+      'CLAMPS is not connected. Run "CLAMPS: Start".'
     );
     return;
   }
@@ -300,8 +299,8 @@ export async function macroexpandCommand(
     );
 
     const header = full
-      ? ';; macroexpand (vollständig)\n'
-      : ';; macroexpand-1 (eine Ebene)\n';
+      ? ';; macroexpand (fully)\n'
+      : ';; macroexpand-1 (one level)\n';
     const body = `${header};; Quelle:\n;; ${form.replace(/\n/g, '\n;; ')}\n\n${result.output}\n`;
 
     const doc = await vscode.workspace.openTextDocument({
@@ -315,7 +314,7 @@ export async function macroexpandCommand(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.appendLine(`Macroexpand-Fehler: ${message}`);
+    outputChannel.appendLine(`Macroexpand error: ${message}`);
     vscode.window.showErrorMessage(`CLAMPS Macroexpand: ${message}`);
   }
 }

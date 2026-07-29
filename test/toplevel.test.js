@@ -1,15 +1,15 @@
 // test/toplevel.test.js
 //
-// topLevelFormAt: welche Form liegt am Cursor?
+// topLevelFormAt: which form is at the cursor?
 //
-// Anlass: die Funktion suchte ausschliesslich nach einer '(' auf
-// Klammertiefe 0. Ein nacktes Atom auf Top-Level — `*presentation-test*`,
-// `6`, `t` in einer eigenen Zeile — ist aber eine voellig gueltige Form.
-// evalTopLevel meldete dort "Keine Top-Level-Form am Cursor gefunden" und
-// tat nichts, waehrend evalLastExpression (sexpBeforePoint) dasselbe Atom
-// seit immer korrekt auswertet. Zwei Befehle, zwei Meinungen.
+// The occasion: the function searched exclusively for a '(' at paren
+// depth 0. But a bare atom at top level — `*presentation-test*`, `6`, `t`
+// on a line of its own — is a perfectly valid form. evalTopLevel reported
+// "No top-level form found at the cursor" there and did nothing, while
+// evalLastExpression (sexpBeforePoint) has always evaluated that same atom
+// correctly. Two commands, two opinions.
 //
-// Aufruf: npx tsc -p ./ && node test/toplevel.test.js
+// Run: npx tsc -p ./ && node test/toplevel.test.js
 
 require('./vscode-stub');
 
@@ -19,18 +19,18 @@ let failed = 0;
 const check = (name, actual, expected) => {
   if (actual !== expected) {
     failed++;
-    console.log(`FEHLER ${name}\n  erwartet: ${JSON.stringify(expected)}\n  bekommen: ${JSON.stringify(actual)}`);
+    console.log(`FAILED ${name}\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(actual)}`);
   }
 };
 
 /**
- * Minimaler TextDocument-Ersatz. Der Cursor wird im Quelltext mit | 
- * markiert; das Zeichen wird vor dem Test entfernt. So steht in jedem
- * Fall sichtbar, wo der Cursor sitzt.
+ * A minimal TextDocument substitute. The cursor is marked in the source
+ * with |; the character is removed before the test. That way it is
+ * visible in every case where the cursor sits.
  */
 function docAt(markedText) {
   const offset = markedText.indexOf('|');
-  if (offset < 0) throw new Error('Testtext ohne | Cursor-Markierung');
+  if (offset < 0) throw new Error('test text without a | cursor marker');
   const text = markedText.slice(0, offset) + markedText.slice(offset + 1);
   return {
     document: {
@@ -47,43 +47,43 @@ const at = marked => {
 };
 
 // ---------------------------------------------------------------------
-// Klammerformen: unveraendertes Verhalten
+// Parenthesised forms: unchanged behaviour
 // ---------------------------------------------------------------------
-check('Cursor in Klammerform', at('(defun foo (x)\n  (+ x |1))\n'), '(defun foo (x)\n  (+ x 1))');
-check('Cursor auf oeffnender Klammer', at('|(foo 3)\n'), '(foo 3)');
-check('zweite von zwei Formen', at('(foo 1)\n(bar |2)\n'), '(bar 2)');
-check('Klammer im String zaehlt nicht', at('(format t "(|" )\n'), '(format t "(" )');
+check('cursor inside a parenthesised form', at('(defun foo (x)\n  (+ x |1))\n'), '(defun foo (x)\n  (+ x 1))');
+check('cursor on the opening paren', at('|(foo 3)\n'), '(foo 3)');
+check('the second of two forms', at('(foo 1)\n(bar |2)\n'), '(bar 2)');
+check('a paren in a string does not count', at('(format t "(|" )\n'), '(format t "(" )');
 
 // ---------------------------------------------------------------------
-// Atom-Toplevel: der reparierte Fall
+// An atom at top level: the repaired case
 // ---------------------------------------------------------------------
-check('Symbol mit Sternchen', at('(defparameter *pt* 1)\n*p|t*\n'), '*pt*');
+check('a symbol with asterisks', at('(defparameter *pt* 1)\n*p|t*\n'), '*pt*');
 check('Cursor am Atom-Ende', at('*pt*|\n'), '*pt*');
-check('Cursor hinter Atom mit Leerzeichen', at('*pt*  |\n'), '*pt*');
+check('cursor behind an atom with spaces', at('*pt*  |\n'), '*pt*');
 check('Zahl', at('6|\n'), '6');
-check('Symbol mit Paketpraefix', at('incudine:rt-|start\n'), 'incudine:rt-start');
-check('Symbol mit Bindestrich', at('|rt-status\n'), 'rt-status');
-check('Atom nach einer Klammerform', at('(foo 1)\n\n*p|t*\n'), '*pt*');
+check('a symbol with a package prefix', at('incudine:rt-|start\n'), 'incudine:rt-start');
+check('a symbol with a hyphen', at('|rt-status\n'), 'rt-status');
+check('an atom after a parenthesised form', at('(foo 1)\n\n*p|t*\n'), '*pt*');
 
 // ---------------------------------------------------------------------
-// Was NICHT ausloesen darf
+// What must NOT trigger
 // ---------------------------------------------------------------------
-// Leere Zeile: sonst wuerde das Atom der Zeile darueber ausgewertet,
-// ohne dass der Cursor darauf steht.
-check('leere Zeile unter Atom', at('*pt*\n|\n'), undefined);
-check('leere Datei', at('|'), undefined);
-check('nur Leerzeichen', at('   |   '), undefined);
-// Im Kommentar steht kein Code.
-check('Atom im Kommentar', at('; *p|t*\n'), undefined);
-// In einem String auch nicht — hier ohne umgebende Form, damit wirklich
-// der String-Zustand greift und nicht die Klammerlogik.
-check('Atom im String', at('"*p|t*"\n'), undefined);
-// Ein Atom INNERHALB einer Form darf nicht als Toplevel gelten: dort
-// gewinnt die Klammerform, nicht das Atom.
-check('Atom in Form liefert die Form', at('(foo b|ar)\n'), '(foo bar)');
+// An empty line: otherwise the atom of the line above would be evaluated
+// without the cursor being on it.
+check('an empty line below an atom', at('*pt*\n|\n'), undefined);
+check('an empty file', at('|'), undefined);
+check('spaces only', at('   |   '), undefined);
+// There is no code in a comment.
+check('an atom in a comment', at('; *p|t*\n'), undefined);
+// Nor in a string — here without a surrounding form, so that the string
+// state really takes effect and not the paren logic.
+check('an atom in a string', at('"*p|t*"\n'), undefined);
+// An atom INSIDE a form must not count as top level: there the
+// parenthesised form wins, not the atom.
+check('an atom inside a form returns the form', at('(foo b|ar)\n'), '(foo bar)');
 
 if (failed > 0) {
   console.log(`\n${failed} Test(s) fehlgeschlagen.`);
   process.exit(1);
 }
-console.log('ok — Top-Level-Form erkennt Klammerformen und Atome, ignoriert Strings und Kommentare');
+console.log('ok — top-level form recognises parenthesised forms and atoms, ignores strings and comments');

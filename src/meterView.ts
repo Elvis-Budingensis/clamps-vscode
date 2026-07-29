@@ -2,17 +2,17 @@ import * as vscode from 'vscode';
 import { StickerPoller, StickerBatch, toDecibels } from './stickerPoll';
 
 /**
- * Echtzeit-Pegel.
+ * Real-time levels.
  *
- * Der erste Punkt der Roadmap, den SLIME und SLY nie hatten. Er hängt an
- * drei Teilen, die alle schon stehen: dem allokationsfreien Ring im
- * Audio-Thread (v81.11–v81.13), der RMS-Aggregation über ein
- * Dezimierungsfenster (v81.13) und dem inkrementellen Abholtakt (v81.18).
+ * The first item on the roadmap that SLIME and SLY never had. It rests on
+ * three parts that are all in place already: the allocation-free ring in
+ * the audio thread (v81.11–v81.13), the RMS aggregation over a
+ * decimation window (v81.13) and the incremental fetch cycle (v81.18).
  *
- * Die Anzeige rechnet den Spitzenwert eines abgeholten Blocks in dBFS um.
- * RMS-Ringe zeigen damit den lauteren Rand ihres Verlaufs, was für eine
- * Pegelanzeige das Richtige ist: man will sehen, ob es gleich klippt, und
- * nicht den Mittelwert der letzten Sekunde.
+ * The display converts the peak value of a fetched block into dBFS. RMS
+ * rings therefore show the louder edge of their course, which is the
+ * right thing for a level meter: you want to see whether it is about to
+ * clip, not the mean of the last second.
  */
 
 interface MeterState {
@@ -38,8 +38,8 @@ export class MeterView {
     panel.webview.html = MeterView.html();
     panel.onDidDispose(() => this.dispose());
     void this.refreshKeys();
-    // Die Schlüsselliste ändert sich, sobald jemand einen neuen Ring
-    // registriert. Selten genug für einen langsamen Takt.
+    // The key list changes as soon as somebody registers a new ring.
+    // Rare enough for a slow cycle.
     this.timer = setInterval(() => void this.refreshKeys(), 2000);
   }
 
@@ -62,9 +62,9 @@ export class MeterView {
   }
 
   /**
-   * Neue Ringe abonnieren, verschwundene vergessen. Ein Ring, der aus der
-   * Registrierung fällt, soll nicht als eingefrorener Balken stehen
-   * bleiben — das sähe aus wie ein Signal, das gerade konstant ist.
+   * Subscribe to new rings, forget vanished ones. A ring that drops out
+   * of the registry should not remain standing as a frozen bar — that
+   * would look like a signal that is currently constant.
    */
   private async refreshKeys(): Promise<void> {
     let keys: string[];
@@ -94,8 +94,8 @@ export class MeterView {
     );
     const db = toDecibels(peakSample);
 
-    // Spitzenwert hält kurz und fällt dann ab, sonst sieht man einen
-    // kurzen Ausschlag zwischen zwei Bildern nie.
+    // The peak holds briefly and then falls, otherwise a short excursion
+    // between two frames is never seen.
     let peakDb = db;
     let peakAt = now;
     if (previous && previous.peakDb > db && now - previous.peakAt < 1500) {
@@ -167,7 +167,7 @@ export class MeterView {
     const host = document.getElementById('rows');
     if (rows.length === 0) {
       host.innerHTML =
-        '<div class="empty">Kein Ring registriert.<br><br>' +
+        '<div class="empty">No ring registered.<br><br>' +
         '<code>(defparameter *meter-sticker* ' +
         '(clamps-bridge-rpc:make-sticker-sample-state-for-repl 256 441))</code><br>' +
         '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "meter" *meter-sticker*)</code>' +

@@ -2,7 +2,7 @@
   "name": "clamps-vscode",
   "displayName": "CLAMPS – Audio-aware Lisp IDE",
   "description": "An audio-aware Lisp IDE for CLAMPS and Incudine.",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "publisher": "elvis-budingensis",
   "engines": {
     "vscode": "^1.85.0"
@@ -35,7 +35,7 @@
       },
       {
         "command": "clamps.openLog",
-        "title": "CLAMPS: Protokoll öffnen (SBCL-Ausgabe)",
+        "title": "CLAMPS: Open Log (SBCL output)",
         "category": "CLAMPS"
       },
       {
@@ -52,23 +52,23 @@
       },
       {
         "command": "clamps.macroexpand",
-        "title": "CLAMPS: Macroexpand-1 (eine Ebene)"
+        "title": "CLAMPS: Macroexpand-1 (one level)"
       },
       {
         "command": "clamps.macroexpandAll",
-        "title": "CLAMPS: Macroexpand (vollständig)"
+        "title": "CLAMPS: Macroexpand (fully)"
       },
       {
         "command": "clamps.openGui",
-        "title": "CLAMPS: GUI öffnen (ATS Explorer)"
+        "title": "CLAMPS: Open GUI (ATS Explorer)"
       },
       {
         "command": "clamps.disassemble",
-        "title": "CLAMPS: Disassemble (Maschinencode)"
+        "title": "CLAMPS: Disassemble (machine code)"
       },
       {
         "command": "clamps.inspect",
-        "title": "CLAMPS: Inspect (Objekt-Inspektor)"
+        "title": "CLAMPS: Inspect (object inspector)"
       },
       {
         "command": "clamps.evalTopLevel",
@@ -80,79 +80,79 @@
       },
       {
         "command": "clamps.toggleTrace",
-        "title": "CLAMPS: Toggle Trace (Funktion tracen)"
+        "title": "CLAMPS: Toggle Trace (trace a function)"
       },
       {
         "command": "clamps.untraceAll",
-        "title": "CLAMPS: Untrace All (alle Traces aus)"
+        "title": "CLAMPS: Untrace All"
       },
       {
         "command": "clamps.rtStatusDetails",
-        "title": "CLAMPS: DSP-Status anzeigen"
+        "title": "CLAMPS: Show DSP Status"
       },
       {
         "command": "clamps.debugAttach",
-        "title": "CLAMPS: Debugger anhängen"
+        "title": "CLAMPS: Attach Debugger"
       },
       {
         "command": "clamps.debugRestarts",
-        "title": "CLAMPS: Restart auswählen"
+        "title": "CLAMPS: Choose Restart"
       },
       {
         "command": "clamps.debugInspectCondition",
-        "title": "CLAMPS: Condition inspizieren"
+        "title": "CLAMPS: Inspect Condition"
       },
       {
         "command": "clamps.debugInspectVariable",
-        "title": "CLAMPS: Wert inspizieren"
+        "title": "CLAMPS: Inspect Value"
       },
       {
         "command": "clamps.debugAbortAll",
-        "title": "CLAMPS: Alle Debugger-Ebenen verlassen"
+        "title": "CLAMPS: Leave All Debugger Levels"
       },
       {
         "command": "clamps.incudineRefresh",
-        "title": "CLAMPS: Incudine Nodes aktualisieren",
+        "title": "CLAMPS: Refresh Incudine Nodes",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.incudineInspectNode",
-        "title": "CLAMPS: Incudine Node inspizieren"
+        "title": "CLAMPS: Inspect Incudine Node"
       },
       {
         "command": "clamps.incudineRefreshSoon",
-        "title": "CLAMPS: Incudine Nodes bald aktualisieren"
+        "title": "CLAMPS: Refresh Incudine Nodes Shortly"
       },
       {
         "command": "clamps.closeParens",
-        "title": "CLAMPS: Offene Klammern schließen"
+        "title": "CLAMPS: Close Open Parens"
       },
       {
         "command": "clamps.checkBalance",
-        "title": "CLAMPS: Klammern prüfen"
+        "title": "CLAMPS: Check Parens"
       },
       {
         "command": "clamps.packagesRefresh",
-        "title": "CLAMPS: Pakete aktualisieren",
+        "title": "CLAMPS: Refresh Packages",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.classesRefresh",
-        "title": "CLAMPS: Klassen aktualisieren",
+        "title": "CLAMPS: Refresh Classes",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.threadsRefresh",
-        "title": "CLAMPS: Threads aktualisieren",
+        "title": "CLAMPS: Refresh Threads",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.inspectBrowserItem",
-        "title": "CLAMPS: Browser-Eintrag inspizieren"
+        "title": "CLAMPS: Inspect Browser Entry"
       },
       {
         "command": "clamps.compileDiagnostics",
-        "title": "CLAMPS: Compiler-Diagnostics aktualisieren"
+        "title": "CLAMPS: Refresh Compiler Diagnostics"
       },
       {
         "command": "clamps.xref",
@@ -168,95 +168,95 @@
       },
       {
         "command": "clamps.tracedRefresh",
-        "title": "CLAMPS: Trace-Liste aktualisieren",
+        "title": "CLAMPS: Refresh Trace List",
         "category": "CLAMPS",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.untraceOne",
-        "title": "CLAMPS: Beobachtung zurücknehmen",
+        "title": "CLAMPS: Remove Trace",
         "category": "CLAMPS",
         "icon": "$(close)"
       },
       {
         "command": "clamps.xrefDefinitions",
-        "title": "CLAMPS XREF: Definitionen",
+        "title": "CLAMPS XREF: Definitions",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefCallers",
-        "title": "CLAMPS XREF: Aufrufer",
+        "title": "CLAMPS XREF: Callers",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefCallees",
-        "title": "CLAMPS XREF: Aufgerufene Funktionen",
+        "title": "CLAMPS XREF: Callees",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefReferences",
-        "title": "CLAMPS XREF: Referenzen",
+        "title": "CLAMPS XREF: References",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefBindings",
-        "title": "CLAMPS XREF: Bindungen",
+        "title": "CLAMPS XREF: Bindings",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefSetters",
-        "title": "CLAMPS XREF: Setzer",
+        "title": "CLAMPS XREF: Setters",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefMacroexpands",
-        "title": "CLAMPS XREF: Makroexpansionen",
+        "title": "CLAMPS XREF: Macroexpansions",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefRefresh",
-        "title": "CLAMPS: XREF aktualisieren",
+        "title": "CLAMPS: Refresh XREF",
         "category": "CLAMPS",
         "icon": "$(refresh)"
       },
       {
         "command": "clamps.xrefOpen",
-        "title": "CLAMPS: XREF-Treffer öffnen",
+        "title": "CLAMPS: Open XREF Hit",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefBack",
-        "title": "CLAMPS XREF: Zurück",
+        "title": "CLAMPS XREF: Back",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.xrefForward",
-        "title": "CLAMPS XREF: Vor",
+        "title": "CLAMPS XREF: Forward",
         "category": "CLAMPS"
       },
       {
         "command": "clamps.refreshIndentation",
-        "title": "CLAMPS: Einrückungsregeln aus Image aktualisieren"
+        "title": "CLAMPS: Refresh Indentation Rules from Image"
       },
       {
         "command": "clamps.selectSexp",
-        "title": "CLAMPS Paredit: S-Expression auswählen"
+        "title": "CLAMPS Paredit: Select S-Expression"
       },
       {
         "command": "clamps.selectParentSexp",
-        "title": "CLAMPS Paredit: Elternform auswählen"
+        "title": "CLAMPS Paredit: Select Parent Form"
       },
       {
         "command": "clamps.forwardSexp",
-        "title": "CLAMPS Paredit: Vorwärts"
+        "title": "CLAMPS Paredit: Forward"
       },
       {
         "command": "clamps.backwardSexp",
-        "title": "CLAMPS Paredit: Rückwärts"
+        "title": "CLAMPS Paredit: Backward"
       },
       {
         "command": "clamps.wrapSexp",
-        "title": "CLAMPS Paredit: In Liste einschließen"
+        "title": "CLAMPS Paredit: Wrap in List"
       },
       {
         "command": "clamps.raiseSexp",
@@ -268,27 +268,27 @@
       },
       {
         "command": "clamps.slurpForward",
-        "title": "CLAMPS Paredit: Slurp vorwärts"
+        "title": "CLAMPS Paredit: Slurp Forward"
       },
       {
         "command": "clamps.barfForward",
-        "title": "CLAMPS Paredit: Barf vorwärts"
+        "title": "CLAMPS Paredit: Barf Forward"
       },
       {
         "command": "clamps.asdf.load",
-        "title": "CLAMPS ASDF: System laden"
+        "title": "CLAMPS ASDF: Load System"
       },
       {
         "command": "clamps.asdf.compile",
-        "title": "CLAMPS ASDF: System kompilieren"
+        "title": "CLAMPS ASDF: Compile System"
       },
       {
         "command": "clamps.asdf.test",
-        "title": "CLAMPS ASDF: System testen"
+        "title": "CLAMPS ASDF: Test System"
       },
       {
         "command": "clamps.inspectPresentation",
-        "title": "CLAMPS: REPL-Resultat inspizieren"
+        "title": "CLAMPS: Inspect REPL Result"
       },
       {
         "command": "clamps.macrostep",
@@ -296,19 +296,23 @@
       },
       {
         "command": "clamps.stickerWrap",
-        "title": "CLAMPS: Ausdruck als Sticker instrumentieren"
+        "title": "CLAMPS: Instrument Expression as Sticker"
       },
       {
         "command": "clamps.stickersShow",
-        "title": "CLAMPS: Stickers anzeigen"
+        "title": "CLAMPS: Show Stickers"
       },
       {
         "command": "clamps.stickersClear",
-        "title": "CLAMPS: Stickers löschen"
+        "title": "CLAMPS: Clear Stickers"
       },
       {
         "command": "clamps.meterShow",
-        "title": "CLAMPS: Pegel anzeigen"
+        "title": "CLAMPS: Show Levels"
+      },
+      {
+        "command": "clamps.freqScopeShow",
+        "title": "CLAMPS: Show Spectrum (Freq Scope)"
       }
     ],
     "languages": [
@@ -408,53 +412,72 @@
         "clamps.guiPort": {
           "type": "number",
           "default": 54619,
-          "description": "Port des CLAMPS-GUI-Webservers (clamps-start :port). Default 54619."
+          "description": "Port of the CLAMPS GUI web server (clamps-start :port). Default 54619."
         },
         "clamps.rtPollInterval": {
           "type": "number",
           "default": 3000,
-          "description": "Abstand in Millisekunden, in dem der DSP-Status in der Statusleiste aktualisiert wird. 0 schaltet das Polling ab."
+          "description": "Interval in milliseconds at which the DSP status in the status bar is refreshed. 0 turns polling off."
         },
         "clamps.debugTrace": {
           "type": "boolean",
           "default": false,
-          "description": "Schreibt den rohen Swank-Verkehr der Debug-Session in die Debug-Konsole. Nur zur Fehlersuche."
+          "description": "Writes the raw Swank traffic of the debug session to the debug console. For troubleshooting only."
         },
         "clamps.replUsesDebugger": {
           "type": "boolean",
           "default": true,
-          "description": "Wertet REPL-Eingaben über die Verbindung des Debug-Adapters aus, damit Fehler den Lisp-Debugger öffnen. Experimentell — ohne angehängten Debugger ohne Wirkung."
+          "description": "Evaluates REPL input over the debug adapter connection, so that errors open the Lisp debugger. Experimental — without an attached debugger it has no effect."
         },
         "clamps.autoAttachDebugger": {
           "type": "boolean",
           "default": true,
-          "description": "Hängt den Lisp-Debugger automatisch an, sobald CLAMPS startet, damit Fehler ohne manuelles Einhängen im Debugger landen."
+          "description": "Attaches the Lisp debugger automatically as soon as CLAMPS starts, so that errors end up in the debugger without hooking in by hand."
         },
         "clamps.meterIntervalMs": {
           "type": "number",
           "default": 100,
           "minimum": 20,
-          "description": "Abholtakt der Pegelanzeige in Millisekunden. Kleiner heißt flüssiger und mehr Verkehr über die Bridge; unter dem Dezimierungsfenster des Rings bringt es nichts, weil dann nichts Neues da ist."
+          "description": "Fetch interval of the level meter in milliseconds. Smaller means smoother and more traffic over the bridge; below the ring’s decimation window it gains nothing, because there is nothing new to fetch."
+        },
+        "clamps.freqScopeIntervalMs": {
+          "type": "number",
+          "default": 50,
+          "minimum": 20,
+          "description": "Frame interval of the freq scope in milliseconds. Every frame is a full FFT in the Lisp image — 50 ms is 20 frames per second and ample for a spectrum. Hidden windows do not run the cycle."
+        },
+        "clamps.freqScopeFftSize": {
+          "type": "number",
+          "default": 2048,
+          "enum": [
+            256,
+            512,
+            1024,
+            2048,
+            4096,
+            8192
+          ],
+          "description": "Default FFT length of the freq scope. Long means fine frequency resolution and sluggish time resolution: at 48 kHz, 2048 points give 23.4 Hz per bin over a window of 43 ms. The ring must hold at least that many values."
         },
         "clamps.openReplOnStart": {
           "type": "boolean",
           "default": true,
-          "description": "Öffnet das CLAMPS-REPL-Terminal automatisch, sobald CLAMPS gestartet ist."
+          "description": "Opens the CLAMPS REPL terminal automatically once CLAMPS has started."
         },
         "clamps.compilerDiagnosticsOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "Kompiliert gespeicherte Lisp-Dateien über Swank und zeigt Compiler-Notes als Problems/Diagnostics an."
+          "description": "Compiles saved Lisp files via Swank and shows compiler notes as problems/diagnostics."
         },
         "clamps.richPresentations": {
           "type": "boolean",
           "default": true,
-          "description": "Zeigt stabile Objekt-IDs zu REPL-Ergebnissen; verändert die Textausgabe nicht."
+          "description": "Shows stable object IDs for REPL results; does not change the text output."
         },
         "clamps.imageIndentation": {
           "type": "boolean",
           "default": true,
-          "description": "Ergänzt Einrückungsregeln aus dem laufenden Lisp-Image."
+          "description": "Adds indentation rules from the running Lisp image."
         }
       }
     },
@@ -474,7 +497,7 @@
           {
             "type": "clamps",
             "request": "attach",
-            "name": "CLAMPS: Debugger anhängen"
+            "name": "CLAMPS: Attach Debugger"
           }
         ]
       }
@@ -579,11 +602,11 @@
         },
         {
           "id": "clamps.packages",
-          "name": "Pakete"
+          "name": "Packages"
         },
         {
           "id": "clamps.classes",
-          "name": "Klassen"
+          "name": "Classes"
         },
         {
           "id": "clamps.threads",
@@ -601,9 +624,10 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
-    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/lispstring.test.js",
+    "comments:update": "node test/comments-update.js",
+    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/freqscope.test.js && node test/lispstring.test.js && node test/comments.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
-    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp",
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/test-spectrum.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp",
     "package": "npx @vscode/vsce package",
     "publish": "npx @vscode/vsce publish",
     "release:check": "npm run compile && npm test"

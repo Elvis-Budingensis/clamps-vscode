@@ -1,12 +1,13 @@
 // extension.ts
 //
-// Aktivierungspunkt der Extension. Ablauf beim Öffnen einer .lisp-Datei:
-//   1. ClampsProcessManager sorgt dafür, dass bootstrap.lisp (SBCL +
-//      CLAMPS + Swank) läuft oder startet es neu.
-//   2. Sobald die Session "ready" ist, wird der LanguageClient gestartet,
-//      der wiederum bridge-server.lisp als eigenen Prozess spawnt.
-//   3. bridge-server.lisp verbindet sich selbst zum Swank-Port und
-//      spricht LSP über stdio mit dem LanguageClient.
+// Activation point of the extension. Sequence when a .lisp file is
+// opened:
+//   1. ClampsProcessManager makes sure that bootstrap.lisp (SBCL +
+//      CLAMPS + Swank) is running, or restarts it.
+//   2. As soon as the session is "ready" the LanguageClient is started,
+//      which in turn spawns bridge-server.lisp as its own process.
+//   3. bridge-server.lisp connects to the Swank port itself and speaks
+//      LSP over stdio with the LanguageClient.
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -22,6 +23,7 @@ import { ClampsProcessManager } from './processManager';
 import { ClampsReplTerminal, readState } from './replTerminal';
 import { StickerPoller } from './stickerPoll';
 import { MeterView } from './meterView';
+import { FreqScopeView, SpectrumFrame } from './freqScope';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -46,9 +48,9 @@ let lifecycleQueue: Promise<void> = Promise.resolve();
 let rtStatus: ClampsRtStatus | undefined;
 
 /**
- * Abholtakt für Sticker-Ringe. Der Audio-Thread schiebt nichts von sich
- * aus — er darf weder senden noch blockieren —, also holt der Client ab.
- * Läuft nur, solange eine Anzeige zusieht.
+ * Fetch cycle for sticker rings. The audio thread pushes nothing of its
+ * own accord — it may neither send nor block — so the client fetches. It
+ * runs only while a display is watching.
  */
 const stickerPoller = new StickerPoller(async (key, since, limit) => {
   if (!client || client.state !== State.Running) return undefined;
@@ -76,16 +78,16 @@ export async function activate(context: vscode.ExtensionContext) {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) {
     vscode.window.showWarningMessage(
-      'CLAMPS: Bitte zuerst einen Workspace-Ordner öffnen (Datei → Ordner öffnen).'
+      'CLAMPS: Please open a workspace folder first (File → Open Folder).'
     );
     return;
   }
 
   const workspaceRoot = workspaceFolder.uri.fsPath;
 
-  // Beide Lisp-Skripte liegen in der Extension selbst, nicht im
-  // Workspace des Users — context.asAbsolutePath zeigt in den
-  // Installationsordner der Extension.
+  // Both Lisp scripts live in the extension itself, not in the user's
+  // workspace — context.asAbsolutePath points into the installation
+  // folder of the extension.
   const bootstrapPath = context.asAbsolutePath(path.join('lisp', 'bootstrap.lisp'));
   const bridgePath = context.asAbsolutePath(path.join('lisp', 'bridge-server.lisp'));
 
@@ -109,9 +111,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('clamps.classes', classBrowser),
     vscode.window.registerTreeDataProvider('clamps.threads', threadBrowser),
     vscode.window.registerTreeDataProvider('clamps.traced', traceBrowser),
-    // Inline Values: Werte der Frame-Locals im Editor, solange Lisp
-    // angehalten ist. Registriert fuer beide Sprach-IDs, weil .lisp und
-    // .cl je nach Einstellung unterschiedlich zugeordnet werden.
+    // Inline values: values of the frame locals in the editor while Lisp
+    // is halted. Registered for both language IDs, because .lisp and .cl
+    // are assigned differently depending on the settings.
     vscode.languages.registerInlineValuesProvider(
       [{ language: 'commonlisp' }, { language: 'lisp' }],
       new ClampsInlineValuesProvider()
@@ -126,16 +128,16 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Debug-Adapter. Läuft "inline", also im selben Extension-Host-Prozess
-  // — kein eigener Adapter-Prozess, und der Adapter kommt an
-  // processManager heran, statt session.json ein zweites Mal zu lesen.
+  // Debug adapter. Runs "inline", that is, in the same extension host
+  // process — no adapter process of its own, and the adapter can reach
+  // processManager instead of reading session.json a second time.
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory('clamps', {
       createDebugAdapterDescriptor() {
         const port = processManager?.getPort();
         if (!port) {
           vscode.window.showErrorMessage(
-            'CLAMPS läuft nicht — erst „CLAMPS: Start" ausführen.'
+            'CLAMPS is not running — run "CLAMPS: Start" first.'
           );
           return undefined;
         }
@@ -144,12 +146,12 @@ export async function activate(context: vscode.ExtensionContext) {
         );
       },
     }),
-    // Attach ohne launch.json: die Konfiguration ist ohnehin leer, weil
-    // Port und Wurzelverzeichnis aus dem Prozess-Manager kommen.
+    // Attach without launch.json: the configuration is empty anyway,
+    // because port and root directory come from the process manager.
     vscode.debug.registerDebugConfigurationProvider('clamps', {
       provideDebugConfigurations() {
         return [{
-          type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen',
+          type: 'clamps', request: 'attach', name: 'CLAMPS: Attach Debugger',
           internalConsoleOptions: 'neverOpen',
         }];
       },
@@ -157,11 +159,11 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!config.type) {
           config.type = 'clamps';
           config.request = 'attach';
-          config.name = 'CLAMPS: Debugger anhängen';
+          config.name = 'CLAMPS: Attach Debugger';
         }
-        // Auch bei einer aus launch.json geerbten Konfiguration: die
-        // Debug-Konsole soll die REPL nicht aus dem Panel schieben.
-        // Eine ausdrückliche Angabe des Benutzers bleibt stehen.
+        // Also for a configuration inherited from launch.json: the debug
+        // console should not push the REPL out of the panel. An explicit
+        // setting by the user is left alone.
         if (config.internalConsoleOptions === undefined) {
           config.internalConsoleOptions = 'neverOpen';
         }
@@ -184,13 +186,13 @@ export async function activate(context: vscode.ExtensionContext) {
       })
     ),
     vscode.commands.registerCommand('clamps.openLog', async () => {
-      // Der einzige Ort, an dem ein Absturz des Images dokumentiert ist.
-      // Ldb-Meldungen, "fatal error encountered", Heap Exhausted und
-      // Fehler beim Laden von CLAMPS gehen alle über stderr des
-      // SBCL-Prozesses und landen hier.
+      // The only place where a crash of the image is documented. Ldb
+      // messages, "fatal error encountered", heap exhausted and errors
+      // while loading CLAMPS all go over the SBCL process's stderr and
+      // end up here.
       const file = processManager?.logFile;
       if (!file) {
-        void vscode.window.showWarningMessage('CLAMPS: Kein Arbeitsbereich, kein Protokoll.');
+        void vscode.window.showWarningMessage('CLAMPS: No workspace, no log.');
         return;
       }
       try {
@@ -198,14 +200,14 @@ export async function activate(context: vscode.ExtensionContext) {
         await vscode.window.showTextDocument(doc, { preview: false });
       } catch {
         void vscode.window.showInformationMessage(
-          `CLAMPS: Noch kein Protokoll unter ${file}. Es entsteht beim nächsten Start.`
+          `CLAMPS: No log at ${file} yet. It appears at the next start.`
         );
       }
     }),
     vscode.commands.registerCommand('clamps.openRepl', () => ClampsReplTerminal.show(() => client)),
     vscode.commands.registerCommand('clamps.meterShow', () => {
       if (!client || client.state !== State.Running) {
-        vscode.window.showErrorMessage('CLAMPS läuft nicht. Führe „CLAMPS: Start“ aus.');
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
         return;
       }
       MeterView.show(stickerPoller, async () => {
@@ -214,15 +216,39 @@ export async function activate(context: vscode.ExtensionContext) {
         const r = await c.sendRequest<{ entries?: { key: string; elementType: string }[] }>(
           'clamps/stickerKeys', {}
         );
-        // Nur unboxte Ringe: ein Sticker mit :element-type t enthält
-        // beliebige Werte, aus denen sich kein Pegel rechnen lässt.
+        // Unboxed rings only: a sticker with :element-type t contains
+        // arbitrary values from which no level can be computed.
         return (r.entries ?? [])
           .filter(e => e.elementType === 'double-float')
           .map(e => e.key);
       });
-      // Der Takt läuft nur, solange jemand zusieht.
+      // The cycle runs only while somebody is watching.
       stickerPoller.start(
         vscode.workspace.getConfiguration('clamps').get<number>('meterIntervalMs', 100)
+      );
+    }),
+    vscode.commands.registerCommand('clamps.freqScopeShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration('clamps');
+      FreqScopeView.show(
+        async params => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<SpectrumFrame>('clamps/stickerSpectrum', params);
+        },
+        async () => {
+          const c = client;
+          if (!c || c.state !== State.Running) return [];
+          const r = await c.sendRequest<{
+            entries?: { key: string; capacity: number; decimation: number; elementType: string }[];
+          }>('clamps/stickerKeys', {});
+          return r.entries ?? [];
+        },
+        configuration.get<number>('freqScopeIntervalMs', 50),
+        configuration.get<number>('freqScopeFftSize', 2048)
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {
@@ -242,7 +268,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const form = sexpBeforePoint(editor.document, editor.selection.active);
       if (!form) {
         vscode.window.showWarningMessage(
-          'CLAMPS: Keine S-Expression vor dem Cursor.'
+          'CLAMPS: No s-expression before the cursor.'
         );
         return;
       }
@@ -254,7 +280,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const form = topLevelFormAt(editor.document, editor.selection.active);
       if (!form) {
         vscode.window.showWarningMessage(
-          'CLAMPS: Keine Top-Level-Form am Cursor gefunden.'
+          'CLAMPS: No top-level form found at the cursor.'
         );
         return;
       }
@@ -269,9 +295,9 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.disassemble', () =>
       disassembleCommand(() => client, outputChannel)
     ),
-    // Optionale Argumente: der Debugger ruft diesen Befehl mit einem
-    // bereits gebundenen Symbolnamen auf, statt über den aktiven Editor
-    // zu gehen. Ohne Argumente bleibt das Verhalten unverändert.
+    // Optional arguments: the debugger calls this command with an
+    // already bound symbol name instead of going through the active
+    // editor. Without arguments the behaviour is unchanged.
     vscode.commands.registerCommand(
       'clamps.inspect',
       (expression?: string, packageName?: string) =>
@@ -282,11 +308,11 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!editor) return;
       const symbol = symbolAt(editor.document, editor.selection.active);
       if (!symbol) {
-        vscode.window.showWarningMessage('CLAMPS: Kein Symbol am Cursor.');
+        vscode.window.showWarningMessage('CLAMPS: No symbol at the cursor.');
         return;
       }
       if (!client || client.state !== State.Running) {
-        vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        vscode.window.showErrorMessage('CLAMPS is not connected.');
         return;
       }
       const pkg = packageAt(editor.document, editor.selection.active);
@@ -298,7 +324,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('clamps.untraceAll', async () => {
       if (!client || client.state !== State.Running) {
-        vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        vscode.window.showErrorMessage('CLAMPS is not connected.');
         return;
       }
       const result = await client.sendRequest<{ output: string }>(
@@ -309,7 +335,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('clamps.debugAttach', () =>
       vscode.debug.startDebugging(undefined, {
-        type: 'clamps', request: 'attach', name: 'CLAMPS: Debugger anhängen',
+        type: 'clamps', request: 'attach', name: 'CLAMPS: Attach Debugger',
         internalConsoleOptions: 'neverOpen',
       })
     ),
@@ -317,7 +343,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('clamps.debugAbortAll', async () => {
       const session = vscode.debug.activeDebugSession;
       if (!session || session.type !== 'clamps') {
-        vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+        vscode.window.showErrorMessage('No active CLAMPS debug session.');
         return;
       }
       await session.customRequest('clamps/abortAll', {});
@@ -330,7 +356,7 @@ export async function activate(context: vscode.ExtensionContext) {
         arg?.variable?.evaluateName ?? arg?.evaluateName ?? arg?.variable?.name ?? arg?.name;
       if (typeof expression !== 'string' || !expression) {
         vscode.window.showWarningMessage(
-          'Dieser Wert hat keinen auswertbaren Lisp-Namen.'
+          'This value has no evaluable Lisp name.'
         );
         return;
       }
@@ -354,7 +380,7 @@ export async function activate(context: vscode.ExtensionContext) {
       if (!label) return;
       const current = client;
       if (!current || current.state !== State.Running) {
-        void vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+        void vscode.window.showErrorMessage('CLAMPS is not connected.');
         return;
       }
       try {
@@ -363,7 +389,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (r.ok) outputChannel.appendLine(r.message);
         else void vscode.window.showWarningMessage(r.message);
       } catch (e) {
-        void vscode.window.showErrorMessage(`Konnte ${label} nicht zurücknehmen: ${e}`);
+        void vscode.window.showErrorMessage(`Could not untrace ${label}: ${e}`);
       }
       await traceBrowser?.refresh();
     }),
@@ -374,17 +400,17 @@ export async function activate(context: vscode.ExtensionContext) {
       const doc=vscode.window.activeTextEditor?.document;
       if(doc) return compilerDiagnostics?.update(doc);
     }),
-    // Beim Auswerten im REPL kann sich der Node-Baum geändert haben
-    // (dsp!, rt-start, node-free). Statt Polling — das bei laufendem
-    // Audio unnötig Last erzeugt — nach jeder REPL-Auswertung einmal
-    // nachziehen, mit kleinem Verzug, damit der Node schon existiert.
+    // Evaluating in the REPL may have changed the node tree (dsp!,
+    // rt-start, node-free). Instead of polling — which creates needless
+    // load while audio is running — pull once after every REPL
+    // evaluation, with a small delay so that the node already exists.
     vscode.commands.registerCommand('clamps.closeParens', () => closeParens()),
     vscode.commands.registerCommand('clamps.checkBalance', () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const problem = balanceProblem(editor.document.getText());
       vscode.window.showInformationMessage(
-        problem ?? 'Klammern und Strings sind ausgeglichen.'
+        problem ?? 'Parens and strings are balanced.'
       );
     }),
     vscode.commands.registerCommand('clamps.incudineRefreshSoon', () => {
@@ -424,10 +450,9 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 async function openGui(): Promise<void> {
-  // Der GUI-Webserver (Hunchentoot) läuft NICHT auf dem Swank-Port,
-  // sondern auf dem port-Argument von clamps-start (Default 54619).
-  // Konfigurierbar über clamps.guiPort, falls clamps-start mit anderem
-  // Port aufgerufen wird.
+  // The GUI web server (Hunchentoot) does NOT run on the Swank port but
+  // on the port argument of clamps-start (default 54619). Configurable
+  // via clamps.guiPort in case clamps-start is called with another port.
   const guiPort = vscode.workspace
     .getConfiguration('clamps')
     .get<number>('guiPort', 54619);
@@ -435,9 +460,9 @@ async function openGui(): Promise<void> {
 
   const choice = await vscode.window.showInformationMessage(
     `CLAMPS-GUI: ${url}`,
-    'Im Browser öffnen'
+    'Open in browser'
   );
-  if (choice === 'Im Browser öffnen') {
+  if (choice === 'Open in browser') {
     await vscode.env.openExternal(vscode.Uri.parse(url));
   }
 }
@@ -446,58 +471,57 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
   if (!processManager) return;
 
   await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'CLAMPS startet …', cancellable: false },
+    { location: vscode.ProgressLocation.Notification, title: 'Starting CLAMPS …', cancellable: false },
     async () => {
       try {
-        outputChannel.appendLine('Starte/prüfe Bootstrap-Prozess …');
+        outputChannel.appendLine('Starting/checking the bootstrap process …');
         const session = await processManager!.ensureRunning();
-        // Warum weiterbenutzt oder frisch gestartet — das ist der
-        // Unterschied zwischen "mein Code ist geladen" und "ich teste
-        // gegen ein Image von vorgestern".
+        // Whether reused or freshly started — that is the difference
+        // between "my code is loaded" and "I am testing against an image
+        // from the day before yesterday".
         if (processManager!.lastStartNote) {
           outputChannel.appendLine(processManager!.lastStartNote);
         }
-        outputChannel.appendLine(`Session bereit auf Port ${session.port}.`);
+        outputChannel.appendLine(`Session ready on port ${session.port}.`);
 
         await startLanguageClient(bridgePath);
         rtStatus?.start();
-        vscode.window.showInformationMessage(`CLAMPS läuft (Swank-Port ${session.port}).`);
+        vscode.window.showInformationMessage(`CLAMPS is running (Swank port ${session.port}).`);
 
-        // REPL gleich mitöffnen: sie ist der Ort, an dem man arbeitet,
-        // und sie erst über die Befehlspalette holen zu müssen ist ein
-        // unnötiger Zwischenschritt.
+        // Open the REPL right away: it is the place where the work
+        // happens, and having to fetch it from the command palette first
+        // is a needless intermediate step.
         const openRepl =
           vscode.workspace.getConfiguration('clamps').get<boolean>('openReplOnStart', true);
         if (openRepl) {
           ClampsReplTerminal.show(() => client);
         }
 
-        // Debugger automatisch anhängen, sofern nicht abgeschaltet.
-        // Damit ist der Lisp-Debugger sofort da, ohne dass man ihn jedes
-        // Mal von Hand einhängen muss — so nah an Slys Verhalten, wie es
-        // VS Codes DAP-Modell zulässt (eine Debug-Session muss dort immer
-        // bewusst existieren; ein Debugger, der ganz ohne Session
-        // aufspringt, ist in VS Code nicht vorgesehen).
+        // Attach the debugger automatically unless switched off. That
+        // way the Lisp debugger is there immediately, without having to
+        // hook it in by hand every time — as close to Sly's behaviour as
+        // VS Code's DAP model allows (a debug session must always exist
+        // deliberately there; a debugger that springs up with no session
+        // at all is not foreseen in VS Code).
         if (vscode.workspace.getConfiguration('clamps').get<boolean>('autoAttachDebugger', true)) {
-          // Kleiner Verzug, damit die Bridge zuerst ihre Verbindung
-          // aufbaut und die beiden Swank-Verbindungen sich nicht ins
-          // Gehege kommen.
+          // A small delay so that the bridge builds its connection
+          // first and the two Swank connections do not get in each
+          // other's way.
           setTimeout(async () => {
             if (!vscode.debug.activeDebugSession) {
               await vscode.debug.startDebugging(undefined, {
                 type: 'clamps', request: 'attach',
-                name: 'CLAMPS: Debugger anhängen',
-                // Ohne das öffnet VS Code beim Start einer Debug-Session
-                // die Debug-Konsole und schiebt damit die REPL aus dem
-                // Panel. Man landete nach jedem Start auf einer Konsole,
-                // die man nicht braucht, und musste erst auf „Terminal“
-                // klicken.
+                name: 'CLAMPS: Attach Debugger',
+                // Without this, VS Code opens the debug console when a
+                // debug session starts and thereby pushes the REPL out of
+                // the panel. After every start you landed on a console you
+                // do not need and had to click "Terminal" first.
                 internalConsoleOptions: 'neverOpen',
               });
             }
-            // Zusätzlich die REPL wieder nach vorn holen: das Anhängen
-            // aktiviert die Debug-Ansicht, und „neverOpen“ verhindert nur
-            // das Aufklappen der Konsole, nicht den Wechsel des Panels.
+            // Additionally bring the REPL back to the front: attaching
+            // activates the debug view, and "neverOpen" only prevents the
+            // console from unfolding, not the switch of the panel.
             if (openRepl) {
               ClampsReplTerminal.show(() => client);
             }
@@ -505,9 +529,9 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        outputChannel.appendLine(`FEHLER: ${message}`);
+        outputChannel.appendLine(`ERROR: ${message}`);
         outputChannel.show();
-        vscode.window.showErrorMessage(`CLAMPS-Start fehlgeschlagen: ${message}`);
+        vscode.window.showErrorMessage(`Starting CLAMPS failed: ${message}`);
       }
     }
   );
@@ -516,9 +540,9 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
 async function startLanguageClient(bridgePath: string): Promise<void> {
   if (!processManager) return;
 
-  // Läuft bereits ein Client, nicht erneut starten — sonst entstehen
-  // parallele Bridge-Prozesse. Ein echter Neustart geht ausschließlich
-  // über clamps.restart (stop + start).
+  // If a client is already running, do not start another one — otherwise
+  // parallel bridge processes appear. A real restart goes exclusively
+  // through clamps.restart (stop + start).
   if (client && client.state === State.Running) {
     return;
   }
@@ -536,38 +560,37 @@ async function startLanguageClient(bridgePath: string): Promise<void> {
   };
 
   const clientOptions: LanguageClientOptions = {
-    // Beide Sprach-IDs UND ein Datei-Muster. Ist eine zweite
-    // Lisp-Extension installiert (Alive, commonlisp), kann .lisp der ID
-    // "commonlisp" zugeordnet sein. Dann bekam der Client kein didOpen,
-    // und Definition/Completion/Signature Help/Hover waren tot, waehrend
-    // die REPL (laeuft ueber Commands) weiter funktionierte.
+    // Both language IDs AND a file pattern. If a second Lisp extension
+    // is installed (Alive, commonlisp), .lisp may be assigned to the ID
+    // "commonlisp". The client then received no didOpen, and
+    // definition/completion/signature help/hover were dead while the
+    // REPL (which runs over commands) kept working.
     documentSelector: [
       { scheme: 'file', language: 'lisp' },
       { scheme: 'file', language: 'commonlisp' },
       { scheme: 'file', pattern: '**/*.{lisp,lsp,cl,asd}' },
     ],
     outputChannel,
-    // VS Codes eingebauter Auto-Restart würde bei jedem Server-Exit einen
-    // NEUEN Bridge-Prozess spawnen, ohne den alten sauber abzuräumen —
-    // dadurch stapelten sich mehrere Bridge-Server, von denen nur der
-    // erste die Session als "ready" vorfand und die übrigen in den
-    // 60s-Timeout liefen. Wir übernehmen den Lifecycle komplett selbst
-    // über die start/stop/restart-Commands und unterbinden den
-    // automatischen Neustart.
+    // VS Code's built-in auto-restart would spawn a NEW bridge process
+    // on every server exit without tidying up the old one — which made
+    // several bridge servers pile up, of which only the first found the
+    // session as "ready" while the rest ran into the 60 s timeout. We
+    // take over the life cycle entirely ourselves via the
+    // start/stop/restart commands and suppress the automatic restart.
     errorHandler: {
       error: () => ({ action: ErrorAction.Continue }),
       closed: () => {
-        // Kein automatischer Neustart: das läuft über clamps.restart.
-        // Die Standardmeldung des Clients ("Server will not be
-        // restarted") verrät aber nicht, was passiert ist und was hilft
-        // — und passiert regelmäßig, weil die Bridge sich beendet,
-        // sobald das Lisp-Image weg ist.
+        // No automatic restart: that goes through clamps.restart. But
+        // the client's standard message ("Server will not be restarted")
+        // does not reveal what happened and what helps — and it happens
+        // regularly, because the bridge ends as soon as the Lisp image is
+        // gone.
         void vscode.window
           .showWarningMessage(
-            'Die CLAMPS-Bridge wurde beendet — meist, weil das Lisp-Image ' +
-              'nicht mehr läuft. Completion, Go-to-Definition, Inspector und ' +
-              'DSP-Anzeige sind damit inaktiv.',
-            'CLAMPS neu starten'
+            'The CLAMPS bridge has ended — usually because the Lisp image is ' +
+              'no longer running. Completion, go-to-definition, inspector and ' +
+              'DSP display are therefore inactive.',
+            'Restart CLAMPS'
           )
           .then(choice => {
             if (choice) void vscode.commands.executeCommand('clamps.restart');
@@ -628,33 +651,34 @@ async function stopLanguageClient(): Promise<void> {
 }
 
 async function stopClamps(): Promise<void> {
-  // Zuerst das Polling anhalten: sonst laufen Requests gegen einen
-  // Client, der gerade abgebaut wird.
+  // Stop the polling first: otherwise requests run against a client that
+  // is being torn down.
   rtStatus?.stop();
   stickerPoller.stop();
   await stopLanguageClient();
   await processManager?.stop();
-  outputChannel.appendLine('CLAMPS gestoppt.');
+  outputChannel.appendLine('CLAMPS stopped.');
 }
 
 export async function deactivate(): Promise<void> {
   rtStatus?.stop();
   stickerPoller.dispose();
-  // Bewusst NICHT den Bootstrap-Prozess (SBCL/Incudine) mitkillen —
-  // der soll den Editor überleben. Nur der LanguageClient/Bridge-Prozess
-  // wird beendet, den startet die nächste Session einfach neu.
+  // Deliberately do NOT kill the bootstrap process (SBCL/Incudine) along
+  // with it — that one is meant to survive the editor. Only the
+  // LanguageClient/bridge process is ended; the next session simply
+  // starts it again.
   await stopLanguageClient();
 }
 
 /**
- * Reicht einen Debugger-Wert an den vorhandenen Inspector weiter. Die
- * Debug-Session bindet ihn an ein frisches Symbol und liefert dessen
- * Namen; hier wird nur noch clamps.inspect mit diesem Namen aufgerufen.
+ * Passes a debugger value on to the existing inspector. The debug session
+ * binds it to a fresh symbol and returns its name; here all that remains
+ * is to call clamps.inspect with that name.
  */
 async function inspectFromDebugger(request: string, args: any): Promise<void> {
   const session = vscode.debug.activeDebugSession;
   if (!session || session.type !== 'clamps') {
-    vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+    vscode.window.showErrorMessage('No active CLAMPS debug session.');
     return;
   }
   try {
@@ -666,21 +690,21 @@ async function inspectFromDebugger(request: string, args: any): Promise<void> {
       prepared.package
     );
   } catch (error) {
-    vscode.window.showErrorMessage(`Inspektion fehlgeschlagen: ${String(error)}`);
+    vscode.window.showErrorMessage(`Inspection failed: ${String(error)}`);
   }
 }
 
-/** Restart-Auswahl als Schnellauswahl. */
+/** Restart selection as a quick pick. */
 async function chooseRestart(): Promise<void> {
   const session = vscode.debug.activeDebugSession;
   if (!session || session.type !== 'clamps') {
-    vscode.window.showErrorMessage('Keine aktive CLAMPS-Debug-Session.');
+    vscode.window.showErrorMessage('No active CLAMPS debug session.');
     return;
   }
   const data = await session.customRequest('clamps/restarts', {});
   const restarts: any[] = data?.restarts ?? [];
   if (restarts.length === 0) {
-    vscode.window.showInformationMessage('Zurzeit kein aktiver Lisp-Debugger.');
+    vscode.window.showInformationMessage('No active Lisp debugger at the moment.');
     return;
   }
   const picked = await vscode.window.showQuickPick(
@@ -689,43 +713,44 @@ async function chooseRestart(): Promise<void> {
       description: r.description,
       index: r.index,
     })),
-    { placeHolder: 'Restart auswählen' }
+    { placeHolder: 'Choose a restart' }
   );
   if (picked) await session.customRequest('clamps/invokeRestart', { index: picked.index });
 }
 
 /**
- * Beschreibt ein Klammer- oder String-Problem, oder undefined wenn alles
- * ausgeglichen ist.
+ * Describes a paren or string problem, or undefined when everything is
+ * balanced.
  *
- * Warum vor dem Auswerten prüfen: unbalancierter Code kommt sonst im
- * Image an, wo der Reader ins Dateiende läuft. Bei einer Bridge, die auf
- * eine Antwort wartet, kann das die Verbindung mitnehmen — genau die
- * Sorte Ausfall, die schwer zuzuordnen ist, weil die Ursache im Editor
- * liegt und die Wirkung im Prozess.
+ * Why check before evaluating: unbalanced code otherwise arrives in the
+ * image, where the reader runs off the end of the file. With a bridge
+ * waiting for an answer, that can take the connection with it — exactly
+ * the sort of failure that is hard to attribute, because the cause is in
+ * the editor and the effect in the process.
  */
 function balanceProblem(text: string): string | undefined {
   const st = readState(text);
-  if (st.inString) return 'Ein String ist nicht geschlossen (fehlendes ").';
-  if (st.inBlockComment) return 'Ein Blockkommentar ist nicht geschlossen (fehlendes |#).';
-  if (st.tooManyClosers) return 'Es gibt mehr schließende als öffnende Klammern.';
+  if (st.inString) return 'A string is not closed (missing ").';
+  if (st.inBlockComment) return 'A block comment is not closed (missing |#).';
+  if (st.tooManyClosers) return 'There are more closing than opening parens.';
   if (st.depth > 0) {
-    return `${st.depth} Klammer${st.depth === 1 ? '' : 'n'} nicht geschlossen.`;
+    return `${st.depth} paren${st.depth === 1 ? '' : 's'} left unclosed.`;
   }
   return undefined;
 }
 
 /**
- * Fügt am Cursor so viele schließende Klammern ein, wie offen sind —
- * Paredits sly-close-all-parens nachempfunden. Rechnet vom Dateianfang
- * bis zum Cursor, was voraussetzt, dass der Text davor ausgeglichen ist;
- * bei unbalanciertem Vortext wird das gemeldet statt still falsch zu
- * schließen.
+ * Inserts as many closing parens at the cursor as are open — modelled on
+ * Paredit's sly-close-all-parens. It counts from the start of the file to
+ * the cursor, which presupposes that the text before it is balanced; with
+ * unbalanced preceding text this is reported instead of closing wrongly
+ * in silence.
  */
 /**
- * Wertet CODE aus, prüft aber vorher die Klammern. Bei einem Problem wird
- * gefragt statt blind gesendet: unbalancierter Code lässt den Reader im
- * Image ins Dateiende laufen, und das hat schon die Bridge mitgenommen.
+ * Evaluates CODE, but checks the parens beforehand. On a problem it asks
+ * instead of sending blindly: unbalanced code makes the reader in the
+ * image run off the end of the file, and that has already taken the
+ * bridge down once.
  */
 async function evaluateChecked(
   getClient: () => LanguageClient | undefined,
@@ -752,18 +777,18 @@ async function closeParens(): Promise<void> {
   const st = readState(upToCursor);
   if (st.inString) {
     vscode.window.showWarningMessage(
-      'Cursor steht in einem String — dort schließe ich keine Klammern.'
+      'The cursor is inside a string — I will not close parens there.'
     );
     return;
   }
   if (st.tooManyClosers) {
     vscode.window.showWarningMessage(
-      'Vor dem Cursor gibt es mehr schließende als öffnende Klammern.'
+      'Before the cursor there are more closing than opening parens.'
     );
     return;
   }
   if (st.depth <= 0) {
-    vscode.window.showInformationMessage('Keine offenen Klammern.');
+    vscode.window.showInformationMessage('No open parens.');
     return;
   }
   const closers = ')'.repeat(st.depth);

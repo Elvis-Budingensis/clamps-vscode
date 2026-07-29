@@ -5,20 +5,21 @@ import { symbolAt } from './disassemble';
 
 interface InspectPart {
   label: string;
-  /** Position in der Teileliste des Objekts — damit wird navigiert. */
+  /** Position in the object's parts list — navigation goes by this. */
   index: number;
   /** Kurze Druckdarstellung des Wertes — spart einen Klick. */
   preview?: string;
-  /** Nicht gebundene Slots lassen sich nicht betreten. */
+  /** Unbound slots cannot be entered. */
   navigable?: boolean;
-  /** Schreibbar? Zahlen, Pathnames und Funktionszellen sind es nicht. */
+  /** Writable? Numbers, pathnames and function cells are not. */
   settable?: boolean;
   /**
-   * Hat der Teil selbst Teile? Nur dann lohnt der Aufklapp-Pfeil.
+   * Does the part have parts itself? Only then is the expand arrow worth
+   * it.
    *
-   * Das Image entscheidet das, weil nur es den Wert kennt. Fehlt das
-   * Feld (null/undefined), ist die Frage unbeantwortet und wir zeigen den
-   * Pfeil wie bisher an allem Gebundenen.
+   * The image decides that, because only it knows the value. If the field
+   * is missing (null/undefined) the question is unanswered and we show
+   * the arrow as before on everything bound.
    */
   expandable?: boolean | null;
 }
@@ -27,7 +28,7 @@ interface InspectMeta {
   value: string;
 }
 interface InspectResult {
-  /** ID des Objekts in der Tabelle des Images. */
+  /** The object's ID in the image's table. */
   id: number;
   /** object, struct, list, vector, array, hash-table, string, symbol,
    *  function, number, character, pathname, package, atom, error. */
@@ -39,23 +40,22 @@ interface InspectResult {
   package: string;
 }
 
-/** Ein Schritt in der Navigationshistorie. */
+/** One step in the navigation history. */
 interface Crumb {
   id: number;
   label: string;
 }
 
 /**
- * Maskiert Text für HTML — Elementinhalt UND Attributwert.
+ * Escapes text for HTML — element content AND attribute value.
  *
- * Die Anführungszeichen sind nicht optional: die Labels kommen aus
- * prin1-to-string, ein String-Schlüssel einer Hashtable ist also immer
- * `"key"` mit Anführungszeichen, und genau dieser Text landet in
- * data-label="…" und title="…". Ohne Maskierung bricht das Attribut bei
- * jeder Hashtable mit String-Schlüsseln auf — und weil das Webview
- * Skripte ausführen darf und über die set-Nachricht beliebiges Lisp
- * auswerten lässt, wäre ein Label wie `" onmouseover=…` mehr als ein
- * Darstellungsfehler.
+ * The quotation marks are not optional: the labels come from
+ * prin1-to-string, so a string key of a hash table is always `"key"` with
+ * quotation marks, and exactly that text ends up in data-label="…" and
+ * title="…". Without escaping, the attribute breaks open at every hash
+ * table with string keys — and because the webview is allowed to run
+ * scripts and lets arbitrary Lisp be evaluated over the set message, a
+ * label such as `" onmouseover=…` would be more than a display bug.
  */
 const esc = (s: string): string =>
   String(s ?? '')
@@ -66,44 +66,44 @@ const esc = (s: string): string =>
     .replace(/'/g, '&#39;');
 
 /**
- * Der Inspector navigiert über Objekt-IDs, nicht über Ausdrücke.
+ * The inspector navigates by object IDs, not by expressions.
  *
- * Die frühere Fassung setzte für jeden Klick einen Zugriffs-Ausdruck
- * zusammen ("(slot-value (progn <expr>) 'x)") und liess ihn neu
- * auswerten. Das hatte drei Fehler: bei Seiteneffekten entstand ein
- * NEUES Objekt statt in das vorhandene zu navigieren, die Ausdrücke
- * wuchsen mit jeder Ebene, und Werte ohne lesbare Druckdarstellung
- * (etwa CLOS-Instanzen als Hash-Schlüssel) brachen die Navigation ganz.
+ * The earlier version assembled an access expression for every click
+ * ("(slot-value (progn <expr>) 'x)") and had it re-evaluated. That had
+ * three faults: with side effects a NEW object arose instead of
+ * navigating into the existing one, the expressions grew with every
+ * level, and values without a readable printed form (CLOS instances as
+ * hash keys, say) broke the navigation entirely.
  *
- * Jetzt hält das Image eine Objekt-Tabelle; der Client kennt nur IDs.
- * Beim Schließen des Panels wird sie freigegeben, damit keine Objekte
- * am Garbage Collector vorbei festgehalten werden.
+ * Now the image keeps an object table and the client knows only IDs. When
+ * the panel is closed it is released, so that no objects are held past
+ * the garbage collector.
  */
 export class ClampsInspector {
   private static panel: vscode.WebviewPanel | undefined;
   private static trail: Crumb[] = [];
 
   /**
-   * Besuchsverlauf, unabhängig vom Breadcrumb.
+   * The visit history, independent of the breadcrumb.
    *
-   * trail ist ein PFAD: er zeigt, wo im Objektbaum man steht, und beim
-   * Zurückgehen wird abgeschnitten. Damit ist alles verloren, was man
-   * seitwärts besucht hat — geht man von A in Teil 3 und wieder zurück,
-   * führt kein Weg mehr zu Teil 3, obwohl man gerade dort war.
+   * trail is a PATH: it shows where in the object tree one stands, and
+   * going back truncates it. That loses everything visited sideways — go
+   * from A into part 3 and back again, and no way leads to part 3 any
+   * more, although one was just there.
    *
-   * history ist die Browser-Sicht: jede besuchte Ansicht in der
-   * Reihenfolge des Besuchs, mit Vor und Zurück darüber. Der Index zeigt
-   * auf die gerade gezeigte Stelle; ein neuer Sprung schneidet nur den
-   * Teil VOR dem Index ab, wie bei einem Browser.
+   * history is the browser view: every visited page in the order of
+   * visiting, with back and forward over it. The index points at the page
+   * currently shown; a new jump truncates only the part BEFORE the index,
+   * as in a browser.
    */
   private static history: Crumb[] = [];
   private static historyIndex = -1;
-  /** Verhindert, dass Vor/Zurück selbst wieder Historie schreibt. */
+  /** Prevents back/forward from writing history themselves. */
   private static navigatingHistory = false;
   private static rootExpr = '';
   private static pkg = 'COMMON-LISP-USER';
   private static getClient: () => LanguageClient | undefined;
-  /** Aktuell dargestelltes Objekt; Grundlage fuer den rekursiven Baum. */
+  /** The object currently displayed; the basis for the recursive tree. */
   private static currentResult: InspectResult | undefined;
   /** Bereits geladene Unterobjekte, adressiert durch ihren Pfad im Baum. */
   private static recursiveChildren = new Map<string, InspectResult>();
@@ -145,8 +145,9 @@ export class ClampsInspector {
       this.history = [];
       this.historyIndex = -1;
       this.resetRecursive();
-      // Objekt-Tabelle im Image freigeben. Ohne das hielten wir alles
-      // fest, was je angeschaut wurde — bei Audio-Buffern schnell teuer.
+      // Release the object table in the image. Without this we would hold
+      // on to everything ever looked at — quickly expensive with audio
+      // buffers.
       void this.release();
     });
 
@@ -209,7 +210,7 @@ export class ClampsInspector {
     this.recursiveErrors.clear();
   }
 
-  /** Laedt einen Teil als Unterbaum, ohne die aktuelle Inspector-Seite zu verlassen. */
+  /** Loads a part as a subtree without leaving the current inspector page. */
   private static async expandRecursive(
     path: string, parentId: number, index: number, label: string
   ): Promise<void> {
@@ -223,7 +224,7 @@ export class ClampsInspector {
     if (!client || client.state !== State.Running) return;
     try {
       const child = await client.sendRequest<InspectResult>('clamps/inspectPart', { id: parentId, index });
-      if (child.kind === 'error') throw new Error(child.print || `Teil ${label} konnte nicht gelesen werden.`);
+      if (child.kind === 'error') throw new Error(child.print || `Part ${label} could not be read.`);
       this.recursiveChildren.set(path, child);
       this.recursiveErrors.delete(path);
     } catch (error) {
@@ -237,8 +238,8 @@ export class ClampsInspector {
   }
 
   /**
-   * Zurück im Verlauf. Bewegt sich NICHT im Pfad: wer von A nach Teil 3
-   * und zurück will, erwartet Teil 3 danach noch erreichbar zu haben.
+   * Back in the history. Does NOT move in the path: whoever goes from A
+   * into part 3 and back expects part 3 to still be reachable afterwards.
    */
   private static async back(): Promise<void> {
     if (this.historyIndex <= 0) return;
@@ -250,13 +251,13 @@ export class ClampsInspector {
     await this.gotoHistory(this.historyIndex + 1);
   }
 
-  /** Direkter Sprung an eine Stelle des Verlaufs. */
+  /** A direct jump to a place in the history. */
   private static async gotoHistory(index: number): Promise<void> {
     if (index < 0 || index >= this.history.length) return;
     const target = this.history[index];
     this.historyIndex = index;
-    // Der Pfad wird auf den Zielort gesetzt, damit Teil-Sprünge von hier
-    // aus wieder stimmen. Der Verlauf bleibt vollständig.
+    // The path is set to the destination, so that part jumps from here on
+    // are right again. The history stays complete.
     this.trail = [{ id: target.id, label: target.label }];
     this.navigatingHistory = true;
     try {
@@ -266,23 +267,23 @@ export class ClampsInspector {
     }
   }
 
-  /** Eintrag in den Verlauf schreiben, sofern es nicht Vor/Zurück war. */
+  /** Write an entry into the history, provided it was not back/forward. */
   private static recordHistory(id: number, label: string): void {
     if (this.navigatingHistory) return;
     const cur = this.history[this.historyIndex];
-    // Dieselbe Ansicht nicht doppelt: Aktualisieren und Setzen eines
-    // Teils landen sonst als Dutzend gleicher Einträge im Verlauf.
+    // Not the same page twice: refreshing and setting a part would
+    // otherwise land in the history as a dozen identical entries.
     if (cur && cur.id === id && cur.label === label) return;
     this.history = this.history.slice(0, this.historyIndex + 1);
     this.history.push({ id, label });
-    // Nach oben begrenzen: der Verlauf hält IDs der Objekt-Tabelle im
-    // Image fest, und die wird erst beim Schliessen freigegeben.
+    // Cap it: the history holds IDs of the object table in the image, and
+    // that is only released when the panel is closed.
     const MAX = 50;
     if (this.history.length > MAX) this.history = this.history.slice(-MAX);
     this.historyIndex = this.history.length - 1;
   }
 
-  /** Sprung im Breadcrumb auf eine frühere Ebene. */
+  /** A jump in the breadcrumb to an earlier level. */
   private static async jump(depth: number): Promise<void> {
     if (depth < 0 || depth >= this.trail.length - 1) return;
     this.trail = this.trail.slice(0, depth + 1);
@@ -308,10 +309,10 @@ export class ClampsInspector {
   }
 
   /**
-   * Setzt einen Teil des aktuellen Objekts. Das Image wertet die Eingabe
-   * aus, man kann also "(list 1 2)" oder "*foo*" eintippen und nicht nur
-   * Literale. Anschließend kommt das Objekt neu beschrieben zurück —
-   * durch das Setzen können sich auch Kopfzeilen ändern.
+   * Sets a part of the current object. The image evaluates the input, so
+   * one can type "(list 1 2)" or "*foo*" and not only literals.
+   * Afterwards the object comes back newly described — setting it can
+   * change header lines too.
    */
   private static async setPart(index: number, value: string): Promise<void> {
     const cur = this.current;
@@ -330,7 +331,7 @@ export class ClampsInspector {
     try {
       await client.sendRequest('clamps/inspectRelease', {});
     } catch {
-      // Beim Herunterfahren normal — nicht der Rede wert.
+      // Normal during shutdown — not worth mentioning.
     }
   }
 
@@ -344,7 +345,7 @@ export class ClampsInspector {
     const client = this.getClient();
     if (!client || client.state !== State.Running) {
       this.panel.webview.html = this.renderError(
-        'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start" aus.'
+        'CLAMPS is not connected. Run "CLAMPS: Start".'
       );
       return;
     }
@@ -353,7 +354,7 @@ export class ClampsInspector {
       const r = await client.sendRequest<InspectResult>(method, params);
       if (r.package) this.pkg = r.package;
       if (r.kind === 'error') {
-        this.panel.webview.html = this.renderError(r.print || 'Unbekannter Fehler');
+        this.panel.webview.html = this.renderError(r.print || 'Unknown error');
         return;
       }
       if (mode === 'root') this.trail = [{ id: r.id, label }];
@@ -380,12 +381,12 @@ export class ClampsInspector {
     const parts = r.parts ?? [];
     const meta = r.meta ?? [];
     const body = this.renderBody(kind, parts, r.id, '', [r.id], 0);
-    // Vor/Zurück richten sich nach dem VERLAUF, nicht nach dem Pfad.
+    // Back/forward follow the HISTORY, not the path.
     const canBack = this.historyIndex > 0;
     const canForward = this.historyIndex < this.history.length - 1;
 
-    // Bei skalaren Typen ist die Meta-Tabelle die eigentliche Information,
-    // die print-Zeile also redundant.
+    // For scalar types the meta table is the actual information, so the
+    // print line is redundant.
     const scalar = ['number', 'character', 'string', 'pathname', 'package'];
     const showPrint = !(scalar.includes(kind) && meta.length > 0);
 
@@ -393,13 +394,13 @@ export class ClampsInspector {
       ${this.css()}
     </style></head><body>
       <div class="bar">
-        <button id="back" ${canBack ? '' : 'disabled'} title="Zurück im Verlauf">←</button>
-        <button id="forward" ${canForward ? '' : 'disabled'} title="Vor im Verlauf">→</button>
-        <button id="refresh" title="Objekt neu einlesen">↻</button>
+        <button id="back" ${canBack ? '' : 'disabled'} title="Back in the history">←</button>
+        <button id="forward" ${canForward ? '' : 'disabled'} title="Forward in the history">→</button>
+        <button id="refresh" title="Read the object again">↻</button>
         ${this.renderHistorySelect()}
         <span class="kind kind-${esc(kind)}">${esc(kind)}</span>
         <span class="type">${esc(r.type)}</span>
-        <span class="oid" title="ID in der Objekt-Tabelle">#${r.id}</span>
+        <span class="oid" title="ID in the object table">#${r.id}</span>
       </div>
       ${this.renderTrail()}
       ${this.renderMeta(meta)}
@@ -445,9 +446,9 @@ export class ClampsInspector {
             });
           });
         }
-        // Inline-Editor: Doppelklick ersetzt die Zelle durch ein Feld,
-        // Enter schickt ab, Escape verwirft. Der bisherige Text steht als
-        // Vorgabe drin, weil die Druckdarstellung meist wieder lesbar ist.
+        // Inline editor: a double click replaces the cell with a field,
+        // Enter sends, Escape discards. The previous text is there as the
+        // default, because the printed form is usually readable again.
         for (const cell of document.querySelectorAll('[data-set]')) {
           cell.addEventListener('dblclick', () => {
             if (cell.querySelector('input')) return;
@@ -478,10 +479,10 @@ export class ClampsInspector {
           });
         }
 
-        // Ein Filter pro Ebene, und jeder betrifft nur die DIREKTEN Zeilen
-        // seiner eigenen Liste. Vorher lief der oberste Filter über alle
-        // [data-filter-row] im Dokument und blendete damit auch Zeilen in
-        // aufgeklappten Unterobjekten aus.
+        // One filter per level, and each one affects only the DIRECT rows
+        // of its own list. Previously the topmost filter ran over all
+        // [data-filter-row] in the document and thereby also hid rows in
+        // expanded subobjects.
         for (const input of document.querySelectorAll('[data-filter-input]')) {
           const scope = input.dataset.filterInput;
           const list = document.querySelector('[data-filter-list="' + scope + '"]');
@@ -503,17 +504,16 @@ export class ClampsInspector {
   }
 
   /**
-   * Pfad vom Wurzelausdruck bis hierher, jede Ebene anklickbar.
+   * The path from the root expression to here, every level clickable.
    *
-   * Zwei Kürzungen, weil die Leiste sonst unbenutzbar wird: lange
-   * Labels (ein Wurzelausdruck kann eine ganze defparameter-Form sein)
-   * werden gestutzt, und ab einer gewissen Tiefe fallen die mittleren
-   * Ebenen zu einem "…" zusammen. Der vollständige Text steht jeweils
-   * im title-Attribut.
+   * Two truncations, because the bar becomes unusable otherwise: long
+   * labels (a root expression can be a whole defparameter form) are cut
+   * back, and beyond a certain depth the middle levels collapse into a
+   * "…". The full text is in the title attribute in each case.
    */
   /**
-   * Verlauf als Auswahlliste. Neueste zuoberst, weil man häufiger ein
-   * paar Schritte zurück will als an den Anfang.
+   * The history as a pick list. Newest at the top, because one more often
+   * wants to go a few steps back than to the beginning.
    */
   private static renderHistorySelect(): string {
     if (this.history.length < 2) return '';
@@ -524,7 +524,7 @@ export class ClampsInspector {
         `<option value="${i}" ${i === this.historyIndex ? 'selected' : ''}>` +
         `${esc(c.label)} <#${c.id}></option>`)
       .join('');
-    return `<select id="histsel" title="Verlauf (${this.history.length})">${options}</select>`;
+    return `<select id="histsel" title="History (${this.history.length})">${options}</select>`;
   }
 
   private static renderTrail(): string {
@@ -532,7 +532,7 @@ export class ClampsInspector {
 
     const MAX_LABEL = 28;
     const HEAD = 1; // Wurzel immer zeigen
-    const TAIL = 3; // die letzten Ebenen immer zeigen
+    const TAIL = 3; // always show the last levels
 
     const shorten = (t: string): string =>
       t.length <= MAX_LABEL ? t : t.slice(0, MAX_LABEL - 1) + '…';
@@ -557,14 +557,14 @@ export class ClampsInspector {
       const hidden = n - HEAD - TAIL;
       items = [
         ...Array.from({ length: HEAD }, (_, i) => crumb(i)),
-        `<span class="crumb ellipsis" title="${hidden} Ebenen ausgeblendet">…</span>`,
+        `<span class="crumb ellipsis" title="${hidden} levels hidden">…</span>`,
         ...Array.from({ length: TAIL }, (_, k) => crumb(n - TAIL + k)),
       ];
     }
     return `<div class="trail">${items.join('<span class="sep">›</span>')}</div>`;
   }
 
-  /** Wählt das Layout anhand der Objekt-Kategorie. */
+  /** Chooses the layout according to the object category. */
   private static renderBody(
     kind: string, parts: InspectPart[], parentId: number, prefix: string,
     ancestors: number[], depth: number
@@ -572,13 +572,13 @@ export class ClampsInspector {
     if (parts.length === 0) {
       return ['list', 'vector', 'array'].includes(kind)
         ? '<div class="empty">Leere Sequenz.</div>'
-        : '<div class="empty">Keine navigierbaren Teile.</div>';
+        : '<div class="empty">No navigable parts.</div>';
     }
     const indexed = ['list', 'vector', 'array'].includes(kind);
     const rows = parts.map(p => this.renderRecursiveRow(p, parentId, prefix, ancestors, depth, indexed)).join('');
-    // Jede Ebene bekommt einen eigenen Namensraum. Vorher trug jeder
-    // Filter dieselbe id="filter": getElementById band nur den ersten,
-    // alle Filterfelder in aufgeklappten Unterobjekten waren tote UI.
+    // Every level gets a namespace of its own. Previously every filter
+    // carried the same id="filter": getElementById bound only the first,
+    // and all filter fields in expanded subobjects were dead UI.
     const scope = prefix === '' ? 'root' : `s${prefix.replace(/\./g, '_')}`;
     return `${this.filterBar(parts.length, scope)}` +
       `<div class="recursive-list" data-filter-list="${scope}">${rows}</div>`;
@@ -592,14 +592,14 @@ export class ClampsInspector {
     const expanded = this.recursiveExpanded.has(path);
     const child = this.recursiveChildren.get(path);
     const error = this.recursiveErrors.get(path);
-    // expandable == null heißt „Image sagt nichts dazu" — dann wie bisher
-    // jeden gebundenen Teil anbieten.
+    // expandable == null means "the image says nothing about it" — then,
+    // as before, offer every bound part.
     const canExpand =
       p.navigable !== false && p.expandable !== false && depth < 8;
     const toggle = canExpand
       ? `<button class="twisty" data-expand-path="${esc(path)}" data-expanded="${expanded}" ` +
         `data-parent-id="${parentId}" data-index="${p.index}" data-label="${esc(p.label)}" ` +
-        `title="${expanded ? 'Unterobjekt einklappen' : 'Unterobjekt inline aufklappen'}">${expanded ? '▾' : '▸'}</button>`
+        `title="${expanded ? 'Collapse subobject' : 'Expand subobject inline'}">${expanded ? '▾' : '▸'}</button>`
       : '<span class="twisty spacer"></span>';
     const labelClass = indexed ? 'idx' : 'k';
     const label = this.link(p, labelClass, parentId);
@@ -608,7 +608,7 @@ export class ClampsInspector {
       if (error) nested = `<div class="recursive-error">${esc(error)}</div>`;
       else if (!child) nested = '<div class="recursive-loading">Lade …</div>';
       else if (ancestors.includes(child.id)) {
-        nested = `<div class="recursive-cycle">↩ Zyklus zu Objekt #${child.id}</div>`;
+        nested = `<div class="recursive-cycle">↩ cycle back to object #${child.id}</div>`;
       } else {
         nested = `<div class="recursive-child"><div class="recursive-head">` +
           `<span class="kind kind-${esc(child.kind || 'atom')}">${esc(child.kind || 'atom')}</span>` +
@@ -635,28 +635,28 @@ export class ClampsInspector {
     return `<div class="meta">${cells}</div>`;
   }
 
-  /** Klickbares Label, sofern der Teil betretbar ist. */
+  /** A clickable label, provided the part can be entered. */
   private static link(p: InspectPart, cls: string, parentId: number): string {
     const label = esc(p.label);
     if (p.navigable === false) {
-      return `<span class="${cls} dead" title="nicht gebunden">${label}</span>`;
+      return `<span class="${cls} dead" title="unbound">${label}</span>`;
     }
     return `<a class="${cls}" href="#" data-index="${p.index}" data-parent-id="${parentId}" data-label="${label}">${label}</a>`;
   }
 
-  /** Wertzelle; bei schreibbaren Teilen per Doppelklick editierbar. */
+  /** A value cell; editable by double click on writable parts. */
   private static valueCell(p: InspectPart): string {
     const v = esc(p.preview ?? '');
     if (!p.settable) return `<span class="v">${v}</span>`;
     return `<span class="v editable" data-set="${p.index}"
-                  title="Doppelklick zum Ändern">${v}</span>`;
+                  title="Double-click to change">${v}</span>`;
   }
 
   private static filterBar(count: number, scope: string): string {
     if (count < 12) return '';
     return `<div class="filterbar">
-      <input class="filter" data-filter-input="${scope}" type="text" placeholder="filtern …">
-      <span class="filter-count" data-filter-count="${scope}">${count} Einträge</span>
+      <input class="filter" data-filter-input="${scope}" type="text" placeholder="filter …">
+      <span class="filter-count" data-filter-count="${scope}">${count} entries</span>
     </div>`;
   }
 
@@ -778,19 +778,19 @@ export class ClampsInspector {
 
   private static renderError(message: string): string {
     return `<!DOCTYPE html><html><body style="font-family:monospace;padding:12px;color:var(--vscode-errorForeground)">
-      <b>Inspect-Fehler:</b><pre>${esc(message)}</pre></body></html>`;
+      <b>Inspect error:</b><pre>${esc(message)}</pre></body></html>`;
   }
 }
 
 /**
- * Öffnet den Inspector.
+ * Opens the inspector.
  *
- * Ohne Argumente wie bisher: Auswahl, Symbol am Cursor oder Top-Level-
- * Form aus dem aktiven Editor. Mit Argumenten direkt auf den übergebenen
- * Ausdruck — das braucht der Debugger, der einen Wert an ein Symbol
- * bindet und dessen Namen hereinreicht. Der Prototyp hat dafür ein
- * ungespeichertes Lisp-Dokument angelegt, den Text markiert und diesen
- * Befehl aufgerufen; das hinterliess Geistertabs.
+ * Without arguments as before: the selection, the symbol at the cursor or
+ * the top-level form from the active editor. With arguments, directly on
+ * the expression passed in — that is what the debugger needs, which binds
+ * a value to a symbol and passes its name in. For that the prototype
+ * created an unsaved Lisp document, selected the text and called this
+ * command; that left ghost tabs behind.
  */
 export async function inspectCommand(
   getClient: () => LanguageClient | undefined,
@@ -800,7 +800,7 @@ export async function inspectCommand(
   const client = getClient();
   if (!client || client.state !== State.Running) {
     vscode.window.showErrorMessage(
-      'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start" aus.'
+      'CLAMPS is not connected. Run "CLAMPS: Start".'
     );
     return;
   }
@@ -820,8 +820,8 @@ export async function inspectCommand(
     return;
   }
 
-  // Bevorzugt die Auswahl; sonst das Symbol am Cursor; sonst die
-  // Top-Level-Form.
+  // The selection is preferred; otherwise the symbol at the cursor;
+  // otherwise the top-level form.
   const selection = editor.document.getText(editor.selection).trim();
   const expr =
     selection.length > 0
@@ -831,7 +831,7 @@ export async function inspectCommand(
 
   if (!expr) {
     vscode.window.showWarningMessage(
-      'CLAMPS: Nichts zum Inspizieren am Cursor gefunden.'
+      'CLAMPS: Nothing to inspect found at the cursor.'
     );
     return;
   }

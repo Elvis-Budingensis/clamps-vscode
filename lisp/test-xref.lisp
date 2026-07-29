@@ -1,28 +1,26 @@
-;;;; test-xref.lisp — Regressionstest für XREF und Objekt-Identität.
+;;;; test-xref.lisp — a regression test for XREF and object identity.
 ;;;;
 ;;;;   sbcl --script lisp/test-xref.lisp
 ;;;;
-;;;; Deckt die drei Fehler ab, die in v76/v77 unbemerkt ausgeliefert
-;;;; wurden. Alle drei waren nur gegen ein laufendes Image sichtbar, und
-;;;; genau das lief nie:
+;;;; Covers the three bugs that were shipped unnoticed in v76/v77. All
+;;;; three were visible only against a running image, and that is exactly
+;;;; what never ran:
 ;;;;
-;;;;   1. xref-for-repl übergab resolve-symbol den Paketnamen als STRING.
-;;;;      resolve-symbol bindet *package* daran, SBCL deklariert
-;;;;      *package* als Typ PACKAGE — Typfehler, vom handler-case
-;;;;      verschluckt, Ergebnis NIL. swank:xref wurde nie aufgerufen;
-;;;;      sechs der sieben XREF-Arten meldeten stur "Symbol nicht
-;;;;      gefunden".
-;;;;   2. %tool-entry setzte :line auf 1, wenn das Backend keine Zeile
-;;;;      liefert. Der Client bevorzugte die Zeile, der daneben stehende
-;;;;      Zeichen-Offset blieb ungenutzt — jeder Sprung landete am
-;;;;      Dateianfang.
-;;;;   3. %inspect-register vergab für dasselbe Objekt jedes Mal eine neue
-;;;;      ID. Damit konnte die Zyklenerkennung des Clients, die IDs
-;;;;      vergleicht, grundsätzlich nicht auslösen.
+;;;;   1. xref-for-repl passed resolve-symbol the package name as a
+;;;;      STRING. resolve-symbol binds *package* to it, SBCL declares
+;;;;      *package* to be of type PACKAGE — a type error, swallowed by the
+;;;;      handler-case, result NIL. swank:xref was never called; six of
+;;;;      the seven XREF kinds stubbornly reported "symbol not found".
+;;;;   2. %tool-entry set :line to 1 when the backend supplies no line.
+;;;;      The client preferred the line and the character offset next to
+;;;;      it went unused — every jump landed at the start of the file.
+;;;;   3. %inspect-register handed out a new ID for the same object every
+;;;;      time. With that, the client's cycle detection, which compares
+;;;;      IDs, could never trigger at all.
 ;;;;
-;;;; Swank wird durch eine Attrappe ersetzt: der Test soll die Verkabelung
-;;;; prüfen, nicht SBCLs Cross-Reference-Datenbank, und läuft so in
-;;;; Sekunden ohne Quicklisp.
+;;;; Swank is replaced by a stand-in: the test is meant to check the
+;;;; wiring, not SBCL's cross-reference database, and so runs in seconds
+;;;; without Quicklisp.
 
 (in-package :cl-user)
 
@@ -32,13 +30,13 @@
 (in-package :swank)
 
 (defvar *calls* '()
-  "Protokoll: was hat der Client bei swank:xref angefragt?")
+  "A log: what did the client ask swank:xref for?")
 
 (defun xref (type name)
   (push (list type name) *calls*)
-  ;; Realistische SBCL-Antwort: Name als String, Ort mit (:position N)
-  ;; und OHNE (:line …) — der Normalfall, an dem der Sprung scheiterte.
-  ;; Der doppelte Eintrag prüft zugleich die Deduplizierung.
+  ;; A realistic SBCL answer: the name as a string, the location with
+  ;; (:position N) and WITHOUT (:line …) — the normal case on which the
+  ;; jump failed. The duplicate entry also checks the deduplication.
   (let ((loc (list :location (list :file "/tmp/clamps-xref-probe.lisp")
                    (list :position 4711)
                    (list :snippet "(defun bar"))))
@@ -50,7 +48,7 @@
 (let ((rpc (merge-pathnames "rpc.lisp"
                             (or *load-truename* *default-pathname-defaults*))))
   (unless (probe-file rpc)
-    (format *error-output* "~&rpc.lisp nicht gefunden neben ~A~%" *load-truename*)
+    (format *error-output* "~&rpc.lisp not found next to ~A~%" *load-truename*)
     (sb-ext:exit :code 1))
   (handler-bind ((warning #'muffle-warning))
     (load rpc)))
@@ -60,12 +58,12 @@
 (defun check (name actual expected)
   (unless (equal actual expected)
     (incf *failed*)
-    (format t "~&FEHLER ~A~%  erwartet: ~S~%  bekommen: ~S~%" name expected actual)))
+    (format t "~&FAILED ~A~%  expected: ~S~%  got:      ~S~%" name expected actual)))
 
 (defun truthy (name actual)
   (unless actual
     (incf *failed*)
-    (format t "~&FEHLER ~A~%  erwartet: etwas Wahres, bekommen: NIL~%" name)))
+    (format t "~&FAILED ~A~%  expected: something true, got: NIL~%" name)))
 
 (defun rpc (name &rest args)
   (apply (or (find-symbol (string-upcase name) :clamps-bridge-rpc)
@@ -80,61 +78,61 @@
   (setf swank::*calls* '())
   (let ((r (rpc "xref-for-repl" "car" "COMMON-LISP-USER" kind)))
     (check (format nil "~A liefert :ok" kind) (first r) :ok)
-    (truthy (format nil "~A ruft swank:xref auf" kind) swank::*calls*)
-    ;; Vollqualifiziert übergeben, damit das Paket des Aufrufers nicht
-    ;; mitentscheidet, welches Symbol gemeint ist.
+    (truthy (format nil "~A calls swank:xref" kind) swank::*calls*)
+    ;; Passed fully qualified, so that the caller's package does not have
+    ;; a say in which symbol is meant.
     (truthy (format nil "~A uebergibt qualifizierten Namen" kind)
             (search "common-lisp::car" (second (first swank::*calls*))))))
 
-(check "unbekannte Art wird gemeldet"
+(check "an unknown kind is reported"
        (first (rpc "xref-for-repl" "car" "COMMON-LISP-USER" "quatsch")) :error)
-(check "unbekanntes Symbol wird gemeldet"
+(check "an unknown symbol is reported"
        (first (rpc "xref-for-repl" "gibtsnicht-xyzzy" "COMMON-LISP-USER" "callers"))
        :error)
 
-;;; Und es bleibt auch keins zurück: read-from-string interniert, der
-;;; Rückfallweg in resolve-symbol legte deshalb bei jedem Tippfehler ein
-;;; Symbol im Paket an und meldete es als Treffer.
-(check "Tippfehler legt kein Symbol an"
+;;; And none is left behind either: read-from-string interns, so the
+;;; fallback path in resolve-symbol used to create a symbol in the package
+;;; on every typo and report it as a hit.
+(check "a typo creates no symbol"
        (nth-value 1 (find-symbol "GIBTSNICHT-XYZZY" :common-lisp-user))
        nil)
 
-;;; Auch mit einem Paket, das es nicht gibt, darf nichts knallen: es wird
-;;; auf COMMON-LISP-USER zurückgefallen.
-(check "unbekanntes Paket faellt zurueck"
+;;; Nothing may blow up with a package that does not exist either: it
+;;; falls back to COMMON-LISP-USER.
+(check "an unknown package falls back"
        (first (rpc "xref-for-repl" "car" "GIBTSNICHT" "callers")) :ok)
 
 ;;; ---------------------------------------------------------------------
-;;; 2. Zeile bleibt leer, Offset kommt durch, Duplikate fallen weg
+;;; 2. The line stays empty, the offset comes through, duplicates drop out
 ;;; ---------------------------------------------------------------------
 (let* ((r (rpc "xref-for-repl" "car" "COMMON-LISP-USER" "callers"))
        (entries (second r))
        (e (first entries)))
   (check "Duplikate entfernt" (length entries) 1)
-  (check "keine erfundene Zeile" (getf e :line) nil)
+  (check "no invented line" (getf e :line) nil)
   (check "Offset durchgereicht" (getf e :offset) 4711)
   (check "Art benannt" (getf e :description) "calls")
-  ;; Die Probedatei existiert nicht — dann NIL statt eines Sprungs ins
-  ;; Leere, und der Client meldet das ehrlich.
+  ;; The probe file does not exist — then NIL rather than a jump into the
+  ;; void, and the client reports that honestly.
   (check "fehlende Quelle ehrlich" (getf e :file) nil)
-  ;; Der Name kommt als String; trotzdem muss ein inspizierbarer
-  ;; Ausdruck herausfallen.
-  (check "Inspect-Ausdruck aus String-Namen"
+  ;; The name arrives as a string; an inspectable expression must come
+  ;; out all the same.
+  (check "inspect expression from a string name"
          (getf e :inspect) "common-lisp-user::bar"))
 
-;;; Eine existierende Datei wird aufgelöst und behält ihren Offset.
+;;; An existing file is resolved and keeps its offset.
 (let ((probe "/tmp/clamps-xref-probe.lisp"))
   (with-open-file (s probe :direction :output :if-exists :supersede)
     (format s "(defun bar () 1)~%"))
   (unwind-protect
        (let ((e (first (second (rpc "xref-for-repl" "car" "COMMON-LISP-USER" "callers")))))
          (check "vorhandene Quelle aufgeloest" (getf e :file) probe)
-         (check "Offset bleibt am Treffer" (getf e :offset) 4711)
-         (check "auch dann keine Zeile" (getf e :line) nil))
+         (check "the offset stays on the hit" (getf e :offset) 4711)
+         (check "no line then either" (getf e :line) nil))
     (ignore-errors (delete-file probe))))
 
 ;;; ---------------------------------------------------------------------
-;;; 3. Objekt-Identität: dieselbe ID für dasselbe Objekt
+;;; 3. Object identity: the same ID for the same object
 ;;; ---------------------------------------------------------------------
 (let* ((reg (find-symbol "%INSPECT-REGISTER" :clamps-bridge-rpc))
        (a (list 1 2 3))
@@ -142,23 +140,23 @@
   (check "gleiches Objekt, gleiche ID" (funcall reg a) (funcall reg a))
   (truthy "verschiedene Objekte, verschiedene IDs"
           (/= (funcall reg a) (funcall reg b)))
-  ;; Der Zyklus selbst: eine Struktur, die auf sich zeigt.
+  ;; The cycle itself: a structure pointing at itself.
   (let ((ring (list 1)))
     (setf (cdr ring) ring)
     (check "selbstreferenziell, stabile ID"
            (funcall reg ring) (funcall reg (cdr ring)))))
 
-;;; Nach dem Freigeben ist die Tabelle leer — und vergibt neue IDs, ohne
-;;; alte Identitäten weiterzuschleppen.
+;;; After releasing, the table is empty — and hands out new IDs without
+;;; dragging old identities along.
 (let* ((reg (find-symbol "%INSPECT-REGISTER" :clamps-bridge-rpc))
        (o (list :x))
        (before (funcall reg o)))
   (rpc "inspect-release-for-repl")
   (let ((after (funcall reg o)))
-    (truthy "nach Freigabe neue ID" (/= before after))))
+    (truthy "a new ID after releasing" (/= before after))))
 
 ;;; ---------------------------------------------------------------------
-;;; 4. Aufklapp-Pfeil: nur wo es etwas aufzuklappen gibt
+;;; 4. The expand arrow: only where there is something to expand
 ;;; ---------------------------------------------------------------------
 (let ((p (find-symbol "%INSPECT-EXPANDABLE-P" :clamps-bridge-rpc)))
   (dolist (case '((42 nil) (#\a nil) ("text" nil) (nil nil)
@@ -166,18 +164,18 @@
     (destructuring-bind (val expected) case
       (check (format nil "expandable-p ~S" val)
              (and (funcall p val) t) expected)))
-  (check "leere Hashtable nicht" (and (funcall p (make-hash-table)) t) nil)
+  (check "an empty hash table does not" (and (funcall p (make-hash-table)) t) nil)
   (let ((h (make-hash-table)))
     (setf (gethash :a h) 1)
-    (check "gefuellte Hashtable schon" (and (funcall p h) t) t))
-  (check "leerer Vektor nicht" (and (funcall p (vector)) t) nil)
-  (check "gefuellter Vektor schon" (and (funcall p (vector 1)) t) t)
-  ;; Ungebundene Slots bekommen keinen Pfeil, sonst führt er ins Leere.
-  (check "Unbound-Marke nicht"
+    (check "a filled hash table does" (and (funcall p h) t) t))
+  (check "an empty vector does not" (and (funcall p (vector)) t) nil)
+  (check "a filled vector does" (and (funcall p (vector 1)) t) t)
+  ;; Unbound slots get no arrow, otherwise it leads nowhere.
+  (check "the unbound marker does not"
          (and (funcall p (symbol-value (find-symbol "+UNBOUND+" :clamps-bridge-rpc))) t)
          nil))
 
-;;; Und die Teileliste trägt das Feld tatsächlich mit.
+;;; And the parts list really does carry the field.
 (defclass probe-person () ((name :initform "Anna") (alter :initform 42)))
 (let* ((obj (make-instance 'probe-person))
        (reg (find-symbol "%INSPECT-REGISTER" :clamps-bridge-rpc))
@@ -186,11 +184,11 @@
        (parts (fifth r)))
   (check "zwei Slots" (length parts) 2)
   (dolist (p parts)
-    (check (format nil "sechs Felder bei ~A" (first p)) (length p) 6)
-    ;; String und Zahl sind beide nicht aufklappbar.
-    (check (format nil "~A ohne Pfeil" (first p)) (sixth p) nil)))
+    (check (format nil "six fields for ~A" (first p)) (length p) 6)
+    ;; A string and a number are both not expandable.
+    (check (format nil "~A without an arrow" (first p)) (sixth p) nil)))
 
 (if (zerop *failed*)
-    (format t "~&ok — XREF-Verkabelung, Sprungziel und Objekt-Identität stimmen.~%")
-    (format t "~&~D Prüfung(en) fehlgeschlagen.~%" *failed*))
+    (format t "~&ok — XREF wiring, jump target and object identity are right.~%")
+    (format t "~&~D check(s) failed.~%" *failed*))
 (sb-ext:exit :code (if (zerop *failed*) 0 1))

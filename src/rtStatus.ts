@@ -1,13 +1,14 @@
 // rtStatus.ts
 //
-// Zeigt in der Statusleiste, ob der Incudine-Realtime-Server läuft.
+// Shows in the status bar whether the Incudine realtime server is
+// running.
 //
-// Warum das nötig ist: CLAMPS setzt in rts-start/rts-stop per
-// slynk:eval-in-emacs ein Modeline-Label ("DSP ✓"). Ohne Emacs-Connection
-// crasht dieser Aufruf, deshalb ist er in bootstrap.lisp ein No-op — mit
-// der Folge, dass in VS Code jede Anzeige fehlt, ob DSP läuft. Statt auf
-// Push aus dem Image zu warten (den es ohne Emacs nicht gibt), pollen wir
-// den Zustand aktiv.
+// Why this is necessary: in rts-start/rts-stop CLAMPS sets a modeline
+// label ("DSP ✓") via slynk:eval-in-emacs. Without an Emacs connection
+// that call crashes, which is why it is a no-op in bootstrap.lisp — with
+// the consequence that in VS Code there is no indication at all whether
+// DSP is running. Instead of waiting for a push from the image (which
+// does not exist without Emacs), we poll the state actively.
 
 import * as vscode from 'vscode';
 import { LanguageClient, State } from 'vscode-languageclient/node';
@@ -23,15 +24,15 @@ interface RtStatusResult {
 
 export class ClampsRtStatus implements vscode.Disposable {
   private item: vscode.StatusBarItem;
-  // ReturnType statt NodeJS.Timeout: funktioniert auch ohne @types/node
+  // ReturnType rather than NodeJS.Timeout: works without @types/node too
   private timer: ReturnType<typeof setInterval> | undefined;
   private inFlight = false;
   private getClient: () => LanguageClient | undefined;
 
   constructor(getClient: () => LanguageClient | undefined) {
     this.getClient = getClient;
-    // Priorität knapp unter den Sprachanzeigen, damit es nicht ganz
-    // rechts unter „ferner liefen" landet.
+    // Priority just below the language indicators so that it does not
+    // end up far right among the also-rans.
     this.item = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       100
@@ -41,13 +42,13 @@ export class ClampsRtStatus implements vscode.Disposable {
     this.item.show();
   }
 
-  /** Startet das Polling. Intervall über clamps.rtPollInterval (ms). */
+  /** Starts polling. Interval via clamps.rtPollInterval (ms). */
   start(): void {
     this.stop();
     const interval = vscode.workspace
       .getConfiguration('clamps')
       .get<number>('rtPollInterval', 3000);
-    if (interval <= 0) return; // 0 = Polling aus
+    if (interval <= 0) return; // 0 = polling off
     this.timer = setInterval(() => void this.refresh(), interval);
     void this.refresh();
   }
@@ -60,8 +61,8 @@ export class ClampsRtStatus implements vscode.Disposable {
   }
 
   async refresh(): Promise<void> {
-    // Überlappende Anfragen vermeiden: hängt das Image (langer GC, RT
-    // blockiert), würden sich sonst Requests stapeln.
+    // Avoid overlapping requests: if the image hangs (long GC, RT
+    // blocked), requests would otherwise pile up.
     if (this.inFlight) return;
 
     const client = this.getClient();
@@ -75,8 +76,8 @@ export class ClampsRtStatus implements vscode.Disposable {
       const r = await client.sendRequest<RtStatusResult>('clamps/rtStatus', {});
       this.setStatus(r);
     } catch {
-      // Ein fehlgeschlagener Poll ist kein Grund für eine Fehlermeldung —
-      // beim Neustart passiert das regelmäßig.
+      // A failed poll is no reason for an error message — it happens
+      // regularly during a restart.
       this.setDisconnected();
     } finally {
       this.inFlight = false;
@@ -90,9 +91,9 @@ export class ClampsRtStatus implements vscode.Disposable {
     if (r.running) {
       this.item.text = '$(pulse) DSP';
       this.item.backgroundColor = undefined;
-      this.item.tooltip = this.buildTooltip('Realtime-Server läuft', r.info);
+      this.item.tooltip = this.buildTooltip('Realtime server running', r.info);
     } else {
-      this.item.text = '$(circle-slash) DSP aus';
+      this.item.text = '$(circle-slash) DSP off';
       this.item.backgroundColor = undefined;
       this.item.tooltip = this.buildTooltip('Realtime-Server gestoppt', r.info);
     }
@@ -102,7 +103,7 @@ export class ClampsRtStatus implements vscode.Disposable {
     this.lastResult = undefined;
     this.item.text = '$(debug-disconnect) CLAMPS';
     this.item.backgroundColor = undefined;
-    this.item.tooltip = 'CLAMPS nicht verbunden';
+    this.item.tooltip = 'CLAMPS not connected';
   }
 
   private buildTooltip(headline: string, info: RtInfo[]): vscode.MarkdownString {
@@ -114,17 +115,17 @@ export class ClampsRtStatus implements vscode.Disposable {
     return md;
   }
 
-  /** Details als Meldung — für Nutzer, die Tooltips nicht mögen. */
+  /** Details as a message — for users who dislike tooltips. */
   async showDetails(): Promise<void> {
     await this.refresh();
     const r = this.lastResult;
     if (!r) {
-      vscode.window.showInformationMessage('CLAMPS ist nicht verbunden.');
+      vscode.window.showInformationMessage('CLAMPS is not connected.');
       return;
     }
     const lines = r.info.map(i => `${i.key}: ${i.value}`).join(', ');
     vscode.window.showInformationMessage(
-      `DSP ${r.running ? 'läuft' : 'aus'}${lines ? ' — ' + lines : ''}`
+      `DSP ${r.running ? 'running' : 'off'}${lines ? ' — ' + lines : ''}`
     );
   }
 

@@ -1,11 +1,11 @@
 // test/vscode-stub.js
 //
-// Hängt sich in den Modul-Loader und liefert Attrappen für 'vscode' und
-// 'vscode-languageclient/node'. Damit lassen sich Module, die aus VS
-// Code nur Kleinigkeiten brauchen (EventEmitter, Konfiguration), mit
-// nacktem node testen.
+// Hooks into the module loader and supplies stand-ins for 'vscode' and
+// 'vscode-languageclient/node'. That makes it possible to test modules
+// that need only small things from VS Code (EventEmitter, configuration)
+// with bare node.
 //
-// Muss VOR dem ersten require aus out/ geladen werden.
+// Has to be loaded BEFORE the first require from out/.
 
 const Module = require('module');
 
@@ -26,10 +26,11 @@ class TreeItem {
 const vscodeStub = {
   EventEmitter: Emitter,
   TreeItem,
-  // Nur so viel, wie die Sprungziel-Rechnung braucht.
+  // Only as much as the jump-target arithmetic needs.
   Position: class { constructor(line, character) { this.line = line; this.character = character; } },
-  // Range und TextEdit brauchen die Formatierungs-Provider. Bewusst
-  // minimal: nur was die Einrückungsrechnung erzeugt und abliest.
+  // Range and TextEdit are needed by the formatting providers.
+  // Deliberately minimal: only what the indentation arithmetic produces
+  // and reads.
   Range: class {
     constructor(start, end) { this.start = start; this.end = end; }
   },

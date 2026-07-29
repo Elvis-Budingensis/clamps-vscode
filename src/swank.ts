@@ -1,30 +1,30 @@
 // swank.ts
 //
-// Direkte Socket-Verbindung zu Swank, parallel zur Bridge.
+// A direct socket connection to Swank, alongside the bridge.
 //
-// Warum nicht über bridge-server.lisp? Der Debugger lebt von
-// ASYNCHRONEN Pushes aus dem Image: sobald eine Condition signalisiert
-// wird, schickt Swank von sich aus (:debug thread level condition
-// restarts frames conts). Unsere Bridge kennt nur Anfrage/Antwort und
-// hat keinen Weg, so etwas weiterzureichen. Eine zweite, direkte
-// Verbindung ist billiger als die Bridge um einen Push-Kanal zu
-// erweitern — und sie ist genau das, was Sly auch tut.
+// Why not through bridge-server.lisp? The debugger lives on ASYNCHRONOUS
+// pushes from the image: as soon as a condition is signalled, Swank
+// sends (:debug thread level condition restarts frames conts) of its own
+// accord. Our bridge only knows request/response and has no way to pass
+// something like that on. A second, direct connection is cheaper than
+// extending the bridge with a push channel — and it is exactly what Sly
+// does too.
 //
-// Preis dieser Entscheidung: zwei Verbindungen zum selben Image haben
-// je ein eigenes *package*. Deshalb hält diese Klasse ihr Paket selbst
-// nach und die Debug-Session synchronisiert es bewusst.
+// The price of this decision: two connections to the same image each
+// have their own *package*. This class therefore tracks its package
+// itself, and the debug session synchronises it deliberately.
 
 import * as net from 'net';
 import { EventEmitter } from 'events';
 
 // ---------------------------------------------------------------------
-// S-Expression-Reader
+// S-expression reader
 //
-// Bewusst nicht der naive Tokenizer: Swank schickt Zeichenliterale
-// (#\() und escapte Symbole (|foo bar|), an denen eine reine
-// Klammerzählung scheitert. Symbole werden als eigene Klasse geführt,
-// damit sich das Symbol NIL vom String "nil" unterscheiden lässt — bei
-// Plists wie (:value nil) ist der Unterschied bedeutungstragend.
+// Deliberately not the naive tokenizer: Swank sends character literals
+// (#\() and escaped symbols (|foo bar|), on which plain paren counting
+// fails. Symbols are kept as a class of their own so that the symbol NIL
+// can be told apart from the string "nil" — in plists such as
+// (:value nil) the difference carries meaning.
 // ---------------------------------------------------------------------
 
 export class Sym {
@@ -60,7 +60,7 @@ class Reader {
 
     if (c === '(') return this.readList();
     if (c === ')') {
-      this.i++; // defensiv: verirrte Klammer überspringen
+      this.i++; // defensive: skip a stray paren
       return new Sym('nil');
     }
     if (c === '"') return this.readString();
@@ -88,9 +88,9 @@ class Reader {
         this.i++;
         break;
       }
-      // Dotted pair: (a . b). Wir hängen den Rest einfach an. Verlustig
-      // geht dabei die Information, dass die Liste unecht ist — in den
-      // Swank-Nachrichten, die wir auswerten, kommt das nicht vor.
+      // Dotted pair: (a . b). We simply append the rest. What is lost is
+      // the information that the list is improper — in the Swank
+      // messages we evaluate, that does not occur.
       if (this.s[this.i] === '.' && SYM_TERMINATOR.test(this.s[this.i + 1] ?? ' ')) {
         this.i++;
         out.push(this.read());
@@ -129,20 +129,20 @@ class Reader {
     const next = this.s[this.i + 1];
     if (next === '(') {
       this.i++; // #
-      return this.readList(); // Vektor wie eine Liste behandeln
+      return this.readList(); // treat a vector like a list
     }
     if (next === '\\') {
-      // Zeichenliteral: #\a, #\Space, #\( — die Klammer darf NICHT zählen
+      // Character literal: #\a, #\Space, #\( — the paren must NOT count
       this.i += 2;
       let out = '';
-      // mindestens ein Zeichen, dann optional weitere Namensbuchstaben
+      // at least one character, then optionally further name letters
       if (this.i < this.s.length) out += this.s[this.i++];
       while (this.i < this.s.length && /[A-Za-z0-9_-]/.test(this.s[this.i])) {
         out += this.s[this.i++];
       }
       return new Sym('#\\' + out);
     }
-    // #p"...", #x1F, #b101, unbekanntes: Präfix behalten, Rest lesen
+    // #p"...", #x1F, #b101, unknown: keep the prefix, read the rest
     this.i++; // #
     const tag = this.s[this.i++] ?? '';
     const rest = this.read();
@@ -171,7 +171,7 @@ export const isSym = (x: SExpr | undefined, name?: string): x is Sym =>
 export const isNil = (x: SExpr | undefined): boolean =>
   x === undefined || isSym(x, 'nil') || (Array.isArray(x) && x.length === 0);
 
-/** Textform eines Werts fürs Anzeigen. */
+/** Textual form of a value for display. */
 export function text(x: SExpr | undefined): string {
   if (x === undefined) return '';
   if (x instanceof Sym) return isNil(x) ? '' : x.name;
@@ -181,9 +181,10 @@ export function text(x: SExpr | undefined): string {
 }
 
 /**
- * Lisp-Schreibweise, u.a. um Thread-Bezeichner zurückzusenden.
+ * Lisp notation, used among other things to send thread identifiers
+ * back.
  *
- * Strings gehen über lispString, NICHT über JSON.stringify: siehe dort.
+ * Strings go through lispString, NOT through JSON.stringify: see there.
  */
 export function printSexpr(x: SExpr): string {
   if (Array.isArray(x)) return `(${x.map(printSexpr).join(' ')})`;
@@ -192,7 +193,7 @@ export function printSexpr(x: SExpr): string {
   return String(x);
 }
 
-/** Wert zu einem Schlüssel aus einer Plist wie (:name "x" :value "1"). */
+/** Value for a key from a plist such as (:name "x" :value "1"). */
 export function plistGet(list: SExpr | undefined, key: string): SExpr | undefined {
   if (!Array.isArray(list)) return undefined;
   for (let i = 0; i + 1 < list.length; i += 2) {
@@ -205,48 +206,48 @@ export const asList = (x: SExpr | undefined): SExpr[] =>
   Array.isArray(x) ? x : [];
 
 /**
- * Ein Lisp-Stringliteral aus einem Text bauen.
+ * Build a Lisp string literal from a text.
  *
- * Bewusst NICHT JSON.stringify: das erzeugt \n, \t, \uXXXX — Escapes,
- * die der Lisp-Reader nicht kennt. `\n` liest er als das Zeichen `n`,
- * womit der String stillschweigend verfälscht wird. Der Lisp-Reader
- * kennt in Strings nur \\ und \".
+ * Deliberately NOT JSON.stringify: that produces \n, \t, \uXXXX —
+ * escapes the Lisp reader does not know. It reads `\n` as the character
+ * `n`, which silently corrupts the string. Inside strings the Lisp
+ * reader knows only \\ and \".
  *
- * Steuerzeichen brauchen KEINE Maskierung: ein echter Zeilenumbruch
- * innerhalb eines Lisp-Stringliterals ist gültig und bleibt beim Lesen
- * erhalten, und der Swank-Rahmen zählt Bytes, verträgt also Umbrüche im
- * Rumpf. Genau daran hing die mehrzeilige REPL-Eingabe: über
- * JSON.stringify wurde aus jedem Umbruch das Symbol `n`, sodass
- * (dsp! …) über drei Zeilen mit "undefined variable: n" scheiterte.
+ * Control characters need NO escaping: a real newline inside a Lisp
+ * string literal is valid and survives reading, and the Swank frame
+ * counts bytes, so it tolerates newlines in the body. This was exactly
+ * what multi-line REPL input hung on: via JSON.stringify every newline
+ * became the symbol `n`, so that a (dsp! …) spanning three lines failed
+ * with "undefined variable: n".
  */
 export function lispString(s: string): string {
   return `"${s.replace(/[\\"]/g, m => '\\' + m)}"`;
 }
 
 /**
- * Entscheidet, ob ein Hover-Text überhaupt an Lisp geschickt wird.
- * Rückgabe: der zu sendende Text oder undefined.
+ * Decides whether a hover text is sent to Lisp at all.
+ * Returns the text to send, or undefined.
  *
- * VS Code schickt bei eingeschaltetem supportsEvaluateForHovers ALLES,
- * worüber die Maus fährt — Dateinamen, Kommentarwörter, Bruchstücke.
+ * With supportsEvaluateForHovers switched on, VS Code sends EVERYTHING
+ * the mouse moves over — file names, words in comments, fragments.
  *
- * Abgelehnt wird:
- *  - zu lang: dann steht die Maus nicht über einem Symbol, sondern über
- *    einer markierten Passage. Die gehört in die Debug-Konsole
- *  - Steuerzeichen: nicht weil sie sich nicht darstellen liessen (siehe
- *    lispString), sondern weil ein mehrzeiliger Text keine Maus-Hover-
- *    Abfrage mehr ist, sondern eine markierte Passage — die gehört in
- *    die Debug-Konsole
- *  - `#.` — Read-Eval. Läuft VOR jedem Handler und darf niemals aus
- *    einer Mausbewegung heraus passieren
- *  - `#<` — nicht wieder einlesbare Objekte, wie sie im Backtrace und in
- *    jeder Fehlermeldung stehen
- *  - unbalancierte Klammern und offene Zeichenketten
+ * Rejected are:
+ *  - too long: then the mouse is not over a symbol but over a selected
+ *    passage. That belongs in the debug console
+ *  - control characters: not because they could not be represented (see
+ *    lispString), but because a multi-line text is no longer a mouse
+ *    hover query but a selected passage — and that belongs in the debug
+ *    console
+ *  - `#.` — read-eval. Runs BEFORE any handler and must never happen out
+ *    of a mouse movement
+ *  - `#<` — objects that cannot be read back, of the sort found in the
+ *    backtrace and in every error message
+ *  - unbalanced parens and unterminated strings
  *
- * Die letzten beiden Punkte waren das eigentliche Loch: ignore-errors
- * greift erst bei EVAL, ein Reader-Fehler passiert aber schon beim
- * Lesen. Bewusst hier als reine Funktion, damit sie ohne laufendes
- * Lisp-Image geprüft werden kann.
+ * The last two points were the actual hole: ignore-errors only takes
+ * effect at EVAL, but a reader error happens as early as reading.
+ * Deliberately a pure function here, so that it can be checked without a
+ * running Lisp image.
  */
 export function hoverCandidate(raw: string, maxLength = 120): string | undefined {
   const s = raw.trim();
@@ -275,13 +276,13 @@ export function hoverCandidate(raw: string, maxLength = 120): string | undefined
 }
 
 /**
- * Zerlegt einen Text in seine Top-Level-Formen.
+ * Splits a text into its top-level forms.
  *
- * Nötig, weil swank:eval-and-grab-output nur die ERSTE Form liest.
- * Schickt man zwei Formen als einen Block, läuft stillschweigend nur
- * die erste — ein Fehler, der wie "es passiert nichts" aussieht.
- * Berücksichtigt Strings, Zeichenliterale (#\( zählt nicht), Zeilen-
- * und Blockkommentare.
+ * Necessary because swank:eval-and-grab-output reads only the FIRST
+ * form. Send two forms as one block and only the first runs, silently —
+ * a bug that looks like "nothing happens". Takes strings, character
+ * literals (#\( does not count), line comments and block comments into
+ * account.
  */
 export function splitTopLevelForms(text: string): string[] {
   const out: string[] = [];
@@ -356,7 +357,7 @@ export class SwankClient extends EventEmitter {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
 
-  /** Zuletzt vom Image gemeldetes Paket (über :new-package). */
+  /** The package last reported by the image (via :new-package). */
   packageName = 'COMMON-LISP-USER';
 
   get connected(): boolean {
@@ -386,20 +387,20 @@ export class SwankClient extends EventEmitter {
   }
 
   /**
-   * Schickt ein Formular und wartet auf die Antwort. Jede Anfrage
-   * bekommt eine eigene ID — feste IDs (wie im Prototyp) kollidieren,
-   * sobald zwei Anfragen gleichzeitig offen sind.
+   * Sends a form and waits for the answer. Every request gets its own ID
+   * — fixed IDs (as in the prototype) collide as soon as two requests
+   * are open at the same time.
    */
   /**
-   * Schickt ein Formular und wartet auf die Antwort.
+   * Sends a form and waits for the answer.
    *
-   * onId wird mit der vergebenen Request-ID aufgerufen, bevor gesendet
-   * wird — so kann der Aufrufer GENAU diese Anfrage später von ihrer
-   * Frist befreien (clearTimeout(id)), statt pauschal alle Fristen zu
-   * löschen. Das pauschale Löschen war ein echter Fehler: es machte auch
-   * unbeteiligte, gleichzeitig offene Anfragen (Threads, Stackframes,
-   * Hover) timeoutlos, sodass eine ausbleibende Antwort sie für immer in
-   * pending hängen liess.
+   * onId is called with the assigned request ID before sending — this
+   * lets the caller release EXACTLY that request from its deadline
+   * (clearTimeout(id)) instead of clearing all deadlines wholesale.
+   * Clearing wholesale was a real bug: it also left uninvolved requests
+   * that happened to be open at the same time (threads, stack frames,
+   * hover) without a timeout, so that a missing answer left them hanging
+   * in pending forever.
    */
   rex(
     form: string,
@@ -411,17 +412,17 @@ export class SwankClient extends EventEmitter {
     const id = this.nextId++;
     if (onId) onId(id);
     return new Promise((resolve, reject) => {
-      // Ohne Frist bleibt eine Anfrage, die nie beantwortet wird, für
-      // immer offen — und der Aufrufer sieht schlicht nichts. Genau das
-      // ist beim Umstieg auf listener-eval passiert: keine Antwort,
-      // keine Fehlermeldung, ein stummes Fenster. Ein Timeout macht aus
-      // dem Schweigen eine Aussage.
+      // Without a deadline a request that is never answered stays open
+      // forever — and the caller simply sees nothing. That is exactly
+      // what happened when switching to listener-eval: no answer, no
+      // error message, a mute window. A timeout turns the silence into a
+      // statement.
       const timer = timeoutMs > 0
         ? setTimeout(() => {
             if (!this.pending.has(id)) return;
             this.pending.delete(id);
             reject(new Error(
-              `Keine Antwort von Swank nach ${timeoutMs} ms auf: ${form}`
+              `No answer from Swank after ${timeoutMs} ms to: ${form}`
             ));
           }, timeoutMs)
         : undefined;
@@ -443,19 +444,19 @@ export class SwankClient extends EventEmitter {
   }
 
   /**
-   * Alle laufenden Fristen abschalten.
+   * Switch off all running deadlines.
    *
-   * Sobald der Lisp-Debugger offen ist, antwortet Swank auf die
-   * auslösende Anfrage absichtlich nicht — sie bleibt hängen, bis ein
-   * Restart aufgerufen wird. Ohne diesen Aufruf meldet der Timeout dann
-   * fälschlich einen Fehler, obwohl alles seinen Gang geht.
+   * Once the Lisp debugger is open, Swank deliberately does not answer
+   * the triggering request — it stays pending until a restart is
+   * invoked. Without this call the timeout would then wrongly report an
+   * error although everything is taking its course.
    */
   /**
-   * Nimmt EINER Anfrage ihre Frist — der, die den Debugger ausgelöst hat.
-   * Swank antwortet auf sie erst nach einem Restart; ohne Fristentzug
-   * meldete der Timeout fälschlich einen Fehler. Alle anderen Anfragen
-   * behalten ihre Frist, damit ausbleibende Antworten nicht ewig offen
-   * bleiben.
+   * Takes the deadline away from ONE request — the one that triggered
+   * the debugger. Swank only answers it after a restart; without
+   * releasing the deadline the timeout wrongly reported an error. All
+   * other requests keep their deadline, so that missing answers do not
+   * stay open forever.
    */
   clearRequestTimeout(id: number): void {
     const p = this.pending.get(id);
@@ -465,7 +466,7 @@ export class SwankClient extends EventEmitter {
     }
   }
 
-  /** Antwort auf ein :read-string — sonst wartet das Image ewig. */
+  /** Answer to a :read-string — otherwise the image waits forever. */
   emacsReturnString(thread: SExpr, tag: SExpr | undefined, value: string): void {
     this.send(
       `(:emacs-return-string ${printSexpr(thread)} ${printSexpr(tag ?? 1)} ${lispString(value)})`
@@ -482,10 +483,10 @@ export class SwankClient extends EventEmitter {
   }
 
   private send(payload: string): void {
-    if (!this.socket) throw new Error('Nicht mit Swank verbunden.');
+    if (!this.socket) throw new Error('Not connected to Swank.');
     this.emit('wire', '>>', payload);
     const body = Buffer.from(payload, 'utf8');
-    // Swank-Rahmen: sechs Hex-Ziffern Länge des Rumpfs, dann der Rumpf.
+    // Swank frame: six hex digits giving the length of the body, then the body.
     const head = Buffer.from(body.length.toString(16).padStart(6, '0'), 'ascii');
     this.socket.write(Buffer.concat([head, body]));
   }
@@ -495,7 +496,7 @@ export class SwankClient extends EventEmitter {
       if (this.buffer.length < 6) return;
       const n = parseInt(this.buffer.subarray(0, 6).toString('ascii'), 16);
       if (!Number.isFinite(n) || n < 0) {
-        this.emit('protocolError', new Error('Ungültiger Swank-Header'));
+        this.emit('protocolError', new Error('Invalid Swank header'));
         this.buffer = Buffer.alloc(0);
         return;
       }

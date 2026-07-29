@@ -1,29 +1,29 @@
 ;;;; bootstrap.lisp
 ;;;;
-;;;; Startet ein SBCL-Image mit CLAMPS + Swank-Server für die
-;;;; VS-Code-Extension. Wird per `sbcl --script bootstrap.lisp` gestartet
-;;;; und läuft unabhängig vom Editor-Prozess weiter (detached).
+;;;; Starts an SBCL image with CLAMPS + a Swank server for the VS Code
+;;;; extension. It is started with `sbcl --script bootstrap.lisp` and
+;;;; keeps running independently of the editor process (detached).
 ;;;;
-;;;; Kommunikation mit der Extension läuft NICHT über stdout/stdin,
-;;;; sondern über eine Session-Datei, damit die Extension jederzeit
-;;;; (auch nach eigenem Neustart) prüfen kann, ob ein CLAMPS-Prozess
-;;;; bereits läuft und auf welchem Port er lauscht.
+;;;; Communication with the extension does NOT go over stdout/stdin but
+;;;; over a session file, so that the extension can check at any time
+;;;; (including after a restart of its own) whether a CLAMPS process is
+;;;; already running and which port it is listening on.
 
 (require :asdf)
 (require :sb-posix)
 
 ;;; ---------------------------------------------------------------------
-;;; Session-Verzeichnis + Status-Datei
+;;; Session directory + status file
 ;;;
-;;; Sicherheitshinweis: Swank hat kein eingebautes Auth-Verfahren.
-;;; Die praktische Grenze ist deshalb (a) Bindung ausschließlich an
-;;; 127.0.0.1 (siehe unten) und (b) Dateisystem-Rechte auf Verzeichnis
-;;; und Session-Datei, damit auf Mehrbenutzer-Maschinen (z. B. geteilte
-;;; Remote-Dev-Boxen) nicht jeder lokale User den Port auslesen und sich
-;;; verbinden kann. Ein Secret-Handshake auf Swank-Protokollebene wäre
-;;; brüchig (Swank kennt sowas nicht) – wer echte Mehrbenutzer-Isolation
-;;; braucht, sollte stattdessen den Port nur per SSH-Tunnel/Port-Forward
-;;; erreichbar machen, nie direkt exponieren.
+;;; A note on security: Swank has no built-in authentication. The
+;;; practical boundary is therefore (a) binding exclusively to 127.0.0.1
+;;; (see below) and (b) file system permissions on the directory and the
+;;; session file, so that on multi-user machines (shared remote dev boxes,
+;;; say) not every local user can read the port and connect. A secret
+;;; handshake at the Swank protocol level would be brittle (Swank knows
+;;; nothing of the sort) – anyone needing real multi-user isolation should
+;;; instead make the port reachable only through an SSH tunnel or port
+;;; forward, never expose it directly.
 ;;; ---------------------------------------------------------------------
 
 (defparameter *session-dir*
@@ -38,9 +38,9 @@
 (defparameter *log-file*     (merge-pathnames "bootstrap.log" *session-dir*))
 
 (defun secure-permissions ()
-  "Setzt Session-Verzeichnis auf 0700 und vorhandene Dateien darin auf
-   0600, damit nur der eigene User lesen kann. Fehler hier sind nicht
-   fatal (z. B. auf Dateisystemen ohne Unix-Rechte), werden aber geloggt."
+  "Sets the session directory to 0700 and the files in it to 0600, so
+   that only one's own user can read them. Errors here are not fatal (on
+   file systems without Unix permissions, say), but they are logged."
   (handler-case
       (progn
         (sb-posix:chmod (namestring *session-dir*) #o700)
@@ -48,7 +48,7 @@
           (when (probe-file f)
             (sb-posix:chmod (namestring f) #o600))))
     (error (e)
-      (log-msg "WARNUNG: Konnte Dateirechte nicht setzen: ~A" e))))
+      (log-msg "WARNING: could not set the file permissions: ~A" e))))
 
 (defun log-msg (fmt &rest args)
   (with-open-file (s *log-file*
@@ -60,8 +60,8 @@
     (terpri s)))
 
 (defun write-session-file (&key port pid status detail)
-  "Schreibt den aktuellen Zustand als JSON. Die Extension pollt/watched
-   diese Datei statt stdout zu parsen."
+  "Writes the current state as JSON. The extension polls/watches this
+   file instead of parsing stdout."
   (with-open-file (s *session-file*
                       :direction :output
                       :if-exists :supersede
@@ -88,8 +88,8 @@
       (load ql-init)
       (progn
         (write-session-file :pid *pid* :status "error"
-                             :detail "Quicklisp nicht gefunden")
-        (log-msg "FEHLER: Quicklisp nicht gefunden unter ~A" ql-init)
+                             :detail "Quicklisp not found")
+        (log-msg "ERROR: Quicklisp not found at ~A" ql-init)
         (sb-ext:exit :code 1))))
 
 ;;; ---------------------------------------------------------------------
@@ -99,22 +99,23 @@
 (handler-case
     (progn
       (write-session-file :pid *pid* :status "starting" :detail "Lade Swank + Slynk + usocket")
-      ;; CLAMPS ist für Sly (nicht SLIME) gebaut und referenziert beim
-      ;; Laden Slynk-Symbole. Wir starten den RPC-Server trotzdem über
-      ;; Swank (stabiler dokumentiertes Protokoll für die Bridge),
-      ;; aber Slynk muss geladen sein, damit das SLYNK-Paket existiert.
+      ;; CLAMPS is built for Sly (not SLIME) and references Slynk symbols
+      ;; while loading. We start the RPC server over Swank all the same
+      ;; (a better documented protocol for the bridge), but Slynk has to
+      ;; be loaded so that the SLYNK package exists.
       (ql:quickload '(:swank :slynk :usocket) :silent t)
       (write-session-file :pid *pid* :status "starting" :detail "Lade CLAMPS")
-      ;; cudere-clm (Teil des Incudine-Umfelds) proklamiert DOUBLE-FLOAT
-      ;; als Funktion in COMMON-LISP und verletzt damit die Paketsperre.
-      ;; Interaktiv (Emacs/SLIME) ist das ein fortsetzbarer Fehler, den
-      ;; man meist nie bewusst wegklickt. Im --script-Modus gibt es
-      ;; keinen Debugger, der den Restart anbietet, daher explizit hier
-      ;; ausschalten statt auf interaktives Continue zu hoffen.
+      ;; cudere-clm (part of the Incudine environment) proclaims
+      ;; DOUBLE-FLOAT to be a function in COMMON-LISP and thereby violates
+      ;; the package lock. Interactively (Emacs/SLIME) that is a
+      ;; continuable error which one mostly never consciously clicks away.
+      ;; In --script mode there is no debugger to offer the restart, so it
+      ;; is switched off explicitly here instead of hoping for an
+      ;; interactive continue.
       (sb-ext:without-package-locks
         (ql:quickload :clamps :silent t)))
   (error (e)
-    (log-msg "FEHLER beim Laden: ~A" e)
+    (log-msg "ERROR while loading: ~A" e)
     (write-session-file :pid *pid* :status "error"
                          :detail (format nil "Ladefehler: ~A" e))
     (sb-ext:exit :code 1)))
@@ -122,25 +123,25 @@
 (log-msg "CLAMPS + Swank geladen")
 
 ;;; ---------------------------------------------------------------------
-;;; Slynk-Shim: eval-in-emacs bei fehlender Emacs-Connection abfangen
+;;; Slynk shim: catch eval-in-emacs when there is no Emacs connection
 ;;;
-;;; CLAMPS ruft an mehreren Stellen (z.B. rts-start, rts-stop) direkt
-;;; slynk:eval-in-emacs auf, um Emacs-Modeline-Labels wie "DSP ✓" zu
-;;; setzen. Das setzt eine aktive Sly-Session voraus (slynk gebundenes
-;;; *emacs-connection*). Über unsere Bridge gibt es die nicht, daher
-;;; crasht eval-in-emacs mit "nil fell through etypecase" (es erwartet
-;;; eine slynk::connection, bekommt nil).
+;;; In several places (rts-start, rts-stop) CLAMPS calls
+;;; slynk:eval-in-emacs directly, in order to set Emacs modeline labels
+;;; such as "DSP ✓". That presupposes an active Sly session (a bound
+;;; slynk *emacs-connection*). Over our bridge there is none, so
+;;; eval-in-emacs crashes with "nil fell through etypecase" (it expects a
+;;; slynk::connection and gets nil).
 ;;;
-;;; CLAMPS' eigener Code prüft an den neueren Stellen bereits
-;;; slynk-api:*emacs-connection* (siehe init.lisp), aber rts-start und
-;;; einige andere tun das nicht. Statt CLAMPS zu patchen, machen wir
-;;; eval-in-emacs bei fehlender Connection zu einem stillen No-op — die
-;;; Emacs-Kosmetik (Modeline-Labels) entfällt, was in VS Code ohnehin
-;;; keinen Sinn ergibt; alles Übrige (rt-start, Webserver, ...) läuft.
+;;; CLAMPS's own code already checks slynk-api:*emacs-connection* in the
+;;; newer places (see init.lisp), but rts-start and some others do not.
+;;; Rather than patching CLAMPS, we make eval-in-emacs a silent no-op when
+;;; there is no connection — the Emacs cosmetics (modeline labels) fall
+;;; away, which makes no sense in VS Code anyway; everything else
+;;; (rt-start, the web server, ...) runs.
 ;;;
-;;; Wir überschreiben nur das Verhalten bei fehlender Connection und
-;;; delegieren sonst an die Originalfunktion, damit bei einer echten
-;;; Slynk-Session (falls je vorhanden) nichts kaputtgeht.
+;;; We override only the behaviour when there is no connection and
+;;; otherwise delegate to the original function, so that nothing breaks in
+;;; a real Slynk session (should there ever be one).
 ;;; ---------------------------------------------------------------------
 
 (handler-case
@@ -152,56 +153,56 @@
             (let ((original (fdefinition eval-sym)))
               (setf (fdefinition eval-sym)
                     (lambda (&rest args)
-                      ;; Nur ausführen, wenn tatsächlich eine
-                      ;; Emacs-Connection aktiv ist; sonst still ignorieren.
+                      ;; Only execute it when an Emacs connection really
+                      ;; is active; otherwise ignore it silently.
                       (if (and (boundp conn-sym) (symbol-value conn-sym))
                           (apply original args)
                           nil)))
-              (log-msg "Slynk eval-in-emacs Shim installiert (No-op ohne Connection)"))
-            (log-msg "Slynk-Shim übersprungen: Symbole nicht gefunden (eval=~A conn=~A)"
+              (log-msg "Slynk eval-in-emacs shim installed (a no-op without a connection)"))
+            (log-msg "Slynk shim skipped: symbols not found (eval=~A conn=~A)"
                      eval-sym conn-sym))))
   (error (e)
     (log-msg "WARNUNG: Slynk-Shim fehlgeschlagen: ~A" e)))
 
 ;;; ---------------------------------------------------------------------
-;;; Eval-Kanal für die VS-Code-REPL
+;;; Eval channel for the VS Code REPL
 ;;;
-;;; Die eigentlichen RPC-Funktionen liegen in rpc.lisp (Paket
-;;; CLAMPS-BRIDGE-RPC). Ausgelagert, weil sie weder CLAMPS noch Swank
-;;; brauchen und so gegen ein nacktes SBCL testbar bleiben.
+;;; The actual RPC functions live in rpc.lisp (package CLAMPS-BRIDGE-RPC).
+;;; They were moved out because they need neither CLAMPS nor Swank and so
+;;; stay testable against a bare SBCL.
 ;;; ---------------------------------------------------------------------
 
 (handler-case
     (load (merge-pathnames "rpc.lisp"
                            (or *load-truename* *default-pathname-defaults*)))
   (error (e)
-    (log-msg "FEHLER beim Laden von rpc.lisp: ~A" e)
+    (log-msg "ERROR while loading rpc.lisp: ~A" e)
     (write-session-file :pid *pid* :status "error"
                          :detail (format nil "rpc.lisp: ~A" e))
     (sb-ext:exit :code 1)))
 
-;; Additive Completion-Erweiterung. rpc.lisp bleibt unverändert; bei einem
-;; Fehler fällt die Extension sicher auf die dortige Präfix-Completion zurück.
+;; An additive completion extension. rpc.lisp stays unchanged; on an
+;; error the extension falls back safely to the prefix completion there.
 (handler-case
     (load (merge-pathnames "completion.lisp"
                            (or *load-truename* *default-pathname-defaults*)))
   (error (e)
-    (log-msg "WARNUNG: completion.lisp nicht geladen; nutze Basis-Completion: ~A" e)))
+    (log-msg "WARNING: completion.lisp not loaded; using the base completion: ~A" e)))
 
-;; Additive Autodoc-Erweiterung; ein Fehler darf den bestehenden Server nicht stoppen.
+;; An additive autodoc extension; an error must not stop the existing server.
 (handler-case
     (load (merge-pathnames "autodoc.lisp"
                            (or *load-truename* *default-pathname-defaults*)))
   (error (e)
-    (log-msg "WARNUNG: autodoc.lisp nicht geladen: ~A" e)))
+    (log-msg "WARNING: autodoc.lisp not loaded: ~A" e)))
 (in-package :cl-user)
 
 (log-msg "Eval-Kanal (clamps-bridge-rpc:eval-for-repl) bereit")
 
 ;;; ---------------------------------------------------------------------
-;;; Freien Port ermitteln (statt Port 0 an Swank zu übergeben und zu
-;;; hoffen, dass der Rückgabewert stimmt: wir binden selbst kurz,
-;;; lesen den Port aus, geben ihn wieder frei)
+;;; Find a free port (rather than passing port 0 to Swank and hoping the
+;;; return value is right: we bind briefly ourselves, read the port out
+;;; and release it again)
 ;;; ---------------------------------------------------------------------
 
 (defun find-free-port ()
@@ -223,24 +224,24 @@
                             :interface "127.0.0.1"
                             :dont-close t
                             :style :spawn)
-      (log-msg "Swank läuft auf 127.0.0.1:~A" *swank-port*)
+      (log-msg "Swank is running on 127.0.0.1:~A" *swank-port*)
       (write-session-file :port *swank-port* :pid *pid* :status "ready"
                            :detail "Swank aktiv")
       (secure-permissions))
   (error (e)
-    (log-msg "FEHLER beim Swank-Start: ~A" e)
+    (log-msg "ERROR while starting Swank: ~A" e)
     (write-session-file :pid *pid* :status "error"
                          :detail (format nil "Swank-Start fehlgeschlagen: ~A" e))
     (sb-ext:exit :code 1)))
 
 ;;; ---------------------------------------------------------------------
-;;; Incudine-Realtime-Server sicherstellen
-;;; (falls CLAMPS ihn beim Laden nicht schon selbst hochfährt)
+;;; Make sure the Incudine realtime server is up
+;;; (in case CLAMPS has not already brought it up itself while loading)
 ;;;
-;;; Die frühere Fassung prüfte fest auf incudine:rt-running-p. Den Namen
-;;; gibt es in aktuellen Incudine-Versionen nicht — durch das fboundp
-;;; davor gab es zwar keinen Fehler, der Block lief aber schlicht nie.
-;;; Deshalb hier dieselbe Mehrfach-Prüfung wie in rt-status-for-repl.
+;;; The earlier version checked rigidly for incudine:rt-running-p. That
+;;; name does not exist in current Incudine versions — thanks to the
+;;; fboundp in front of it there was no error, but the block simply never
+;;; ran. Hence the same multiple check here as in rt-status-for-repl.
 ;;; ---------------------------------------------------------------------
 
 (handler-case
@@ -248,17 +249,17 @@
       (let ((running (clamps-bridge-rpc:rt-status-for-repl)))
         ;; (:ok running-p info)
         (if (second running)
-            (log-msg "Incudine RT-Server läuft bereits")
+            (log-msg "Incudine RT server is already running")
             (let ((start-sym (clamps-bridge-rpc::%rt-sym "RT-START")))
               (if start-sym
                   (progn (funcall start-sym)
                          (log-msg "Incudine RT-Server gestartet"))
-                  (log-msg "WARNUNG: incudine:rt-start nicht gefunden"))))))
+                  (log-msg "WARNING: incudine:rt-start not found"))))))
   (error (e)
     (log-msg "WARNUNG: Incudine RT-Start fehlgeschlagen: ~A" e)))
 
 ;;; ---------------------------------------------------------------------
-;;; Sauberes Herunterfahren bei SIGTERM (Extension beendet Prozess gezielt)
+;;; A clean shutdown on SIGTERM (the extension ends the process deliberately)
 ;;; ---------------------------------------------------------------------
 
 (sb-sys:enable-interrupt
@@ -267,20 +268,20 @@
    (declare (ignore _))
    (log-msg "SIGTERM empfangen, fahre herunter")
    (write-session-file :port *swank-port* :pid *pid* :status "stopped"
-                        :detail "Von Extension beendet")
+                        :detail "Ended by the extension")
    (sb-ext:exit :code 0 :abort t)))
 
 ;;; ---------------------------------------------------------------------
-;;; Prozess am Leben halten. Swank läuft im eigenen Thread (:style :spawn),
-;;; dieser Loop hält das Hauptimage nur offen.
+;;; Keep the process alive. Swank runs in a thread of its own
+;;; (:style :spawn); this loop only keeps the main image open.
 ;;; ---------------------------------------------------------------------
 
-(log-msg "Bootstrap fertig. Warte auf Verbindungen auf Port ~A." *swank-port*)
+(log-msg "Bootstrap finished. Waiting for connections on port ~A." *swank-port*)
 
-;; Ist CLAMPS_NO_KEEPALIVE gesetzt, kehren wir stattdessen zurück. Der
-;; Swank-Thread läuft (:style :spawn) ohnehin eigenständig weiter; nur
-;; das Hauptimage bleibt dann frei — nötig, um im selben Aufruf noch ein
-;; Testskript per --load nachzuziehen oder am REPL zu arbeiten.
+;; If CLAMPS_NO_KEEPALIVE is set we return instead. The Swank thread
+;; (:style :spawn) carries on independently anyway; only the main image is
+;; then free — necessary in order to pull in a test script with --load in
+;; the same invocation, or to work at the REPL.
 (if (sb-ext:posix-getenv "CLAMPS_NO_KEEPALIVE")
-    (log-msg "CLAMPS_NO_KEEPALIVE gesetzt — Keep-Alive-Loop übersprungen.")
+    (log-msg "CLAMPS_NO_KEEPALIVE is set — keep-alive loop skipped.")
     (loop (sleep 3600)))

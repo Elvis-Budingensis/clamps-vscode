@@ -4,7 +4,7 @@ import { packageAt, sexpBeforePoint } from './macroexpand';
 import { lispString } from './swank';
 
 export function registerAdvancedTools(context:vscode.ExtensionContext,getClient:()=>LanguageClient|undefined):void {
-  const ready=()=>{const c=getClient(); if(!c||c.state!==State.Running){void vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');return;}return c;};
+  const ready=()=>{const c=getClient(); if(!c||c.state!==State.Running){void vscode.window.showErrorMessage('CLAMPS is not connected.');return;}return c;};
   const asdf = async (op: 'load'|'compile'|'test') => {
     const c=ready(); if(!c)return; const system=await vscode.window.showInputBox({prompt:`ASDF-System ${op}`,placeHolder:'clamps'}); if(!system)return;
     const r=await c.sendRequest<{ok:boolean;message:string}>('clamps/asdfOperation',{operation:op,system}); (r.ok?vscode.window.showInformationMessage:vscode.window.showErrorMessage)(r.message);

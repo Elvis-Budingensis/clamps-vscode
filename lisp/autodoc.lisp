@@ -45,7 +45,7 @@
                       (find-package :common-lisp-user)))
              (sym (resolve-symbol symbol-string pkg)))
         (unless (and sym (fboundp sym))
-          (return-from autodoc-for-repl (list :error "Keine Funktionsdefinition.")))
+          (return-from autodoc-for-repl (list :error "No function definition.")))
         (let* ((ll (%autodoc-lambda-list sym))
                (name (let ((*print-case* :downcase))
                        (princ-to-string sym)))

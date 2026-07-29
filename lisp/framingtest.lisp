@@ -1,22 +1,22 @@
-;;;; framingtest.lisp — Regressionstest für die LSP-Rahmung.
+;;;; framingtest.lisp — a regression test for the LSP framing.
 ;;;;
-;;;; Aufruf: sbcl --script lisp/framingtest.lisp
+;;;; Run: sbcl --script lisp/framingtest.lisp
 ;;;;
-;;;; Der Anlass: Content-Length zählt BYTES in UTF-8. read-lsp-message
-;;;; legte einen String dieser Länge an und las so viele ZEICHEN. Sobald
-;;;; eine Nachricht Umlaute enthielt — etwa das didOpen für eine Datei
-;;;; mit deutschen Kommentaren — wurde über das Nachrichtenende hinaus in
-;;;; die folgende hineingelesen. Danach war der Strom verschoben, der
-;;;; nächste Header unlesbar, und die Hauptschleife endete: der
-;;;; Bridge-Prozess beendete sich mit Code 0.
+;;;; The occasion: Content-Length counts BYTES in UTF-8.
+;;;; read-lsp-message created a string of that length and read that many
+;;;; CHARACTERS. As soon as a message contained umlauts — the didOpen for
+;;;; a file with German comments, say — reading ran past the end of the
+;;;; message into the following one. After that the stream was out of
+;;;; step, the next header unreadable, and the main loop ended: the bridge
+;;;; process exited with code 0.
 ;;;;
-;;;; Deshalb prüft dieser Test ZWEI Nachrichten hintereinander. Mit nur
-;;;; einer wäre der Fehler unsichtbar geblieben — die erste Nachricht
-;;;; kommt trotz Überlesen scheinbar heil an.
+;;;; This test therefore checks TWO messages in a row. With only one the
+;;;; bug would have stayed invisible — the first message appears to arrive
+;;;; intact despite the overreading.
 ;;;;
-;;;; Getestet wird gegen eine echte Datei, nicht gegen einen String-
-;;;; Strom: bivalente Ströme (Zeichen UND Bytes) gibt es in ANSI CL nur
-;;;; für Dateien, und genau die Bivalenz ist hier der Kern.
+;;;; The test runs against a real file, not against a string stream:
+;;;; bivalent streams (characters AND bytes) exist in ANSI CL only for
+;;;; files, and that very bivalence is the heart of the matter here.
 
 (require :sb-posix)
 
@@ -28,24 +28,24 @@
 (defun check (name actual expected)
   (unless (equal actual expected)
     (incf *failed*)
-    (format t "~&FEHLER ~A~%  erwartet: ~S~%  bekommen: ~S~%" name expected actual)))
+    (format t "~&FAILED ~A~%  expected: ~S~%  got:      ~S~%" name expected actual)))
 
-;;; --- bridge-server.lisp teilweise laden ------------------------------
+;;; --- Load bridge-server.lisp partially --------------------------------
 ;;;
-;;; Die Datei braucht Quicklisp und Bordeaux-Threads, die hier fehlen.
-;;; Ersatzpakete anlegen und nur die Definitionsformen auswerten: die
-;;; Rümpfe laufen dabei nicht, also stören fehlende Fremdfunktionen
-;;; nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie.
+;;; The file needs Quicklisp and Bordeaux-Threads, which are missing here.
+;;; Create replacement packages and evaluate only the definition forms:
+;;; the bodies do not run, so missing foreign functions do not get in the
+;;; way. That way the REAL read-lsp-message is checked and not a copy.
 
 (defun token-chars-p (c)
   (or (alphanumericp c) (find c "+-*/=<>!?%&$_.")))
 
 (defun collect-qualified-symbols (text)
-  "Sammelt alle PAKET:SYMBOL und PAKET::SYMBOL aus TEXT.
+  "Collects every PACKAGE:SYMBOL and PACKAGE::SYMBOL from TEXT.
 
-Statt die Fremdpakete zu erraten, werden sie aus der Datei gelesen. Neue
-Abhängigkeiten in bridge-server.lisp brechen den Test damit nicht — sonst
-wäre der Test genau dann kaputt, wenn man ihn am meisten braucht."
+Instead of guessing the foreign packages, they are read from the file.
+New dependencies in bridge-server.lisp therefore do not break the test —
+otherwise the test would be broken exactly when it is needed most."
   (let ((pairs '()) (i 0) (n (length text)))
     (loop while (< i n) do
       (let ((c (char text i)))
@@ -58,7 +58,7 @@ wäre der Test genau dann kaputt, wenn man ihn am meisten braucht."
            (let ((start i))
              (loop while (and (< i n) (token-chars-p (char text i))) do (incf i))
              (let ((name (subseq text start i)))
-               ;; Genau ein oder zwei Doppelpunkte, dann wieder Zeichen
+               ;; Exactly one or two colons, then characters again
                (when (and (< i n) (char= (char text i) #\:))
                  (let ((colons (if (and (< (1+ i) n) (char= (char text (1+ i)) #\:)) 2 1)))
                    (incf i colons)
@@ -75,11 +75,11 @@ wäre der Test genau dann kaputt, wenn man ihn am meisten braucht."
   '("CL" "COMMON-LISP" "SB-EXT" "SB-SYS" "SB-INT" "SB-POSIX" "SB-THREAD"
     "SB-KERNEL" "SB-MOP" "SB-DEBUG" "SB-IMPL" "SB-UNIX" "SB-BSD-SOCKETS"
     "KEYWORD" "FRAMINGTEST")
-  "Pakete, die es im nackten SBCL wirklich gibt — nicht ersetzen.")
+  "Packages that really exist in a bare SBCL — do not replace them.")
 
 (defun ensure-stubs (text)
-  "Legt für jedes fremde PAKET:SYMBOL ein Ersatzpaket an und exportiert
-das Symbol, damit der Reader die Datei überhaupt lesen kann."
+  "Creates a replacement package for every foreign PACKAGE:SYMBOL and
+exports the symbol, so that the reader can read the file at all."
   (dolist (pair (collect-qualified-symbols text))
     (let ((pkg-name (car pair)) (sym-name (cdr pair)))
       (unless (member pkg-name *known-packages* :test #'string=)
@@ -94,17 +94,18 @@ das Symbol, damit der Reader die Datei überhaupt lesen kann."
               (export (intern sym-name p) p))))))))
 
 (defun load-definitions (path)
-  "Wertet aus PATH nur die Formen aus, die etwas definieren.
+  "Evaluates from PATH only the forms that define something.
 
-Die Rümpfe laufen dabei nicht, fehlende Fremdfunktionen stören also
-nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
+The bodies do not run in the process, so missing foreign functions do not
+get in the way. That way the REAL read-lsp-message is checked and not a
+copy."
   (let ((text (with-open-file (in path :external-format :utf-8)
                 (let ((s (make-string (file-length in))))
                   (subseq s 0 (read-sequence s in))))))
     (ensure-stubs text)
-    ;; with-lock-held ist ein Makro: ohne Definition würde der Compiler
-    ;; es als Funktionsaufruf lesen. Für die geprüften Funktionen
-    ;; belanglos, aber es vermeidet Rauschen.
+    ;; with-lock-held is a macro: without a definition the compiler would
+    ;; read it as a function call. Irrelevant for the functions checked
+    ;; here, but it avoids noise.
     (let ((wlh (find-symbol "WITH-LOCK-HELD" (or (find-package "BORDEAUX-THREADS")
                                                  (find-package "FRAMINGTEST")))))
       (when (and wlh (not (macro-function wlh)))
@@ -130,14 +131,14 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
 ;;; --- Hilfsmittel -----------------------------------------------------
 
 (defun lsp-frame (body-string)
-  "Baut eine LSP-Nachricht mit KORREKTER Byte-Länge."
+  "Builds an LSP message with the CORRECT byte length."
   (let ((bytes (sb-ext:string-to-octets body-string :external-format :utf-8)))
     (values (format nil "Content-Length: ~D~C~C~C~C"
                     (length bytes) #\Return #\Newline #\Return #\Newline)
             bytes)))
 
 (defun write-frames (path bodies)
-  "Schreibt mehrere Nachrichten byte-genau in eine Datei."
+  "Writes several messages into a file byte for byte."
   (with-open-file (out path :direction :output :element-type '(unsigned-byte 8)
                             :if-exists :supersede :if-does-not-exist :create)
     (dolist (b bodies)
@@ -146,7 +147,7 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
         (write-sequence bytes out)))))
 
 (defun read-frames (path n)
-  "Liest N Nachrichten mit der echten read-lsp-message."
+  "Reads N messages with the real read-lsp-message."
   (with-open-file (in path :element-type :default :external-format :utf-8)
     (loop repeat n collect (funcall (intern "READ-LSP-MESSAGE" :framingtest) in))))
 
@@ -156,34 +157,34 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
        (bridge (merge-pathnames "bridge-server.lisp" here))
        (tmp (merge-pathnames "framingtest.tmp" #p"/tmp/")))
   (let ((n (load-definitions bridge)))
-    (format t "~&~D Definitionen aus bridge-server.lisp ausgewertet.~%" n)
+    (format t "~&~D definitions from bridge-server.lisp evaluated.~%" n)
     (when (< n 20)
       (incf *failed*)
-      (format t "~&FEHLER: zu wenige Definitionen — der Test prüft nichts.~%")))
+      (format t "~&FAILED: too few definitions — the test checks nothing.~%")))
 
   (unless (fboundp (intern "READ-LSP-MESSAGE" :framingtest))
-    (format t "~&FEHLER: read-lsp-message wurde nicht definiert.~%")
+    (format t "~&FAILED: read-lsp-message was not defined.~%")
     (sb-ext:exit :code 1))
 
-  ;; 1. Reines ASCII: muss immer funktionieren, auch mit dem alten Fehler.
+  ;; 1. Pure ASCII: must always work, even with the old bug.
   (write-frames tmp (list "{\"method\":\"eins\"}" "{\"method\":\"zwei\"}"))
   (let ((msgs (read-frames tmp 2)))
     (check "ASCII: erste Nachricht" (gethash "method" (first msgs)) "eins")
     (check "ASCII: zweite Nachricht" (gethash "method" (second msgs)) "zwei"))
 
-  ;; 2. Der eigentliche Fall: Umlaute in der ERSTEN Nachricht. Bytes >
-  ;;    Zeichen, also las die alte Fassung in die zweite hinein.
-  (write-frames tmp (list "{\"text\":\"für übersprungen — gültig\"}"
+  ;; 2. The actual case: umlauts in the FIRST message. Bytes >
+  ;;    characters, so the old version read into the second one.
+  (write-frames tmp (list "{\"text\":\"f\u00fcr \u00fcbersprungen \u2014 g\u00fcltig\"}"
                           "{\"method\":\"danach\"}"))
   (let ((msgs (read-frames tmp 2)))
     (check "Umlaute: erste Nachricht"
-           (gethash "text" (first msgs)) "für übersprungen — gültig")
-    ;; Das ist die Zeile, die den Fehler gefunden hätte: vorher NIL.
-    (check "Umlaute: zweite Nachricht kommt noch an"
+           (gethash "text" (first msgs)) "f\u00fcr \u00fcbersprungen \u2014 g\u00fcltig")
+    ;; This is the line that would have found the bug: NIL before.
+    (check "umlauts: the second message still arrives"
            (and (second msgs) (gethash "method" (second msgs))) "danach"))
 
-  ;; 3. Realistischer Umfang: so viel Nicht-ASCII wie in rpc.lisp
-  ;;    (305 Bytes Differenz), gefolgt von einer weiteren Nachricht.
+  ;; 3. A realistic amount: as much non-ASCII as in rpc.lisp (a
+  ;;    difference of 305 bytes), followed by a further message.
   (let ((big (with-output-to-string (s)
                (write-string "{\"text\":\"" s)
                (dotimes (i 200) (write-string "üöä—" s))
@@ -195,7 +196,7 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
       (check "Strom bleibt synchron"
              (and (second msgs) (gethash "method" (second msgs))) "letzte")))
 
-  ;; 4. Abgeschnittene Nachricht: NIL, aber ohne Fehler.
+  ;; 4. A truncated message: NIL, but without an error.
   (with-open-file (out tmp :direction :output :element-type '(unsigned-byte 8)
                            :if-exists :supersede)
     (write-sequence (sb-ext:string-to-octets
@@ -205,18 +206,18 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
                     out))
   (check "abgeschnitten ergibt NIL" (first (read-frames tmp 1)) nil)
 
-  ;; 5. Autodoc-Kontext. Der Anlass: in bridge-server.lisp stand
-  ;;    (find ch " \t\r\n") — in Common Lisp gibt es diese Escapes in
-  ;;    Strings nicht, die Zeichenmenge war also " trn". Damit brach
-  ;;    jeder Operatorname an einem t, r oder n ab: "concatenate" wurde
-  ;;    zu "co", "list" zu "lis". Signature Help zeigte dann nichts.
+  ;; 5. Autodoc context. The occasion: bridge-server.lisp contained
+  ;;    (find ch " \t\r\n") — in Common Lisp these escapes do not exist
+  ;;    inside strings, so the character set was " trn". With that, every
+  ;;    operator name broke off at a t, an r or an n: "concatenate" became
+  ;;    "co", "list" became "lis". Signature help then showed nothing.
   (let ((ctx (intern "CALL-CONTEXT-BEFORE-POINT" :framingtest)))
     (if (not (fboundp ctx))
         (progn (incf *failed*)
-               (format t "~&FEHLER: call-context-before-point fehlt.~%"))
+               (format t "~&FAILED: call-context-before-point is missing.~%"))
         (flet ((op (text) (first (funcall ctx text 0 (length text)))))
           (check "Autodoc: einfacher Operator" (op "(mapcar #'car x") "mapcar")
-          (check "Autodoc: Name mit t/r/n bleibt heil"
+          (check "autodoc: a name with t/r/n stays intact"
                  (op "(concatenate 'string ") "concatenate")
           (check "Autodoc: Tabulator trennt"
                  (op (format nil "(list~Ca" #\Tab)) "list")
@@ -224,23 +225,23 @@ nicht. So wird die ECHTE read-lsp-message geprüft und keine Kopie."
                  (op (format nil "(print~C  x" #\Newline)) "print")
           (check "Autodoc: innerste Form gewinnt"
                  (op "(mapcar (truncate ") "truncate")
-          (check "Autodoc: Klammer im String zaehlt nicht"
+          (check "autodoc: a paren inside a string does not count"
                  (op "(format nil \"(nicht \" ") "format")
-          (check "Autodoc: Klammer als Zeichenliteral zaehlt nicht"
+          (check "autodoc: a paren as a character literal does not count"
                  (op "(find ch #\\( ") "find")
-          (check "Autodoc: ohne offene Form NIL" (op "abc ") nil)
-          ;; Aktiver Parameter: Leerzeichen ist ein Trigger, also muss
-          ;; genau dort das NAECHSTE Argument markiert sein.
+          (check "autodoc: NIL without an open form" (op "abc ") nil)
+          ;; The active parameter: a space is a trigger, so exactly there
+          ;; the NEXT argument has to be marked.
           (flet ((active (text) (second (funcall ctx text 0 (length text)))))
-            (check "aktiv: direkt nach dem Operator" (active "(mapcar ") 0)
-            (check "aktiv: erstes Argument im Tippen" (active "(mapcar #'c") 0)
-            (check "aktiv: nach erstem Argument" (active "(mapcar #'car ") 1)
-            (check "aktiv: zweites Argument im Tippen" (active "(mapcar #'car ls") 1)
-            (check "aktiv: nach zweitem Argument" (active "(mapcar #'car ls ") 2)
-            (check "aktiv: nach geschlossener Unterform" (active "(mapcar (car x) ") 1)))))
+            (check "active: directly after the operator" (active "(mapcar ") 0)
+            (check "active: first argument being typed" (active "(mapcar #'c") 0)
+            (check "active: after the first argument" (active "(mapcar #'car ") 1)
+            (check "active: second argument being typed" (active "(mapcar #'car ls") 1)
+            (check "active: after the second argument" (active "(mapcar #'car ls ") 2)
+            (check "active: after a closed subform" (active "(mapcar (car x) ") 1)))))
 
   (ignore-errors (delete-file tmp))
   (if (zerop *failed*)
-      (format t "~&ok — LSP-Rahmung zählt Bytes, Strom bleibt synchron.~%")
-      (format t "~&~D Fehler.~%" *failed*))
+      (format t "~&ok — the LSP framing counts bytes, the stream stays in step.~%")
+      (format t "~&~D failure(s).~%" *failed*))
   (sb-ext:exit :code (if (zerop *failed*) 0 1)))

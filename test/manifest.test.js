@@ -1,19 +1,19 @@
 // test/manifest.test.js
 //
-// package.json gegen die Regeln pruefen, die VS Code selbst anmahnt.
+// Check package.json against the rules VS Code itself complains about.
 //
-// Anlass: der Entwicklungs-Workspace zeigte 27 Warnungen, alle aus
-// package.json. Seit VS Code 1.74.0 aktivieren beigesteuerte Befehle,
-// Views und Sprachen die Extension implizit; die zugehoerigen
-// onCommand-/onView-/onLanguage-Eintraege sind dann redundant und werden
-// je einzeln angemahnt. 21 + 5 + 1 = genau die 27.
+// The occasion: the development workspace showed 27 warnings, all from
+// package.json. Since VS Code 1.74.0 contributed commands, views and
+// languages activate the extension implicitly; the corresponding
+// onCommand/onView/onLanguage entries are then redundant and are each
+// complained about individually. 21 + 5 + 1 = exactly those 27.
 //
-// Wichtig ist der Sonderfall: onLanguage:commonlisp bleibt gueltig, weil
-// "commonlisp" NICHT von dieser Extension beigesteuert wird, sondern von
-// einer zweiten Lisp-Extension. Wer hier pauschal alle onLanguage-
-// Eintraege entfernt, macht den v80-Fix still rueckgaengig.
+// The special case is what matters: onLanguage:commonlisp stays valid,
+// because "commonlisp" is NOT contributed by this extension but by a
+// second Lisp extension. Whoever removes all onLanguage entries wholesale
+// silently undoes the v80 fix.
 //
-// Aufruf: node test/manifest.test.js
+// Run: node test/manifest.test.js
 
 const fs = require('fs');
 const path = require('path');
@@ -25,7 +25,7 @@ const manifest = JSON.parse(
 let failed = 0;
 const fail = msg => {
   failed++;
-  console.log(`FEHLER ${msg}`);
+  console.log(`FAILED ${msg}`);
 };
 
 const contributes = manifest.contributes || {};
@@ -37,7 +37,7 @@ const languages = new Set((contributes.languages || []).map(l => l.id));
 const events = manifest.activationEvents || [];
 
 // ---------------------------------------------------------------------
-// 1. Keine redundanten Aktivierungsereignisse
+// 1. No redundant activation events
 // ---------------------------------------------------------------------
 const engine = String(manifest.engines?.vscode ?? '');
 const major = Number(engine.replace(/[^0-9.]/g, '').split('.')[0] ?? 0);
@@ -45,56 +45,56 @@ const minor = Number(engine.replace(/[^0-9.]/g, '').split('.')[1] ?? 0);
 const implicitSupported = major > 1 || (major === 1 && minor >= 74);
 
 if (!implicitSupported) {
-  console.log(`  Hinweis: engines.vscode ist ${engine} — vor 1.74 sind die`);
+  console.log(`  Note: engines.vscode is ${engine} — before 1.74 the`);
   console.log('  Eintraege NOETIG. Pruefung uebersprungen.');
 } else {
   for (const ev of events) {
     const [kind, id] = [ev.slice(0, ev.indexOf(':')), ev.slice(ev.indexOf(':') + 1)];
     if (kind === 'onCommand' && commands.has(id)) {
-      fail(`redundant seit 1.74 (Befehl wird beigesteuert): ${ev}`);
+      fail(`redundant since 1.74 (the command is contributed): ${ev}`);
     }
     if (kind === 'onView' && views.has(id)) {
-      fail(`redundant seit 1.74 (View wird beigesteuert): ${ev}`);
+      fail(`redundant since 1.74 (the view is contributed): ${ev}`);
     }
     if (kind === 'onLanguage' && languages.has(id)) {
-      fail(`redundant seit 1.74 (Sprache wird beigesteuert): ${ev}`);
+      fail(`redundant since 1.74 (the language is contributed): ${ev}`);
     }
   }
 }
 
 // ---------------------------------------------------------------------
-// 2. Fremde Sprach-ID MUSS explizit bleiben
+// 2. A foreign language ID MUST stay explicit
 // ---------------------------------------------------------------------
-// commonlisp gehoert einer anderen Extension. Ohne diesen Eintrag
-// aktiviert CLAMPS nicht, wenn .lisp dort zugeordnet ist — und dann sind
-// Definition, Completion und Signature Help still tot (siehe v80).
+// commonlisp belongs to another extension. Without this entry CLAMPS does
+// not activate when .lisp is assigned there — and then definition,
+// completion and signature help are silently dead (see v80).
 if (!languages.has('commonlisp') && !events.includes('onLanguage:commonlisp')) {
-  fail('onLanguage:commonlisp fehlt, obwohl commonlisp nicht selbst beigesteuert wird');
+  fail('onLanguage:commonlisp is missing although commonlisp is not contributed by us');
 }
 
 // ---------------------------------------------------------------------
-// 3. Keine Verweise auf nicht deklarierte IDs
+// 3. No references to undeclared IDs
 // ---------------------------------------------------------------------
 for (const kb of contributes.keybindings || []) {
   if (kb.command && !commands.has(kb.command)) {
-    fail(`keybinding zeigt auf unbekannten Befehl: ${kb.command}`);
+    fail(`keybinding points at an unknown command: ${kb.command}`);
   }
 }
 for (const [menu, items] of Object.entries(contributes.menus || {})) {
   for (const item of items) {
     if (item.command && !commands.has(item.command)) {
-      fail(`menu ${menu} zeigt auf unbekannten Befehl: ${item.command}`);
+      fail(`menu ${menu} points at an unknown command: ${item.command}`);
     }
   }
 }
 for (const ev of events) {
   if (ev.startsWith('onCommand:') && !commands.has(ev.slice(10))) {
-    fail(`activationEvent fuer nicht deklarierten Befehl: ${ev}`);
+    fail(`activationEvent for an undeclared command: ${ev}`);
   }
 }
 
 // ---------------------------------------------------------------------
-// 4. Der documentSelector-Fix aus v80 darf nicht verschwinden
+// 4. The documentSelector fix from v80 must not disappear
 // ---------------------------------------------------------------------
 const extSrc = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'extension.ts'), 'utf8'
@@ -105,22 +105,22 @@ const selectorBlock = extSrc.slice(
 );
 for (const needed of ["language: 'lisp'", "language: 'commonlisp'"]) {
   if (!selectorBlock.includes(needed)) {
-    fail(`documentSelector des LanguageClient ohne ${needed}`);
+    fail(`the LanguageClient's documentSelector lacks ${needed}`);
   }
 }
 
 // ---------------------------------------------------------------------
-// 5. formatOnType muss vorbelegt sein
+// 5. formatOnType has to be preset
 // ---------------------------------------------------------------------
-// Der Einrueckungs-Provider haengt an OnTypeFormatting. Ist
-// editor.formatOnType aus — und das ist die VS-Code-Voreinstellung —
-// feuert er nie, und die ganze Einrueckung ist beim Nutzer wirkungslos,
-// ohne dass etwas kaputt aussieht. configurationDefaults ist der dafuer
-// vorgesehene Weg; ueberschreiben kann der Nutzer weiterhin.
+// The indentation provider hangs off OnTypeFormatting. If
+// editor.formatOnType is off — and that is the VS Code default — it never
+// fires, and the whole indentation is without effect for the user without
+// anything looking broken. configurationDefaults is the way provided for
+// this; the user can still override it.
 const cfgDefaults = contributes.configurationDefaults || {};
 for (const lang of ['[lisp]', '[commonlisp]']) {
   if (cfgDefaults[lang]?.['editor.formatOnType'] !== true) {
-    fail(`configurationDefaults ${lang} ohne editor.formatOnType: true — OnTypeFormatting feuert nie`);
+    fail(`configurationDefaults ${lang} without editor.formatOnType: true — OnTypeFormatting never fires`);
   }
 }
 
@@ -129,6 +129,6 @@ if (failed > 0) {
   process.exit(1);
 }
 console.log(
-  `ok — Manifest sauber: ${events.length} Aktivierungsereignisse, ` +
-  `${commands.size} Befehle, keine redundanten oder toten Verweise`
+  `ok — manifest clean: ${events.length} activation events, ` +
+  `${commands.size} commands, no redundant or dead references`
 );

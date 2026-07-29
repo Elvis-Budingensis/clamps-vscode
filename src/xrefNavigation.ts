@@ -45,7 +45,7 @@ class XrefNavigationHistory {
   async back(): Promise<void> {
     const target = this.backStack.pop();
     if (!target) {
-      void vscode.window.showInformationMessage('CLAMPS XREF: kein früherer Sprungort.');
+      void vscode.window.showInformationMessage('CLAMPS XREF: no earlier jump location.');
       return;
     }
     const current = await this.current();
@@ -56,7 +56,7 @@ class XrefNavigationHistory {
   async forward(): Promise<void> {
     const target = this.forwardStack.pop();
     if (!target) {
-      void vscode.window.showInformationMessage('CLAMPS XREF: kein späterer Sprungort.');
+      void vscode.window.showInformationMessage('CLAMPS XREF: no later jump location.');
       return;
     }
     const current = await this.current();

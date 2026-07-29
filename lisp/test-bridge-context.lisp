@@ -1,10 +1,10 @@
-;;;; test-bridge-context.lisp — Kontextfenster der Completion.
+;;;; test-bridge-context.lisp — the completion's context window.
 ;;;;
-;;;; bridge-server.lisp laesst sich hier nicht laden: es braucht usocket,
-;;;; bordeaux-threads und eine Swank-Verbindung. Der Test holt sich deshalb
-;;;; genau die Funktionen aus der ausgelieferten Datei, um die es geht, und
-;;;; wertet nur diese aus. Damit wird der echte Quelltext geprueft und nicht
-;;;; eine Kopie, die auseinanderlaufen kann.
+;;;; bridge-server.lisp cannot be loaded here: it needs usocket,
+;;;; bordeaux-threads and a Swank connection. The test therefore fetches
+;;;; exactly the functions in question out of the shipped file and
+;;;; evaluates only those. That way the real source is checked and not a
+;;;; copy that can drift apart.
 
 (defpackage :bridge-context-test (:use :cl))
 (in-package :bridge-context-test)
@@ -19,13 +19,13 @@
       (subseq s 0 (read-sequence s in)))))
 
 (defun form-source (text name)
-  "Quelltext der Top-Level-Form, die mit NAME beginnt.
+  "The source of the top-level form beginning with NAME.
 
-Sucht die Zeichenfolge in Spalte 0 und zaehlt Klammern bis zum Ende der
-Form. Strings und Kommentare zaehlen nicht mit."
+It searches for the string in column 0 and counts parens to the end of
+the form. Strings and comments do not count."
   (let ((start (search name text)))
     (unless start
-      (error "~A steht nicht in bridge-server.lisp." name))
+      (error "~A is not in bridge-server.lisp." name))
     (let ((depth 0) (i start) (n (length text)))
       (loop while (< i n) do
         (let ((c (char text i)))
@@ -44,15 +44,15 @@ Form. Strings und Kommentare zaehlen nicht mit."
                  (decf depth) (incf i)
                  (when (zerop depth) (return-from form-source (subseq text start i))))
                 (t (incf i)))))
-      (error "~A ist in bridge-server.lisp nicht abgeschlossen." name))))
+      (error "~A is not closed in bridge-server.lisp." name))))
 
 (let ((text (file-text *source-path*)))
   (dolist (name '("(defparameter *completion-context-max-lines*"
                   "(defun nth-line"
                   "(defun completion-context-start-line"
-                  ;; Mit Argumentliste, sonst trifft SEARCH zuerst
-                  ;; COMPLETION-CONTEXT-START-LINE und COMPLETION-CONTEXT
-                  ;; bliebe undefiniert.
+                  ;; With the argument list, otherwise SEARCH hits
+                  ;; COMPLETION-CONTEXT-START-LINE first and
+                  ;; COMPLETION-CONTEXT would stay undefined.
                   "(defun completion-context (text"))
     (eval (read-from-string (form-source text name)))))
 
@@ -68,44 +68,44 @@ Form. Strings und Kommentare zaehlen nicht mit."
             "  (with-samples ((in (sine freq amp 0)))"
             "    (out in in)))")))
 
-;; Der Kontext beginnt am Anfang der umschliessenden Top-Level-Form, nicht
-;; 120 Zeilen davor und nicht am Dateianfang.
+;; The context begins at the start of the enclosing top-level form, not
+;; 120 lines before it and not at the start of the file.
 (let ((ctx (completion-context *doc* 6 10)))
   (assert (eql 0 (search "(dsp! simple" ctx))
-          () "Kontext beginnt nicht bei der dsp!-Form: ~S" ctx)
+          () "The context does not begin at the dsp! form: ~S" ctx)
   (assert (not (search "helper" ctx))
-          () "Kontext reicht in die vorige Top-Level-Form: ~S" ctx))
+          () "The context reaches into the previous top-level form: ~S" ctx))
 
-;; Der Cursor schneidet die letzte Zeile ab; nichts dahinter kommt mit.
+;; The cursor cuts the last line off; nothing behind it comes along.
 (let ((ctx (completion-context *doc* 6 10)))
   (assert (string= "    (out i" (subseq ctx (- (length ctx) 10)))
           () "Cursorzeile falsch abgeschnitten: ~S" ctx))
 
-;; Steht der Cursor selbst in der Zeile mit der Klammer in Spalte 0, ist
-;; das der Anfang.
+;; If the cursor itself is on the line with the paren in column 0, that
+;; is the start.
 (assert (= 4 (completion-context-start-line *doc* 4)))
 (assert (= 4 (completion-context-start-line *doc* 6)))
 (assert (= 2 (completion-context-start-line *doc* 3)))
 
-;; Eine lange Form verliert ihren Anfang nicht mehr. Das war der Punkt:
-;; mit dem alten Fenster von 120 Zeilen fielen die Parameter eines
-;; laengeren DEFUN heraus und wurden nicht mehr vervollstaendigt.
+;; A long form no longer loses its start. That was the point: with the
+;; old window of 120 lines the parameters of a longer DEFUN fell out and
+;; were no longer completed.
 (let* ((filler (with-output-to-string (out)
                  (dotimes (i 300) (format out "  (progn ~D)~%" i))))
        (long (format nil "(defun big (alpha beta)~%~A  al" filler)))
   (let ((ctx (completion-context long 302 5)))
     (assert (search "alpha beta" ctx)
-            () "Parameter der langen Form fehlen im Kontext.")))
+            () "Parameters of the long form are missing from the context.")))
 
-;; Ohne Klammer in Spalte 0 greift der Rueckfalldeckel, statt die ganze
-;; Datei zu schicken.
+;; Without a paren in column 0 the fallback cap takes effect, instead of
+;; sending the whole file.
 (let* ((lines (with-output-to-string (out)
                 (dotimes (i 900) (format out "  x~D~%" i))))
        (start (completion-context-start-line lines 899)))
   (assert (= start (- 899 *completion-context-max-lines*))
-          () "Rueckfalldeckel greift nicht: ~D" start))
+          () "The fallback cap is not taking effect: ~D" start))
 
-;; Leere Zeilen und Zeilen jenseits des Textes duerfen nicht fliegen.
+;; Empty lines and lines beyond the text must not throw.
 (assert (stringp (completion-context "" 0 0)))
 (assert (stringp (completion-context *doc* 99 5)))
 

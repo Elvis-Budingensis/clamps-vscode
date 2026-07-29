@@ -1,9 +1,9 @@
 // test/features.test.js
 //
-// Inline Values und Inspector-Historie — die Teile, die ohne Editor und
-// ohne Image prüfbar sind.
+// Inline values and the inspector history — the parts that are checkable
+// without an editor and without an image.
 //
-// Aufruf: npx tsc -p ./ && node test/features.test.js
+// Run: npx tsc -p ./ && node test/features.test.js
 
 require('./vscode-stub');
 
@@ -14,25 +14,25 @@ let failed = 0;
 const check = (name, actual, expected) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     failed++;
-    console.log(`FEHLER ${name}\n  erwartet: ${JSON.stringify(expected)}\n  bekommen: ${JSON.stringify(actual)}`);
+    console.log(`FAILED ${name}\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(actual)}`);
   }
 };
 const names = line => symbolTokens(line).map(t => t.text);
 
 // ---------------------------------------------------------------------
-// symbolTokens: Lisp-Symbolnamen, nicht Wörter
+// symbolTokens: Lisp symbol names, not words
 // ---------------------------------------------------------------------
 check('einfache Form', names('(foo bar)'), ['foo', 'bar']);
-// Der Grund, warum wir InlineValueText statt VariableLookup benutzen:
-// VS Code schneidet aus *foo* nur "foo" heraus.
+// The reason we use InlineValueText rather than VariableLookup: VS Code
+// cuts only "foo" out of *foo*.
 check('Sternchen bleiben dran', names('(setf *foo* 1)'), ['setf', '*foo*', '1']);
 check('Bindestriche', names('(rt-start)'), ['rt-start']);
-check('Paketpraefix als ein Token', names('(incudine:node-id n)'), ['incudine:node-id', 'n']);
-check('Praedikat mit Fragezeichen', names('(evenp x?)'), ['evenp', 'x?']);
+check('a package prefix as one token', names('(incudine:node-id n)'), ['incudine:node-id', 'n']);
+check('a predicate with a question mark', names('(evenp x?)'), ['evenp', 'x?']);
 check('Vergleichsoperatoren', names('(<= a b)'), ['<=', 'a', 'b']);
 
-// Strings und Kommentare bleiben aussen vor: ein Local namens N darf
-// nicht in "n mal" oder hinter einem ; markiert werden.
+// Strings and comments are left out: a local named N must not be marked
+// inside "n times" or behind a ;.
 check('Zeichenkette uebersprungen', names('(format t "n mal ~A" n)'), ['format', 't', 'n']);
 check('Kommentar abgeschnitten', names('(foo) ; bar baz'), ['foo']);
 check('Zeichenliteral', names('(char= c #\\()'), ['char=', 'c']);
@@ -45,18 +45,18 @@ const locals = [{ name: 'N', value: '7' }, { name: 'XS', value: '(1 2 3)' }];
 
 check('Kleinschreibung trifft Local',
   matchLocals('(loop for x in xs repeat n)', locals).map(m => m.name).sort(), ['N', 'XS']);
-check('kein Treffer', matchLocals('(rt-start)', locals), []);
-check('nicht im String', matchLocals('(format t "n")', locals), []);
+check('no match', matchLocals('(rt-start)', locals), []);
+check('not inside a string', matchLocals('(format t "n")', locals), []);
 
-// Pro Zeile nur EIN Eintrag je Local — am letzten Vorkommen, weil dort
-// die Zuweisung meistens schon passiert ist.
+// Only ONE entry per local per line — at the last occurrence, because by
+// then the assignment has usually already happened.
 {
   const m = matchLocals('(setq n (+ n 1))', locals);
-  check('nur ein Eintrag fuer N', m.length, 1);
+  check('only one entry for N', m.length, 1);
   check('letztes Vorkommen', m[0].start, '(setq n (+ '.length);
 }
 
-// Paketqualifiziert soll auf das nackte Local passen.
+// A package-qualified name should match the bare local.
 check('Paketpraefix ignoriert',
   matchLocals('(print cl-user::n)', locals).map(m => m.name), ['N']);
 
@@ -65,11 +65,11 @@ check('Paketpraefix ignoriert',
 // ---------------------------------------------------------------------
 check('kurz bleibt kurz', shorten('7'), '7');
 check('Umbrueche zu Leerzeichen', shorten('(1\n 2)'), '(1 2)');
-check('lang wird gekuerzt', shorten('x'.repeat(80)).length, 60);
-check('mit Auslassung', shorten('x'.repeat(80)).endsWith('…'), true);
+check('a long value is truncated', shorten('x'.repeat(80)).length, 60);
+check('with an ellipsis', shorten('x'.repeat(80)).endsWith('…'), true);
 
 // ---------------------------------------------------------------------
-// Inspector-Historie: Verlauf, nicht Pfad
+// The inspector history: a history, not a path
 // ---------------------------------------------------------------------
 {
   const I = ClampsInspector;
@@ -79,36 +79,36 @@ check('mit Auslassung', shorten('x'.repeat(80)).endsWith('…'), true);
   I.recordHistory(1, 'a');
   I.recordHistory(2, 'b');
   I.recordHistory(3, 'c');
-  check('drei Einträge', I.history.map(h => h.label), ['a', 'b', 'c']);
+  check('three entries', I.history.map(h => h.label), ['a', 'b', 'c']);
   check('Index am Ende', I.historyIndex, 2);
 
-  // Dieselbe Ansicht nicht doppelt — Aktualisieren und Teil-Setzen
-  // liefern denselben Eintrag mehrfach.
+  // Not the same page twice — refreshing and setting a part deliver the
+  // same entry several times over.
   I.recordHistory(3, 'c');
-  check('kein Duplikat', I.history.length, 3);
+  check('no duplicate', I.history.length, 3);
 
-  // Zurück und dann ein neuer Sprung: der Rest VOR dem Index fällt weg,
-  // wie im Browser.
+  // Back and then a new jump: the rest BEFORE the index falls away, as in
+  // a browser.
   I.historyIndex = 1;
   I.recordHistory(9, 'z');
   check('Vorwaerts-Teil abgeschnitten', I.history.map(h => h.label), ['a', 'b', 'z']);
-  check('Index steht auf dem Neuen', I.historyIndex, 2);
+  check('the index is on the new one', I.historyIndex, 2);
 
-  // Während Vor/Zurück darf nicht mitgeschrieben werden, sonst wächst
-  // der Verlauf beim Durchblättern.
+  // Nothing may be written while going back/forward, otherwise the
+  // history grows while paging through it.
   I.navigatingHistory = true;
   I.recordHistory(42, 'ignoriert');
-  check('Vor/Zurück schreibt nicht', I.history.length, 3);
+  check('back/forward does not write', I.history.length, 3);
   I.navigatingHistory = false;
 
-  // Obergrenze: der Verlauf hält IDs der Objekt-Tabelle im Image fest.
+  // A cap: the history holds IDs of the object table in the image.
   reset();
   for (let i = 0; i < 60; i++) I.recordHistory(i, `o${i}`);
-  check('auf 50 begrenzt', I.history.length, 50);
+  check('capped at 50', I.history.length, 50);
   check('neueste behalten', I.history[I.history.length - 1].label, 'o59');
   check('Index innerhalb', I.historyIndex, 49);
   reset();
 }
 
-if (failed === 0) console.log('ok — alle Feature-Tests bestanden');
+if (failed === 0) console.log('ok — all feature tests passed');
 process.exit(failed === 0 ? 0 : 1);

@@ -32,25 +32,25 @@ type XrefTreeNode =
   | { type: 'entry'; entry: XrefEntry };
 
 export const XREF_KINDS: ReadonlyArray<{ kind: string; label: string }> = [
-  { kind: 'definitions', label: 'Definitionen' },
-  { kind: 'callers', label: 'Aufrufer' },
-  { kind: 'callees', label: 'Aufgerufene Funktionen' },
-  { kind: 'references', label: 'Referenzen' },
-  { kind: 'bindings', label: 'Bindungen' },
-  { kind: 'setters', label: 'Setzer' },
-  { kind: 'macroexpands', label: 'Makroexpansionen' },
+  { kind: 'definitions', label: 'Definitions' },
+  { kind: 'callers', label: 'Callers' },
+  { kind: 'callees', label: 'Callees' },
+  { kind: 'references', label: 'References' },
+  { kind: 'bindings', label: 'Bindings' },
+  { kind: 'setters', label: 'Setters' },
+  { kind: 'macroexpands', label: 'Macroexpansions' },
 ];
 
 /**
- * Sprungziel eines Treffers.
+ * Jump target of a hit.
  *
- * Der OFFSET hat Vorrang, nicht die Zeile. Beide sind gesetzt nur, wenn
- * der Quellort tatsächlich (:line …) UND (:position …) enthält, und dann
- * bezeichnen sie dieselbe Stelle — die Reihenfolge kostet also nichts.
- * Sie schützt aber gegen den Fehler, der hier zweimal auftrat: sobald
- * irgendwo ein Vorgabewert line=1 durchrutscht, landet jeder Sprung am
- * Dateianfang, während der daneben stehende Offset korrekt wäre.
- * SBCL liefert in Quellorten fast immer nur (:position N).
+ * The OFFSET takes precedence, not the line. Both are set only when the
+ * source location actually contains (:line …) AND (:position …), and
+ * then they denote the same place — so the ordering costs nothing. But
+ * it guards against the bug that occurred here twice: as soon as a
+ * default of line=1 slips through anywhere, every jump lands at the
+ * start of the file while the offset next to it would have been correct.
+ * In source locations SBCL almost always supplies only (:position N).
  */
 export function entryPosition(entry: XrefEntry, doc: vscode.TextDocument): vscode.Position {
   if (entry.offset !== undefined && entry.offset !== null) {
@@ -76,7 +76,7 @@ export async function openXrefEntry(entry: XrefEntry): Promise<void> {
     await vscode.commands.executeCommand('clamps.inspect', entry.inspect, 'COMMON-LISP-USER');
     return;
   }
-  void vscode.window.showInformationMessage(entry.detail || `${entry.label}: keine Quelldatei verfügbar.`);
+  void vscode.window.showInformationMessage(entry.detail || `${entry.label}: no source file available.`);
 }
 
 export class XrefBrowserProvider implements vscode.TreeDataProvider<XrefTreeNode>, vscode.Disposable {
@@ -92,16 +92,16 @@ export class XrefBrowserProvider implements vscode.TreeDataProvider<XrefTreeNode
 
   async search(symbol: string, packageName: string, kinds = XREF_KINDS): Promise<void> {
     if (this.loading) {
-      // Sieben Abfragen laufen parallel; ein zweiter Aufruf währenddessen
-      // wurde bisher kommentarlos verworfen und sah wie ein Hänger aus.
+      // Seven queries run in parallel; a second call in the meantime was
+      // previously discarded without comment and looked like a hang.
       void vscode.window.showInformationMessage(
-        `XREF läuft noch (${this.symbol}) — bitte abwarten.`
+        `XREF is still running (${this.symbol}) — please wait.`
       );
       return;
     }
     const client = this.getClient();
     if (!client || client.state !== State.Running) {
-      void vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+      void vscode.window.showErrorMessage('CLAMPS is not connected.');
       return;
     }
     this.loading = true;
@@ -119,7 +119,7 @@ export class XrefBrowserProvider implements vscode.TreeDataProvider<XrefTreeNode
             kind: k.kind,
             label: k.label,
             entries: result.available && Array.isArray(result.entries) ? result.entries : [],
-            error: result.available ? undefined : (result.error || 'Nicht verfügbar.'),
+            error: result.available ? undefined : (result.error || 'Not available.'),
           } satisfies XrefGroup;
         } catch (error) {
           return {
@@ -148,7 +148,7 @@ export class XrefBrowserProvider implements vscode.TreeDataProvider<XrefTreeNode
         vscode.TreeItemCollapsibleState.Expanded
       );
       item.iconPath = new vscode.ThemeIcon('symbol-key');
-      item.tooltip = `XREF für ${node.symbol} im Paket ${node.packageName}`;
+      item.tooltip = `XREF for ${node.symbol} in package ${node.packageName}`;
       return item;
     }
     if (node.type === 'group') {
@@ -168,7 +168,7 @@ export class XrefBrowserProvider implements vscode.TreeDataProvider<XrefTreeNode
     item.tooltip = e.detail || [e.label, e.description].filter(Boolean).join(' — ');
     item.iconPath = new vscode.ThemeIcon(e.file ? 'go-to-file' : 'symbol-misc');
     item.contextValue = 'clampsXrefEntry';
-    item.command = { command: 'clamps.xrefOpen', title: 'XREF-Treffer öffnen', arguments: [e] };
+    item.command = { command: 'clamps.xrefOpen', title: 'Open XREF hit', arguments: [e] };
     return item;
   }
 

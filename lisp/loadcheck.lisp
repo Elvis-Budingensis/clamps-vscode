@@ -1,24 +1,24 @@
-;;;; loadcheck.lisp — das Gate, das v72s Klammerfehler gefunden hätte.
+;;;; loadcheck.lisp — the gate that would have found v72's paren bug.
 ;;;;
-;;;; Aufruf: sbcl --script lisp/loadcheck.lisp
+;;;; Run: sbcl --script lisp/loadcheck.lisp
 ;;;;
-;;;; Warum es das braucht: check.py zählt Zeichen, und eine fehlende
-;;;; Klammer, die durch eine überzählige am Dateiende ausgeglichen wird,
-;;;; ist für jeden Zähler unsichtbar. Der Reader war zufrieden, die
-;;;; Klammerbilanz war null — und trotzdem stand ein handler-case ohne
-;;;; Klausel da, wodurch (error (e) ...) zu einem Funktionsaufruf wurde:
-;;;; "The function clamps-bridge-rpc::e is undefined", bei jedem Anhängen
-;;;; des Debuggers.
+;;;; Why it is needed: check.py counts characters, and a missing paren
+;;;; balanced out by a surplus one at the end of the file is invisible to
+;;;; any counter. The reader was satisfied, the paren balance was zero —
+;;;; and yet there stood a handler-case without a clause, which turned
+;;;; (error (e) ...) into a function call: "The function
+;;;; clamps-bridge-rpc::e is undefined", every time the debugger was
+;;;; attached.
 ;;;;
-;;;; Drei Stufen:
-;;;;   1. LESEN     — jede Datei Form für Form; findet echte Syntaxfehler
-;;;;   2. GESTALT   — handler-case/handler-bind müssen Klauseln haben
-;;;;   3. LADEN     — rpc.lisp gegen nacktes SBCL; jede WARNING ist ein
-;;;;                  Fehlschlag, STYLE-WARNING wird gemeldet
+;;;; Three stages:
+;;;;   1. READ    — every file form by form; finds real syntax errors
+;;;;   2. SHAPE   — handler-case/handler-bind must have clauses
+;;;;   3. LOAD    — rpc.lisp against a bare SBCL; every WARNING is a
+;;;;                failure, STYLE-WARNING is reported
 ;;;;
-;;;; Nur rpc.lisp wird geladen: sie ist laut eigenem Kopfkommentar frei
-;;;; von CLAMPS, Swank und Incudine. bridge-server.lisp braucht Swank und
-;;;; kann hier nur gelesen und auf Gestalt geprüft werden.
+;;;; Only rpc.lisp is loaded: by its own header comment it is free of
+;;;; CLAMPS, Swank and Incudine. bridge-server.lisp needs Swank and can
+;;;; only be read and checked for shape here.
 
 (require :sb-posix)
 
@@ -29,26 +29,26 @@
 
 (defun problem (fmt &rest args)
   (incf *problems*)
-  (format *error-output* "~&FEHLER: ~?~%" fmt args))
+  (format *error-output* "~&ERROR: ~?~%" fmt args))
 
 ;;; --- Stufe 1: Lesen --------------------------------------------------
 
 (defun strip-package-markers (text)
-  "Ersetzt Paketpräfixe (foo:bar -> foo-bar) AUSSERHALB von Zeichenketten,
-Kommentaren und Zeichenliteralen.
+  "Replaces package prefixes (foo:bar -> foo-bar) OUTSIDE strings,
+comments and character literals.
 
-Für die Gestaltprüfung ist gleichgültig, in welchem Paket ein Symbol
-steht — es geht um Listenstruktur und um Köpfe wie HANDLER-CASE. Dieser
-Rückfall macht Dateien prüfbar, die Fremdpakete nennen (ql:quickload,
-sb-posix:getpid) und deshalb im nackten SBCL nicht lesbar sind. Ohne ihn
-bliebe bridge-server.lisp ungeprüft — also gerade die Datei, die sich
-nicht laden lässt und die deshalb am dringendsten eine Prüfung braucht."
+For the shape check it does not matter which package a symbol lives in —
+what matters is list structure and heads such as HANDLER-CASE. This
+fallback makes files checkable that name foreign packages (ql:quickload,
+sb-posix:getpid) and are therefore unreadable in a bare SBCL. Without it
+bridge-server.lisp would stay unchecked — that is, precisely the file
+that cannot be loaded and therefore needs a check most urgently."
   (let ((out (make-string-output-stream))
         (i 0) (n (length text)))
     (loop while (< i n) do
       (let ((c (char text i)))
         (cond
-          ;; Zeichenkette unverändert übernehmen
+          ;; Take the string over unchanged
           ((char= c #\")
            (write-char c out) (incf i)
            (loop while (and (< i n) (char/= (char text i) #\"))
@@ -60,25 +60,24 @@ nicht laden lässt und die deshalb am dringendsten eine Prüfung braucht."
           ((char= c #\;)
            (loop while (and (< i n) (char/= (char text i) #\Newline))
                  do (write-char (char text i) out) (incf i)))
-          ;; Zeichenliteral: #\: darf keine Paketmarke sein
+          ;; Character literal: #\: must not be a package marker
           ((and (char= c #\#) (< (1+ i) n) (char= (char text (1+ i)) #\\))
            (write-char c out) (write-char #\\ out) (incf i 2)
            (when (< i n) (write-char (char text i) out) (incf i)))
-          ;; Doppelpunkt: durch Bindestrich ersetzen, damit foo:bar ein
-          ;; einziges Token FOO-BAR bleibt. Ein Schlüsselwort am
-          ;; Tokenanfang (:ok) bleibt ein Schlüsselwort.
+          ;; Colon: replace it with a hyphen, so that foo:bar stays a
+          ;; single token FOO-BAR. A keyword at the start of a token (:ok)
+          ;; stays a keyword.
           ((char= c #\:)
            (let ((prev (and (> i 0) (char text (1- i)))))
              (cond
-               ;; Führender Doppelpunkt = Schlüsselwort, unverändert.
+               ;; A leading colon = a keyword, unchanged.
                ;;
-               ;; #\# MUSS in dieser Liste stehen: #:foo ist ein
-               ;; nicht-internierter Symbolname, kein Paketpräfix. Wurde
-               ;; der Doppelpunkt dort zu einem Bindestrich, entstand
-               ;; #-foo — eine Leseklausel, die die nächste Form
-               ;; stillschweigend überspringt. In einer defpackage-Form
-               ;; verschluckte das die halbe Exportliste und meldete am
-               ;; Dateiende eine überzählige Klammer.
+               ;; #\# MUST be in this list: #:foo is an uninterned symbol
+               ;; name, not a package prefix. If the colon there became a
+               ;; hyphen, #-foo arose — a read-time conditional that
+               ;; silently skips the next form. In a defpackage form that
+               ;; swallowed half the export list and reported a surplus
+               ;; paren at the end of the file.
                ((or (null prev)
                     (member prev '(#\Space #\Tab #\Newline #\( #\) #\' #\#)))
                 (write-char c out) (incf i))
@@ -92,8 +91,9 @@ nicht laden lässt und die deshalb am dringendsten eine Prüfung braucht."
 
 (defun read-forms-from-string (text)
   (with-input-from-string (in text)
-    ;; Eigenes Paket, damit die Symbole der Datei nichts überschreiben,
-    ;; und *read-eval* aus: #. darf beim Prüfen nichts ausführen.
+    ;; A package of our own, so that the file's symbols overwrite
+    ;; nothing, and *read-eval* off: #. must execute nothing while
+    ;; checking.
     (let ((*package* (make-package (gensym "LC") :use '(:cl)))
           (*read-eval* nil)
           (forms '()))
@@ -108,18 +108,18 @@ nicht laden lässt und die deshalb am dringendsten eine Prüfung braucht."
       (subseq s 0 (read-sequence s in)))))
 
 (defun read-all (path)
-  "Liest PATH Form für Form. Erst direkt; scheitert das an fremden
-Paketen, dann aus einer Kopie ohne Paketpräfixe."
+  "Reads PATH form by form. Directly first; if that fails on foreign
+packages, then from a copy without package prefixes."
   (let ((text (handler-case (file-text path)
                 (error (e)
-                  (problem "~A nicht lesbar: ~A" (file-namestring path) e)
+                  (problem "~A is not readable: ~A" (file-namestring path) e)
                   nil))))
     (when text
       (handler-case (read-forms-from-string text)
         (error ()
           (handler-case (read-forms-from-string (strip-package-markers text))
             (error (e)
-              (problem "~A ist nicht lesbar: ~A" (file-namestring path) e)
+              (problem "~A cannot be read: ~A" (file-namestring path) e)
               nil)))))))
 
 ;;; --- Stufe 2: Gestalt ------------------------------------------------
@@ -128,47 +128,47 @@ Paketen, dann aus einer Kopie ohne Paketpräfixe."
   (and (consp form) (symbolp (first form)) (symbol-name (first form))))
 
 (defun clause-p (c)
-  "Sieht C wie eine handler-case-Klausel aus? (TYP (VAR) ...) oder (TYP () ...)"
+  "Does C look like a handler-case clause? (TYPE (VAR) ...) or (TYPE () ...)"
   (and (consp c) (symbolp (first c)) (listp (second c))))
 
 (defun check-shape (form path)
-  "Prüft handler-case/handler-bind auf vorhandene Klauseln und steigt
-weiter ab. Die Klauseln selbst werden NICHT als Aufrufe gewertet — sonst
-meldet jede korrekte Klausel einen Fehler."
+  "Checks handler-case/handler-bind for the presence of clauses and
+descends further. The clauses themselves are NOT counted as calls —
+otherwise every correct clause reports an error."
   (when (consp form)
     (let ((head (head-name form)))
       (cond
         ((and head (string= head "HANDLER-CASE"))
          (let ((clauses (cddr form)))
            (if (null clauses)
-               ;; Genau der Fehler aus v72.
-               (problem "~A: handler-case ohne Klausel — eine Klammer zu ~
-                         viel? Die Klausel ist in die geschützte Form gerutscht ~
-                         und wird dort zum Funktionsaufruf." path)
+               ;; Exactly the bug from v72.
+               (problem "~A: handler-case without a clause — one paren too ~
+                         many? The clause has slipped into the protected form ~
+                         and becomes a function call there." path)
                (dolist (c clauses)
                  (unless (clause-p c)
-                   (problem "~A: unbrauchbare handler-case-Klausel: ~S" path c))))
-           ;; Geschützte Form prüfen, Klauselköpfe überspringen.
-           (check-shape (second form) (format nil "~A/geschützt" path))
+                   (problem "~A: unusable handler-case clause: ~S" path c))))
+           ;; Check the protected form, skip the clause heads.
+           (check-shape (second form) (format nil "~A/protected" path))
            (loop for c in clauses for i from 0
                  do (dolist (body-form (cddr c))
                       (check-shape body-form (format nil "~A/klausel~D" path i))))))
         ((and head (string= head "HANDLER-BIND"))
          (let ((bindings (second form)))
            (unless (and (listp bindings) bindings)
-             (problem "~A: handler-bind ohne Bindung" path)))
+             (problem "~A: handler-bind without a binding" path)))
          (dolist (x (cddr form)) (check-shape x path)))
         (t
-         ;; Verdächtig: (ERROR (X) ...) als gewöhnlicher Aufruf. So sieht
-         ;; eine verrutschte Klausel aus, wenn sie im Rumpf landet.
+         ;; Suspicious: (ERROR (X) ...) as an ordinary call. That is what
+         ;; a slipped clause looks like when it ends up in the body.
          (when (and head (string= head "ERROR")
                     (consp (second form))
                     (= 1 (length (second form)))
                     (symbolp (first (second form)))
                     (not (keywordp (first (second form)))))
-           (problem "~A: (error (~A) ...) steht als Aufruf, nicht als Klausel"
+           (problem "~A: (error (~A) ...) stands as a call, not as a clause"
                     path (first (second form))))
-         (when (listp (cdr (last form)))   ; nur echte Listen begehen
+         (when (listp (cdr (last form)))   ; only walk proper lists
            (loop for x in form for i from 0
                  do (check-shape x (format nil "~A/~D" path i)))))))))
 
@@ -184,19 +184,19 @@ meldet jede korrekte Klausel einen Fehler."
 
 ;;; --- Stufe 3: Laden --------------------------------------------------
 
-;;; --- Stufe 4: Übersetzen ---------------------------------------------
+;;; --- Stage 4: compile -------------------------------------------------
 ;;;
-;;; LOAD einer Quelldatei fängt Kompilierfehler selbst ab: der Compiler
-;;; meldet "caught ERROR" auf den Strom, ersetzt die Form durch einen
-;;; Stummel, der erst beim AUFRUF knallt — und LOAD kehrt erfolgreich
-;;; zurück. Genau so ist (let ((pi 0)) ...) durch Stufe 3 gelaufen:
-;;; PI ist eine Konstante, die Datei war lesbar, formschön und
-;;; "geladen", und trotzdem lieferte jede Completion nur noch
-;;; "Execution of a form compiled with errors".
+;;; LOAD of a source file catches compile errors itself: the compiler
+;;; reports "caught ERROR" onto the stream, replaces the form with a stub
+;;; that only blows up when CALLED — and LOAD returns successfully. That
+;;; is exactly how (let ((pi 0)) ...) got through stage 3: PI is a
+;;; constant, the file was readable, well shaped and "loaded", and yet
+;;; every completion returned nothing but "Execution of a form compiled
+;;; with errors".
 ;;;
-;;; COMPILE-FILE gibt FAILURE-P zurück und ist deshalb das ehrliche Gate.
-;;; STYLE-WARNINGs setzen es nicht — die beabsichtigte Neudefinition von
-;;; COMPLETIONS-FOR-REPL bleibt also erlaubt.
+;;; COMPILE-FILE returns FAILURE-P and is therefore the honest gate.
+;;; STYLE-WARNINGs do not set it — so the intended redefinition of
+;;; COMPLETIONS-FOR-REPL stays permitted.
 
 (defun check-compile (path)
   (let ((out (merge-pathnames (format nil "loadcheck-~A.fasl" (pathname-name path))
@@ -205,14 +205,14 @@ meldet jede korrekte Klausel einen Fehler."
         (handler-bind ((style-warning #'muffle-warning))
           (handler-case (compile-file path :output-file out :verbose nil :print nil)
             (error (e)
-              (problem "~A lässt sich nicht übersetzen: ~A" (file-namestring path) e)
+              (problem "~A cannot be compiled: ~A" (file-namestring path) e)
               (values nil t t))))
       (declare (ignore warnings-p))
       (when failure-p
-        (problem "~A übersetzt mit Fehler oder ernster Warnung"
+        (problem "~A compiles with an error or a serious warning"
                  (file-namestring path)))
       (unless failure-p
-        (format t "~&  ~A übersetzt sauber.~%" (file-namestring path)))
+        (format t "~&  ~A compiles cleanly.~%" (file-namestring path)))
       (when fasl (ignore-errors (delete-file fasl))))))
 
 (defun check-load (path)
@@ -222,14 +222,14 @@ meldet jede korrekte Klausel einen Fehler."
                           (incf styles)
                           (format t "~&  Stilwarnung: ~A~%" c)
                           (muffle-warning c)))
-         ;; WARNING ohne STYLE- ist ernst: undefinierte Variable,
-         ;; Typfehler, widersprüchliche Deklaration. Genau hier hätte
-         ;; "undefined variable: E" zugeschlagen.
+         ;; A WARNING without STYLE- is serious: an undefined variable, a
+         ;; type error, a contradictory declaration. This is exactly where
+         ;; "undefined variable: E" would have struck.
          (warning (lambda (c)
-                    (problem "~A lädt mit Warnung: ~A" (file-namestring path) c)
+                    (problem "~A loads with a warning: ~A" (file-namestring path) c)
                     (muffle-warning c))))
       (handler-case (load path)
-        (error (e) (problem "~A lässt sich nicht laden: ~A"
+        (error (e) (problem "~A cannot be loaded: ~A"
                             (file-namestring path) e))))
     (format t "~&  ~A geladen, ~D Stilwarnung(en).~%" (file-namestring path) styles)))
 
@@ -239,32 +239,32 @@ meldet jede korrekte Klausel einen Fehler."
        (rpc (merge-pathnames "rpc.lisp" here))
        (others (remove-if (lambda (p) (equal (pathname-name p) "rpc"))
                           (directory (merge-pathnames "*.lisp" here)))))
-  (format t "~&Gestalt prüfen …~%")
+  (format t "~&Checking shape …~%")
   (check-file-shape rpc)
   (dolist (p others) (check-file-shape p))
-  ;; completion.lisp und autodoc.lisp sind wie rpc.lisp frei von CLAMPS,
-  ;; Swank und Incudine und bauen nur auf rpc.lisp auf. Sie MUESSEN hier
-  ;; mitgeprueft werden: (let ((pi 0)) ...) ist lesbar und formschoen, aber
-  ;; ein Kompilierfehler — Stufe 1 und 2 sehen davon nichts.
+  ;; Like rpc.lisp, completion.lisp and autodoc.lisp are free of CLAMPS,
+  ;; Swank and Incudine and build only on rpc.lisp. They MUST be checked
+  ;; here as well: (let ((pi 0)) ...) is readable and well shaped, but a
+  ;; compile error — stages 1 and 2 see nothing of it.
   ;;
-  ;; Uebersetzen kommt VOR dem Laden. Umgekehrt hat autodoc.lisp beim
-  ;; Laden (export '(autodoc-for-repl)) ausgefuehrt, und die spaetere
-  ;; Uebersetzung von rpc.lisp meldete dann eine Paketabweichung gegen
-  ;; das eigene DEFPACKAGE — eine Warnung, die nur die Pruefreihenfolge
-  ;; erzeugt hat und nichts ueber die Dateien sagt.
+  ;; Compiling comes BEFORE loading. The other way round, autodoc.lisp
+  ;; executed (export '(autodoc-for-repl)) while loading, and the later
+  ;; compilation of rpc.lisp then reported a package discrepancy against
+  ;; its own DEFPACKAGE — a warning produced solely by the order of the
+  ;; checks, saying nothing about the files.
   (let ((extras (remove nil
                         (mapcar (lambda (name)
                                   (let ((p (merge-pathnames
                                             (concatenate 'string name ".lisp") here)))
                                     (and (probe-file p) p)))
                                 '("completion" "autodoc")))))
-    (format t "~&Übersetzen prüfen …~%")
+    (format t "~&Checking compilation …~%")
     (check-compile rpc)
     (dolist (p extras) (check-compile p))
-    (format t "~&Laden prüfen …~%")
+    (format t "~&Checking loading …~%")
     (check-load rpc)
     (dolist (p extras) (check-load p)))
   (if (zerop *problems*)
-      (format t "~&ok — Lisp lädt sauber und ohne verrutschte Klauseln.~%")
+      (format t "~&ok — Lisp loads cleanly and without slipped clauses.~%")
       (format t "~&~D Problem(e).~%" *problems*))
   (sb-ext:exit :code (if (zerop *problems*) 0 1)))

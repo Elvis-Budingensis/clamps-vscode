@@ -33,10 +33,10 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
   private nodes: IncudineNode[] = [];
   private error = '';
   /**
-   * Hinweis aus dem Image, etwa welche Incudine-Accessoren in dieser
-   * Version fehlen. Getrennt vom Fehler geführt: der Baum kann trotzdem
-   * brauchbar sein, nur unvollständig — und ein flacher Baum ohne
-   * Erklärung sieht wie ein leeres Setup aus.
+   * A hint from the image, for instance which Incudine accessors are
+   * missing in this version. Kept separate from the error: the tree can
+   * still be useful, just incomplete — and a flat tree without an
+   * explanation looks like an empty setup.
    */
   private notice = '';
   private loading = false;
@@ -52,7 +52,7 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
     const client = this.getClient();
     if (!client || client.state !== State.Running) {
       this.nodes = [];
-      this.error = 'CLAMPS ist nicht verbunden.';
+      this.error = 'CLAMPS is not connected.';
       this.changed.fire();
       return;
     }
@@ -64,7 +64,7 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
         this.error = '';
         this.notice = result.error ?? '';
       } else {
-        this.error = result.error ?? 'Incudine ist nicht geladen.';
+        this.error = result.error ?? 'Incudine is not loaded.';
         this.notice = '';
       }
     } catch (e) {
@@ -85,15 +85,15 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
       );
       item.contextValue = 'incudineControl';
       item.iconPath = new vscode.ThemeIcon('symbol-field');
-      item.tooltip = `Control von Node ${entry.node.id}`;
+      item.tooltip = `Control of node ${entry.node.id}`;
       return item;
     }
 
     const n = entry.node;
     const hasChildren = this.nodes.some(x => x.parent === n.id) || n.controls.length > 0;
-    // Wurzelgruppen aufgeklappt: sonst sieht man nach dem Öffnen nur
-    // "group [0]" und muss erst klicken, um überhaupt etwas zu sehen.
-    // Tiefere Ebenen bleiben zu, damit grosse Setups nicht explodieren.
+    // Root groups expanded: otherwise all you see after opening is
+    // "group [0]" and you have to click before seeing anything at all.
+    // Deeper levels stay closed so that large setups do not explode.
     const isRoot = n.parent === null;
     const state = hasChildren
       ? isRoot
@@ -119,7 +119,7 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
     return item;
   }
 
-  /** Platzhalterzeile für Meldungen; id < 0 markiert sie als nicht klickbar. */
+  /** Placeholder row for messages; id < 0 marks it as not clickable. */
   private message(text: string): Entry {
     return {
       type: 'node',
@@ -135,17 +135,17 @@ export class IncudineNodeProvider implements vscode.TreeDataProvider<Entry>, vsc
       return [this.message(this.error)];
     }
     if (!entry && this.nodes.length === 0) {
-      // Kein Fehler, aber auch keine Nodes: das ist der Normalfall bei
-      // gestopptem DSP und darf nicht wie ein Defekt aussehen.
-      return [this.message('Keine Nodes — läuft der Realtime-Server? (rt-start)')];
+      // No error, but no nodes either: that is the normal case with DSP
+      // stopped and must not look like a defect.
+      return [this.message('No nodes — is the realtime server running? (rt-start)')];
     }
     if (!entry) {
       const ids = new Set(this.nodes.map(n => n.id));
       const roots: Entry[] = this.nodes
         .filter(n => n.parent === null || !ids.has(n.parent))
         .map(node => ({ type: 'node' as const, node }));
-      // Hinweis unten anhängen, damit man fehlende Accessoren sieht,
-      // ohne dass sie den Baum verdecken.
+      // Append the hint at the bottom so that missing accessors are
+      // visible without obscuring the tree.
       if (this.notice) roots.push(this.message(this.notice));
       return roots;
     }

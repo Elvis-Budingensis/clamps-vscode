@@ -1,19 +1,20 @@
 
-;;;; test-fallback.lisp — die Basis-Completion aus rpc.lisp ALLEIN.
+;;;; test-fallback.lisp — the base completion from rpc.lisp ON ITS OWN.
 ;;;;
-;;;; Bewusst eine eigene Datei: test-completion.lisp laedt completion.lisp
-;;;; und ueberschreibt damit genau die Funktion, um die es hier geht. Der
-;;;; Rueckfall wurde deshalb nie geprueft — und war kaputt.
+;;;; Deliberately a file of its own: test-completion.lisp loads
+;;;; completion.lisp and thereby overrides exactly the function in
+;;;; question here. The fallback was therefore never checked — and was
+;;;; broken.
 (load (merge-pathnames "rpc.lisp" (or *load-truename* *default-pathname-defaults*)))
 (in-package :clamps-bridge-rpc)
 
 (let ((r (completions-for-repl "map" "COMMON-LISP-USER" "(map")))
   (assert (eq :ok (first r)) ()
-          "Basis-Completion nimmt die drei Argumente der Bridge nicht an: ~S" r)
+          "The base completion does not accept the bridge's three arguments: ~S" r)
   (assert (member "mapcar" (third r) :key #'first :test #'string=) ()
-          "Basis-Completion liefert fuer \"map\" kein mapcar."))
+          "The base completion returns no mapcar for \"map\"."))
 
 (let ((r (completions-for-repl "map" "COMMON-LISP-USER")))
-  (assert (eq :ok (first r)) () "Aufruf ohne Kontext muss weiter gehen: ~S" r))
+  (assert (eq :ok (first r)) () "A call without context must still work: ~S" r))
 
 (format t "fallback tests ok~%")

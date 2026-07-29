@@ -1,35 +1,35 @@
 // inlineValues.ts
 //
-// Zeigt die Werte der Frame-Locals direkt im Editor an, während Lisp
-// angehalten ist — hinter der Zeile, in der die Variable vorkommt.
+// Shows the values of the frame locals directly in the editor while Lisp
+// is halted — behind the line in which the variable occurs.
 //
-// Warum nicht VS Codes eingebaute Variante: die kennt nur
-// InlineValueVariableLookup, wobei der Client den Namen aus dem Text
-// schneidet und den Adapter fragt. Lisp-Symbolnamen enthalten Zeichen,
-// die VS Code nicht als Wortbestandteil kennt (-, *, +, /, <, >, %),
-// weshalb dabei aus *foo* nur "foo" wird und der Lookup fehlschlägt.
-// Deshalb liest dieser Anbieter die Locals selbst und setzt fertigen
-// Text (InlineValueText).
+// Why not VS Code's built-in variant: it only knows
+// InlineValueVariableLookup, where the client cuts the name out of the
+// text and asks the adapter. Lisp symbol names contain characters that
+// VS Code does not recognise as part of a word (-, *, +, /, <, >, %),
+// so *foo* becomes just "foo" and the lookup fails. This provider
+// therefore reads the locals itself and supplies finished text
+// (InlineValueText).
 
 import * as vscode from 'vscode';
 
 /**
- * Zeichen, die in einem Lisp-Symbolnamen vorkommen dürfen.
+ * Characters that may occur in a Lisp symbol name.
  *
- * Bewusst ohne Klammern, Anführungszeichen, Komma, Semikolon und
- * Backquote — das sind Trennzeichen. Doppelpunkt ist dabei, damit
- * paketqualifizierte Namen als EIN Token erkannt werden.
+ * Deliberately without parens, quotation marks, comma, semicolon and
+ * backquote — those are separators. Colon is included so that
+ * package-qualified names are recognised as ONE token.
  */
 const SYMBOL_CHARS = /[A-Za-z0-9\-*+/<>=!?%&$_.:^~@[\]{}]/;
 
 /**
- * Findet die Symboltoken einer Zeile mit ihren Spaltenbereichen.
+ * Finds the symbol tokens of a line together with their column ranges.
  *
- * Strings und Zeilenkommentare werden übersprungen: ein Local namens X
- * soll nicht in "text mit x" oder hinter einem ; markiert werden.
- * Zeichenliterale (#\() ebenfalls, sonst zählt die Klammer als Token.
+ * Strings and line comments are skipped: a local named X should not be
+ * marked inside "text with x" or behind a ;. Character literals (#\()
+ * likewise, otherwise the paren counts as a token.
  *
- * Reine Funktion, damit sie ohne Editor prüfbar ist.
+ * A pure function, so that it can be checked without an editor.
  */
 export function symbolTokens(line: string): { text: string; start: number; end: number }[] {
   const out: { text: string; start: number; end: number }[] = [];
@@ -37,7 +37,7 @@ export function symbolTokens(line: string): { text: string; start: number; end: 
   while (i < line.length) {
     const c = line[i];
     if (c === ';') break;                       // Kommentar bis Zeilenende
-    if (c === '"') {                            // Zeichenkette überspringen
+    if (c === '"') {                            // skip a string
       i++;
       while (i < line.length && line[i] !== '"') {
         if (line[i] === '\\') i++;
@@ -62,13 +62,13 @@ export function symbolTokens(line: string): { text: string; start: number; end: 
 }
 
 /**
- * Ordnet Locals den Vorkommen in einer Zeile zu.
+ * Maps locals to their occurrences in a line.
  *
- * Vergleich ohne Rücksicht auf Groß-/Kleinschreibung, weil der Reader
- * hochstellt: `n` im Quelltext ist das Local `N`. Paketpräfixe werden
- * beim Vergleich abgeschnitten, damit `foo:bar` auf das Local `BAR`
- * passt. Pro Zeile wird jedes Local nur EINMAL angezeigt — am letzten
- * Vorkommen, weil dort die Zuweisung meistens schon passiert ist.
+ * Comparison is case-insensitive because the reader upcases: `n` in the
+ * source is the local `N`. Package prefixes are cut off for the
+ * comparison so that `foo:bar` matches the local `BAR`. Each local is
+ * shown only ONCE per line — at the last occurrence, because by then the
+ * assignment has usually already happened.
  */
 export function matchLocals(
   line: string,
@@ -90,7 +90,7 @@ export function matchLocals(
   return [...found.values()];
 }
 
-/** Kürzt lange Werte, damit die Zeile nicht unlesbar wird. */
+/** Truncates long values so that the line stays readable. */
 export function shorten(value: string, max = 60): string {
   const oneLine = value.replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : oneLine.slice(0, max - 1) + '…';
@@ -112,14 +112,14 @@ export class ClampsInlineValuesProvider implements vscode.InlineValuesProvider {
       });
       locals = Array.isArray(r?.locals) ? r.locals : [];
     } catch {
-      // Nicht angehalten oder Verbindung weg — dann eben keine Werte.
+      // Not halted, or the connection is gone — then simply no values.
       return [];
     }
     if (locals.length === 0) return [];
 
     const out: vscode.InlineValue[] = [];
-    // Nur bis zur angehaltenen Zeile: weiter unten sind die Werte noch
-    // nicht zugewiesen, und sie dort anzuzeigen wäre eine Lüge.
+    // Only down to the halted line: further down the values have not
+    // been assigned yet, and showing them there would be a lie.
     const last = Math.min(viewPort.end.line, context.stoppedLocation.end.line);
     for (let line = viewPort.start.line; line <= last; line++) {
       const textLine = document.lineAt(line);

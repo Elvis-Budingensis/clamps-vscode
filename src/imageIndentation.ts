@@ -27,7 +27,7 @@ export class ImageIndentationProvider implements vscode.OnTypeFormattingEditProv
     for(const rawLine of before.split('\n')) { for(let i=0;i<rawLine.length;i++){ const c=rawLine[i]; if(str){if(c==='\\')i++;else if(c==='"')str=false;continue;} if(c===';')break;if(c==='"'){str=true;continue;}if(c==='('){const m=rawLine.slice(i+1).match(/^([^\s()]+)/);stack.push({col:i,op:m?.[1]?.toLowerCase()});}else if(c===')')stack.pop();} }
 
     const top=stack[stack.length-1];
-    // Auf Top-Level gibt es nichts einzurücken.
+    // At top level there is nothing to indent.
     if(!top) return [];
 
     const spaces=this.indentColumn(top,trimmed);
@@ -37,41 +37,41 @@ export class ImageIndentationProvider implements vscode.OnTypeFormattingEditProv
   }
 
   /**
-   * Spalte für eine Fortsetzungszeile innerhalb der Form TOP.
+   * Column for a continuation line inside the form TOP.
    *
-   * Hier lag der Fehler: die Regel wurde nachgeschlagen und dann
-   * verworfen — `top.col + (rule === 0 ? 2 : 2)`, beide Zweige 2. Damit
-   * hatte die gesamte rules-Map keine Wirkung, weder die Defaults noch
-   * die per clamps/indentationRules aus dem laufenden Image geholten
-   * Regeln. Jede Zeile landete auf top.col + 2, und ein Aufruf sah aus
-   * wie ein Makro-Körper.
+   * This is where the bug sat: the rule was looked up and then thrown
+   * away — `top.col + (rule === 0 ? 2 : 2)`, both branches 2. That left
+   * the entire rules map without effect, neither the defaults nor the
+   * rules fetched from the running image via clamps/indentationRules.
+   * Every line ended up at top.col + 2, and a call looked like a macro
+   * body.
    *
-   * Die Unterscheidung, auf die es in Lisp ankommt:
+   * The distinction that matters in Lisp:
    *
-   *   (defun foo (x)        Makro/Sonderform: Körper 2 ab der Klammer
+   *   (defun foo (x)        macro/special form: body 2 from the paren
    *     body)
    *
-   *   (mapcar #'car         Funktionsaufruf: unter dem ERSTEN Argument
-   *           rest)         ausrichten
+   *   (mapcar #'car         function call: align under the FIRST
+   *           rest)         argument
    */
   private indentColumn(top:{col:number;op?:string},trimmed:string):number {
-    // Schließende Klammer auf eigener Zeile gehört auf die Spalte der
-    // Form, die sie schließt — nicht auf Körper minus 2, was beim
-    // ausgerichteten Fall daneben lag.
+    // A closing paren on its own line belongs at the column of the form
+    // it closes — not at body minus 2, which was off in the aligned
+    // case.
     if(trimmed.startsWith(')')) return top.col;
 
-    // Kein Operator: `(` am Zeilenende oder direkt eine Liste, etwa in
-    // einer let-Bindungsliste. Ein Zeichen ab der Klammer.
+    // No operator: `(` at end of line, or a list directly, as in a let
+    // binding list. One character from the paren.
     if(!top.op) return top.col+1;
 
     const rule=this.rules.get(top.op);
-    // Makro oder Sonderform mit bekannter Regel: Körper zwei Zeichen ab
-    // der öffnenden Klammer. Die Zahl aus der Regel beschreibt, wie
-    // viele Argumente ausgezeichnet sind; das wertet diese Fassung
-    // NICHT aus (siehe Kommentar unten).
+    // Macro or special form with a known rule: body two characters from
+    // the opening paren. The number in the rule describes how many
+    // arguments are distinguished; this version does NOT evaluate that
+    // (see the comment below).
     if(rule!==undefined) return top.col+2;
 
-    // Funktionsaufruf: unter dem ersten Argument ausrichten.
+    // A function call: align under the first argument.
     // '(' + Operatorname + ' '
     return top.col+1+top.op.length+1;
   }

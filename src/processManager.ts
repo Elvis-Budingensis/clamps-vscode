@@ -1,10 +1,10 @@
 // processManager.ts
 //
-// Verwaltet den Lebenszyklus des SBCL/CLAMPS-Bootstrap-Prozesses aus
-// der VS-Code-Extension heraus. Kernidee: der Prozess wird detached
-// gestartet und überlebt einen Neustart des Extension-Hosts. Beim
-// nächsten Aktivieren prüft die Extension zuerst, ob schon eine
-// laufende Session existiert, statt blind neu zu spawnen.
+// Manages the life cycle of the SBCL/CLAMPS bootstrap process from
+// within the VS Code extension. The core idea: the process is started
+// detached and survives a restart of the extension host. On the next
+// activation the extension first checks whether a running session
+// already exists, instead of blindly spawning a new one.
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
@@ -29,9 +29,9 @@ export class ClampsProcessManager {
     private readonly bootstrapPath: string,
     private readonly sbclCommand: string = 'sbcl'
   ) {
-    // Session-Verzeichnis liegt im Workspace, nicht global unter $HOME –
-    // damit hat jeder Workspace seine eigene CLAMPS-Instanz und mehrere
-    // gleichzeitig offene VS-Code-Fenster kollidieren nicht.
+    // The session directory lives in the workspace, not globally under
+    // $HOME — so every workspace has its own CLAMPS instance and several
+    // VS Code windows open at once do not collide.
     this.sessionDir = path.join(workspaceRoot, '.vscode', 'clamps');
     this.sessionFile = path.join(this.sessionDir, 'session.json');
   }
@@ -45,7 +45,7 @@ export class ClampsProcessManager {
     }
   }
 
-  /** Aktueller Swank-Port der laufenden Session, oder null wenn keine läuft. */
+  /** Current Swank port of the running session, or null if none is running. */
   getPort(): number | null {
     const info = this.readSession();
     if (info && info.status === 'ready' && info.port !== null) {
@@ -56,8 +56,8 @@ export class ClampsProcessManager {
 
   private isPidAlive(pid: number): boolean {
     try {
-      // Signal 0 sendet nichts, prüft nur ob der Prozess existiert und
-      // wir Zugriff darauf haben.
+      // Signal 0 sends nothing, it only checks whether the process
+      // exists and whether we have access to it.
       process.kill(pid, 0);
       return true;
     } catch {
@@ -66,11 +66,11 @@ export class ClampsProcessManager {
   }
 
   /**
-   * Entscheidet, ob eine bestehende Session weiterbenutzt werden darf.
+   * Decides whether an existing session may be carried on with.
    *
-   * Reine Funktion, damit die Logik ohne Prozess und ohne Socket geprüft
-   * werden kann — sie ist der Grund, warum man bisher „bei jedem
-   * Beenden den Cache leeren" musste.
+   * A pure function, so that the logic can be checked without a process
+   * and without a socket — it is the reason why one previously had to
+   * "clear the cache on every exit".
    */
   static reuseDecision(args: {
     info: SessionInfo | null;
@@ -79,36 +79,36 @@ export class ClampsProcessManager {
     fingerprintMatches: boolean;
   }): { reuse: boolean; reason: string } {
     const { info, pidAlive, portAnswers, fingerprintMatches } = args;
-    if (!info) return { reuse: false, reason: 'keine Session-Datei' };
-    if (info.status !== 'ready') return { reuse: false, reason: `Status ${info.status}` };
-    if (info.pid === null || !pidAlive) return { reuse: false, reason: 'Prozess ist tot' };
-    if (info.port === null) return { reuse: false, reason: 'kein Port vermerkt' };
-    // Ein lebender PID heisst nicht, dass DIESES Image dort lebt: nach
-    // einem Absturz kann die Nummer neu vergeben sein, und ein hängendes
-    // Image antwortet nicht mehr auf dem Swank-Port.
+    if (!info) return { reuse: false, reason: 'no session file' };
+    if (info.status !== 'ready') return { reuse: false, reason: `status ${info.status}` };
+    if (info.pid === null || !pidAlive) return { reuse: false, reason: 'process is dead' };
+    if (info.port === null) return { reuse: false, reason: 'no port recorded' };
+    // A live PID does not mean that THIS image is living there: after a
+    // crash the number may have been reassigned, and a hung image no
+    // longer answers on the Swank port.
     if (!portAnswers) {
-      return { reuse: false, reason: `Port ${info.port} antwortet nicht` };
+      return { reuse: false, reason: `port ${info.port} does not answer` };
     }
-    // Der wichtigste Fall. deactivate() lässt SBCL bewusst weiterlaufen,
-    // damit es den Editor überlebt. Genau dadurch entwickelt man aber
-    // gegen ein Image, in dem noch die ALTEN lisp/*.lisp geladen sind —
-    // sichtbar erst als "eval-for-repl-debuggable ist nicht fbound" oder
-    // als Verhalten, das zum Quelltext nicht passt.
+    // The most important case. deactivate() deliberately lets SBCL carry
+    // on so that it survives the editor. But that is exactly how you end
+    // up developing against an image in which the OLD lisp/*.lisp are
+    // still loaded — visible only as "eval-for-repl-debuggable is not
+    // fbound" or as behaviour that does not match the source.
     if (!fingerprintMatches) {
-      return { reuse: false, reason: 'Lisp-Quellen haben sich geändert' };
+      return { reuse: false, reason: 'Lisp sources have changed' };
     }
-    return { reuse: true, reason: 'unverändert' };
+    return { reuse: true, reason: 'unchanged' };
   }
 
-  /** Grund der letzten Start-Entscheidung — für das Ausgabefenster. */
+  /** Reason for the last start decision — for the output window. */
   lastStartNote = '';
 
   /**
-   * Stellt sicher, dass eine CLAMPS-Session läuft.
+   * Makes sure that a CLAMPS session is running.
    *
-   * Wiederverwendet wird nur, wenn der Prozess lebt, sein Swank-Port
-   * antwortet UND die Lisp-Quellen unverändert sind. Sonst frischer
-   * Start — ohne dass man erst von Hand session.json löschen muss.
+   * A session is reused only if the process is alive, its Swank port
+   * answers AND the Lisp sources are unchanged. Otherwise a fresh start
+   * — without having to delete session.json by hand first.
    */
   async ensureRunning(): Promise<SessionInfo> {
     fs.mkdirSync(this.sessionDir, { recursive: true });
@@ -126,33 +126,33 @@ export class ClampsProcessManager {
     });
 
     if (decision.reuse && info) {
-      this.lastStartNote = `Laufende CLAMPS-Session auf Port ${info.port} weiterbenutzt.`;
+      this.lastStartNote = `Reusing the running CLAMPS session on port ${info.port}.`;
       return info;
     }
 
-    this.lastStartNote = `Frischer CLAMPS-Start (${decision.reason}).`;
-    // Ein noch lebender, aber unbrauchbarer Prozess muss weg — sonst
-    // hängen zwei Images am selben Session-Verzeichnis und das zweite
-    // überschreibt die Datei des ersten.
+    this.lastStartNote = `Fresh CLAMPS start (${decision.reason}).`;
+    // A process that is still alive but unusable has to go — otherwise
+    // two images hang off the same session directory and the second one
+    // overwrites the file of the first.
     if (info?.pid != null && this.isPidAlive(info.pid)) {
       await this.stop();
     }
     return this.spawnFresh();
   }
 
-  // --- Erkennung veralteter Images ------------------------------------
+  // --- Detection of stale images --------------------------------------
 
   private get fingerprintFile(): string {
     return path.join(this.sessionDir, 'image.fingerprint');
   }
 
   /**
-   * Kennzeichen der Lisp-Quellen, mit denen ein Image gestartet wurde:
-   * Name, Größe und Änderungszeit jeder .lisp-Datei neben bootstrap.lisp.
+   * Signature of the Lisp sources an image was started with: name, size
+   * and modification time of every .lisp file next to bootstrap.lisp.
    *
-   * Absichtlich kein Hash über den Inhalt — die Dateien sind zusammen
-   * über 2500 Zeilen, und das hier läuft bei jedem Start. Größe plus
-   * mtime reicht, um „ich habe gerade rpc.lisp geändert" zu erkennen.
+   * Deliberately not a hash over the contents — together the files are
+   * over 2500 lines, and this runs at every start. Size plus mtime is
+   * enough to recognise "I have just changed rpc.lisp".
    */
   private sourceFingerprint(): string {
     try {
@@ -165,7 +165,7 @@ export class ClampsProcessManager {
         })
         .join('|');
     } catch {
-      // Nicht lesbar: dann lieber frisch starten als falsch weiterbenutzen.
+      // Not readable: then better start fresh than carry on wrongly.
       return `unlesbar:${Date.now()}`;
     }
   }
@@ -174,13 +174,13 @@ export class ClampsProcessManager {
     try {
       return fs.readFileSync(this.fingerprintFile, 'utf8');
     } catch {
-      // Fehlt die Datei, stammt das Image aus einer Fassung ohne diese
-      // Prüfung — also aus unbekanntem Quellstand.
+      // If the file is missing, the image comes from a version without
+      // this check — so from an unknown source state.
       return undefined;
     }
   }
 
-  /** Antwortet auf dem Port überhaupt jemand? */
+  /** Does anybody answer on the port at all? */
   private probePort(port: number, timeoutMs = 800): Promise<boolean> {
     return new Promise(resolve => {
       const socket = new net.Socket();
@@ -197,7 +197,7 @@ export class ClampsProcessManager {
     });
   }
 
-  /** Pfad der Protokolldatei mit SBCLs stdout und stderr. */
+  /** Path of the log file with SBCL's stdout and stderr. */
   get logFile(): string {
     return path.join(this.sessionDir, 'clamps.log');
   }
@@ -209,21 +209,21 @@ export class ClampsProcessManager {
         CLAMPS_SESSION_DIR: this.sessionDir,
       };
 
-      // stdout und stderr in eine Datei, NICHT verwerfen.
+      // stdout and stderr into a file, do NOT discard them.
       //
-      // Vorher stand hier stdio: 'ignore' mit der Begründung, die
-      // Kommunikation laufe über session.json. Das stimmt für den
-      // Normalbetrieb — aber wenn das Image stirbt, schreibt SBCL genau
-      // dorthin: Ldb-Meldung, "fatal error encountered", Heap
-      // Exhausted, unhandled condition beim Laden. Ohne diese Zeilen
-      // steht am Ende nur "Pending response rejected since connection
-      // got disposed" in drei Baumansichten, und die Ursache ist
-      // unwiederbringlich weg.
+      // Previously this said stdio: 'ignore', on the grounds that
+      // communication goes through session.json. That is true for normal
+      // operation — but when the image dies, SBCL writes exactly there:
+      // ldb message, "fatal error encountered", heap exhausted,
+      // unhandled condition while loading. Without these lines all that
+      // remains in the end is "Pending response rejected since
+      // connection got disposed" in three tree views, and the cause is
+      // irretrievably gone.
       //
-      // Datei, nicht OutputChannel: der Prozess ist detached und
-      // überlebt einen Neustart des Extension-Hosts, ein Channel nicht.
-      // Angehängt, nicht überschrieben, damit der vorige Absturz beim
-      // Neustart nicht gerade dann verschwindet, wenn man ihn braucht.
+      // A file, not an OutputChannel: the process is detached and
+      // survives a restart of the extension host, a channel does not.
+      // Appended, not overwritten, so that the previous crash does not
+      // vanish on restart precisely when it is needed.
       let out: number | 'ignore' = 'ignore';
       try {
         fs.mkdirSync(this.sessionDir, { recursive: true });
@@ -234,17 +234,17 @@ export class ClampsProcessManager {
           `(${this.sbclCommand} --script ${this.bootstrapPath}) ----\n`
         );
       } catch {
-        // Kein Protokoll ist schlechter als eins, aber kein Grund,
-        // den Start zu verweigern.
+        // No log is worse than a log, but no reason to refuse the
+        // start.
       }
 
-      // Quellstand festhalten, mit dem dieses Image startet. Ohne das
-      // ist später nicht entscheidbar, ob der laufende Prozess noch zum
-      // Quelltext auf der Platte passt.
+      // Record the source state this image starts with. Without it there
+      // is no way to decide later whether the running process still
+      // matches the source on disk.
       try {
         fs.writeFileSync(this.fingerprintFile, this.sourceFingerprint(), 'utf8');
       } catch {
-        // Dann greift beim nächsten Start eben der Frisch-Start.
+        // Then the next start simply takes the fresh-start path.
       }
 
       const child = cp.spawn(this.sbclCommand, ['--script', this.bootstrapPath], {
@@ -254,26 +254,26 @@ export class ClampsProcessManager {
         cwd: this.workspaceRoot,
       });
 
-      // Den eigenen Deskriptor schliessen: das Kind hat seine eigene
-      // Kopie, und ein offener fd im Extension-Host hält die Datei sonst
-      // bis zum Fensterschluss.
+      // Close our own descriptor: the child has its own copy, and an
+      // open fd in the extension host would otherwise hold the file
+      // until the window closes.
       if (typeof out === 'number') {
         try { fs.closeSync(out); } catch { /* egal */ }
       }
 
-      // Löst die Eltern-Kind-Bindung: der Prozess überlebt, wenn der
-      // Extension-Host beendet wird (Fenster zu, VS Code Neustart, ...).
+      // Severs the parent-child bond: the process survives when the
+      // extension host ends (window closed, VS Code restart, ...).
       child.unref();
 
       child.once('error', (err) => {
-        reject(new Error(`Konnte SBCL nicht starten (${this.sbclCommand}): ${err.message}`));
+        reject(new Error(`Could not start SBCL (${this.sbclCommand}): ${err.message}`));
       });
 
       this.pollForReady(resolve, reject);
     });
   }
 
-  /** Letzte Zeilen des Protokolls — für Fehlermeldungen und den Befehl. */
+  /** Last lines of the log — for error messages and for the command. */
   readLogTail(lines = 40): string {
     try {
       const all = fs.readFileSync(this.logFile, 'utf8').split('\n');
@@ -303,7 +303,7 @@ export class ClampsProcessManager {
         return;
       }
       if (Date.now() - start > timeoutMs) {
-        reject(new Error('Timeout beim Warten auf CLAMPS-Bootstrap (60s)'));
+        reject(new Error('Timeout waiting for the CLAMPS bootstrap (60s)'));
         return;
       }
       setTimeout(poll, pollIntervalMs);
@@ -313,12 +313,12 @@ export class ClampsProcessManager {
   }
 
   /**
-   * Beendet die laufende Session per SIGTERM und WARTET, bis der Prozess
-   * tatsächlich beendet ist. Ohne dieses Warten liest ein unmittelbar
-   * folgendes ensureRunning() noch die alte session.json mit status
-   * "ready" und dem gerade sterbenden PID (der kurz noch "alive"
-   * erscheint) und startet keinen frischen Prozess — Ergebnis war das
-   * Timeout-Chaos beim Restart.
+   * Terminates the running session with SIGTERM and WAITS until the
+   * process has actually ended. Without that wait, an ensureRunning()
+   * immediately afterwards still reads the old session.json with status
+   * "ready" and the PID that is just dying (and briefly still appears
+   * "alive") and starts no fresh process — the result was the timeout
+   * chaos on restart.
    */
   async stop(): Promise<void> {
     const info = this.readSession();
@@ -330,19 +330,19 @@ export class ClampsProcessManager {
 
     process.kill(pid, 'SIGTERM');
 
-    // Bis zu 5s auf sauberes Beenden warten.
+    // Wait up to 5 s for a clean exit.
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       if (!this.isPidAlive(pid)) break;
       await new Promise(res => setTimeout(res, 100));
     }
 
-    // Falls SIGTERM nicht griff, hart nachsetzen.
+    // If SIGTERM did not take, follow up hard.
     if (this.isPidAlive(pid)) {
       try {
         process.kill(pid, 'SIGKILL');
       } catch {
-        // schon weg
+        // already gone
       }
     }
 
@@ -350,22 +350,22 @@ export class ClampsProcessManager {
   }
 
   /**
-   * Überschreibt die Session-Datei mit status "stopped", damit ein
-   * folgendes ensureRunning() sie garantiert nicht als "ready"
-   * wiederverwendet und stattdessen frisch spawnt.
+   * Overwrites the session file with status "stopped", so that a
+   * following ensureRunning() is guaranteed not to reuse it as "ready"
+   * and spawns freshly instead.
    */
   private invalidateSession(): void {
-    // Auch den Fingerprint entwerten: sonst gilt ein spaeter von Hand
-    // gestartetes Image als "passend", obwohl niemand weiss, womit es
-    // geladen wurde.
-    try { fs.unlinkSync(this.fingerprintFile); } catch { /* nicht da */ }
+    // Invalidate the fingerprint as well: otherwise an image started by
+    // hand later counts as "matching" although nobody knows what it was
+    // loaded with.
+    try { fs.unlinkSync(this.fingerprintFile); } catch { /* not there */ }
     try {
       fs.writeFileSync(
         this.sessionFile,
         JSON.stringify({ port: null, pid: null, status: 'stopped', detail: 'stopped by extension' }, null, 2)
       );
     } catch {
-      // Datei evtl. nicht vorhanden — dann ist ohnehin nichts zu invalidieren.
+      // File may not exist — then there is nothing to invalidate anyway.
     }
   }
 

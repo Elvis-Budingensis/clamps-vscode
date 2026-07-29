@@ -11,7 +11,7 @@ interface ToolEntry {
   file?: string;
   line?: number;
   character?: number;
-  /** Zeichen-Offset, wenn das Backend keine Zeile liefert (SBCL-Normalfall). */
+  /** Character offset when the backend supplies no line (the SBCL norm). */
   offset?: number;
   inspect?: string;
 }
@@ -28,7 +28,7 @@ function currentSymbolAndPackage(): { symbol: string; packageName: string } | un
 async function requireClient(getClient: () => LanguageClient | undefined): Promise<LanguageClient | undefined> {
   const client = getClient();
   if (!client || client.state !== State.Running) {
-    void vscode.window.showErrorMessage('CLAMPS ist nicht verbunden.');
+    void vscode.window.showErrorMessage('CLAMPS is not connected.');
     return undefined;
   }
   return client;
@@ -36,7 +36,7 @@ async function requireClient(getClient: () => LanguageClient | undefined): Promi
 
 async function showEntries(title: string, entries: ToolEntry[]): Promise<void> {
   if (!entries.length) {
-    void vscode.window.showInformationMessage(`${title}: keine Treffer.`);
+    void vscode.window.showInformationMessage(`${title}: no matches.`);
     return;
   }
   const picked = await vscode.window.showQuickPick(
@@ -72,17 +72,17 @@ export async function xrefCommand(
   const r = await client.sendRequest<ToolResult>('clamps/xref', {
     symbol, package: packageName, kind: selectedKind,
   });
-  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'XREF nicht verfügbar.'); return; }
+  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'XREF not available.'); return; }
   const title = XREF_KINDS.find(k => k.kind === selectedKind)?.label ?? selectedKind;
   await showEntries(`XREF ${title}: ${symbol}`, r.entries ?? []);
 }
 
 export async function aproposCommand(getClient: () => LanguageClient | undefined): Promise<void> {
   const client = await requireClient(getClient); if (!client) return;
-  const query = await vscode.window.showInputBox({ title: 'CLAMPS Apropos', prompt: 'Namensbestandteil', value: currentSymbolAndPackage()?.symbol ?? '' });
+  const query = await vscode.window.showInputBox({ title: 'CLAMPS Apropos', prompt: 'Name fragment', value: currentSymbolAndPackage()?.symbol ?? '' });
   if (!query) return;
   const allPackages = await vscode.window.showQuickPick(
-    [{label:'Aktuelles Paket', value:false},{label:'Alle Pakete', value:true}],
+    [{label:'Current package', value:false},{label:'All packages', value:true}],
     { title: 'Suchbereich' }
   );
   if (!allPackages) return;
@@ -90,7 +90,7 @@ export async function aproposCommand(getClient: () => LanguageClient | undefined
   const r = await client.sendRequest<ToolResult>('clamps/apropos', {
     query, package: at?.packageName ?? 'COMMON-LISP-USER', allPackages: allPackages.value,
   });
-  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'Apropos nicht verfügbar.'); return; }
+  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'Apropos not available.'); return; }
   await showEntries(`Apropos: ${query}`, r.entries ?? []);
 }
 
@@ -98,12 +98,12 @@ export async function breakOnSignalsCommand(getClient: () => LanguageClient | un
   const client = await requireClient(getClient); if (!client) return;
   const value = await vscode.window.showInputBox({
     title: 'CLAMPS: Break on Signals',
-    prompt: 'Condition-Typen, durch Leerzeichen getrennt; leer = ausschalten',
+    prompt: 'Condition types separated by spaces; empty = switch off',
     placeHolder: 'warning type-error arithmetic-error',
   });
   if (value === undefined) return;
   const conditions = value.trim() ? value.trim().split(/\s+/) : [];
   const r = await client.sendRequest<{available:boolean; error?:string; conditions:string[]}>('clamps/breakOnSignals', { conditions });
-  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'Break-on-Signals nicht verfügbar.'); return; }
+  if (!r.available) { void vscode.window.showErrorMessage(r.error ?? 'Break-on-signals not available.'); return; }
   void vscode.window.showInformationMessage(r.conditions.length ? `Break on Signals: ${r.conditions.join(', ')}` : 'Break on Signals ausgeschaltet.');
 }

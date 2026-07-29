@@ -1,35 +1,35 @@
 /**
- * Abholtakt für Sticker-Ringe.
+ * Fetch cycle for sticker rings.
  *
- * Die Realtime-Seite schreibt allokationsfrei in einen Ring (siehe
- * `sticker-state-record-sample-for-repl` in rpc.lisp). Sie schiebt nichts
- * von sich aus — der Audio-Thread darf weder senden noch blockieren. Also
- * holt der Client ab.
+ * The realtime side writes into a ring without allocating (see
+ * `sticker-state-record-sample-for-repl` in rpc.lisp). It pushes nothing
+ * of its own accord — the audio thread may neither send nor block. So
+ * the client fetches.
  *
- * Zwei Dinge machen den Unterschied zwischen „funktioniert im Test" und
- * „funktioniert bei 30 Abfragen pro Sekunde":
+ * Two things make the difference between "works in the test" and "works
+ * at 30 queries per second":
  *
- * 1. Es wird nur der Zuwachs übertragen. Jede Antwort nennt die neue
- *    Sequenznummer, die beim nächsten Mal wieder mitgeht. Ohne das käme
- *    bei jeder Abfrage der ganze Ring — bei 256 Werten egal, bei einem
- *    Spektrogramm nicht.
+ * 1. Only the increment is transferred. Every answer names the new
+ *    sequence number, which goes back along with the next request.
+ *    Without that, every query would bring the whole ring — irrelevant
+ *    at 256 values, not so for a spectrogram.
  *
- * 2. Es läuft immer nur eine Abfrage. Ist die Bridge langsamer als der
- *    Takt, würden sich sonst Anfragen stapeln, und je länger man zusieht,
- *    desto weiter läuft die Anzeige hinterher.
+ * 2. Only ever one query is in flight. If the bridge is slower than the
+ *    cycle, requests would otherwise pile up, and the longer you watch,
+ *    the further behind the display runs.
  */
 
 export interface StickerBatch {
   /** Neuer Sequenzstand des Rings. */
   sequence: number;
-  /** Werte, die zwischen zwei Abfragen aus dem Ring gefallen sind. */
+  /** Values that fell out of the ring between two queries. */
   dropped: number;
-  /** Der Zuwachs, ältester zuerst. */
+  /** The increment, oldest first. */
   values: number[];
 }
 
-/** Was der Poller zum Abfragen braucht. Injiziert, damit er ohne
- *  LanguageClient testbar bleibt. */
+/** What the poller needs in order to query. Injected so that it stays
+ *  testable without a LanguageClient. */
 export type StickerRequest = (
   key: string,
   since: number,
@@ -41,15 +41,15 @@ export type StickerListener = (key: string, batch: StickerBatch) => void;
 export class StickerPoller {
   private readonly since = new Map<string, number>();
   /**
-   * Schlüssel, für die schon einmal abgeholt wurde.
+   * Keys that have been fetched at least once.
    *
-   * Beim allerersten Abholen steht der Ring meist längst voll da: der DSP
-   * läuft seit Minuten, die Anzeige wird gerade erst geöffnet. Die
-   * Differenz zwischen Sequenz und Ringinhalt ist dann riesig, aber sie
-   * ist keine Lücke — es ist schlicht die Zeit vor dem Hinsehen. Als
-   * `dropped` gemeldet stünde nach dem Öffnen sofort „3341 verloren"
-   * neben einem völlig gesunden Balken, und die Meldung wäre damit
-   * wertlos, weil sie immer da ist.
+   * At the very first fetch the ring is usually long since full: the DSP
+   * has been running for minutes, the display is only just being opened.
+   * The difference between sequence and ring contents is then enormous,
+   * but it is not a gap — it is simply the time before anyone looked.
+   * Reported as `dropped`, "3341 lost" would stand next to a perfectly
+   * healthy bar right after opening, and the message would thereby be
+   * worthless, because it is always there.
    */
   private readonly primed = new Set<string>();
   private readonly listeners = new Map<string, Set<StickerListener>>();
@@ -62,9 +62,9 @@ export class StickerPoller {
   ) {}
 
   /**
-   * Ab wann als „neu" gilt. Beim ersten Abholen eines Schlüssels steht
-   * hier 0, also kommt der gesamte vorhandene Ring — was beim Öffnen einer
-   * Anzeige genau richtig ist, damit sie nicht leer beginnt.
+   * From when something counts as "new". At the first fetch of a key this
+   * is 0, so the entire existing ring arrives — which is exactly right
+   * when a display is opened, so that it does not start out empty.
    */
   sequenceOf(key: string): number {
     return this.since.get(key) ?? 0;
@@ -83,23 +83,23 @@ export class StickerPoller {
         if (set!.size === 0) {
           this.listeners.delete(key);
           this.primed.delete(key);
-          // Sequenzstand mit wegwerfen: wer später neu abonniert, will den
-          // aktuellen Ring sehen und nicht ab einem Stand weitermachen,
-          // der inzwischen längst herausgefallen ist.
+          // Throw the sequence away as well: whoever subscribes again
+          // later wants to see the current ring, not carry on from a
+          // position that has long since dropped out.
           this.since.delete(key);
         }
       },
     };
   }
 
-  /** Schlüssel, für die gerade jemand zuhört. */
+  /** Keys that somebody is currently listening to. */
   activeKeys(): string[] {
     return [...this.listeners.keys()];
   }
 
   /**
-   * Ein Durchlauf. Öffentlich, damit Tests takten können, ohne auf echte
-   * Timer zu warten.
+   * One pass. Public so that tests can drive the cycle without waiting
+   * for real timers.
    */
   async poll(): Promise<void> {
     if (this.inFlight) return;
@@ -113,19 +113,18 @@ export class StickerPoller {
         try {
           batch = await this.request(key, this.sequenceOf(key), this.limit);
         } catch {
-          // Eine gescheiterte Abfrage ist kein Grund, den Takt zu beenden.
-          // Die Session kann gerade neu starten; beim nächsten Durchlauf
-          // klappt es wieder.
+          // A failed query is no reason to end the cycle. The session may
+          // be restarting; the next pass will work again.
           continue;
         }
         if (!batch) continue;
 
-        // Ein kleinerer Sequenzstand heisst: der Ring wurde neu angelegt
-        // oder geleert. Dann von vorn zählen statt eine negative Differenz
-        // zu behalten, die nie wieder aufgeholt wird.
+        // A smaller sequence value means the ring was newly created or
+        // cleared. Then count from the start again rather than keeping a
+        // negative difference that is never made up.
         this.since.set(key, batch.sequence);
 
-        // Erstes Abholen: was vor dem Hinsehen liegt, ist keine Lücke.
+        // First fetch: what lies before anyone looked is not a gap.
         const first = !this.primed.has(key);
         this.primed.add(key);
         const reported: StickerBatch = first
@@ -163,10 +162,11 @@ export class StickerPoller {
 }
 
 /**
- * Spitzenwert eines Blocks in dBFS, mit Untergrenze.
+ * Peak value of a block in dBFS, with a lower bound.
  *
- * Ohne Untergrenze liefert log10(0) minus unendlich, und die Balkenbreite
- * wird NaN — die Anzeige verschwindet dann still, statt Stille zu zeigen.
+ * Without a lower bound log10(0) yields minus infinity and the bar width
+ * becomes NaN — the display then vanishes silently instead of showing
+ * silence.
  */
 export function toDecibels(value: number, floorDb = -60): number {
   const magnitude = Math.abs(value);
@@ -175,7 +175,7 @@ export function toDecibels(value: number, floorDb = -60): number {
   return Math.max(floorDb, Math.min(0, db));
 }
 
-/** Balkenanteil 0..1 aus einem dB-Wert. */
+/** Bar fraction 0..1 from a dB value. */
 export function decibelFraction(db: number, floorDb = -60): number {
   if (floorDb >= 0) return 0;
   return Math.max(0, Math.min(1, (db - floorDb) / -floorDb));

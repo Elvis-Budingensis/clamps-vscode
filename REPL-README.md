@@ -1,117 +1,112 @@
-# CLAMPS Terminal-REPL
+# CLAMPS terminal REPL
 
-Die REPL ist als `vscode.Pseudoterminal` implementiert und wertet Code über
-`clamps/eval` in derselben laufenden Swank-/SBCL-Session aus.
+The REPL is implemented as a `vscode.Pseudoterminal` and evaluates code over
+`clamps/eval` in the same running Swank/SBCL session.
 
-## Bedienung
+## Usage
 
 - `CLAMPS: Open REPL`
-- `Enter`: aktuellen Puffer auswerten
-- `Ctrl+J`: Zeilenumbruch einfügen
-- `Pfeil hoch/runter`: Verlauf
-- `Pfeil links/rechts`: Cursor bewegen
-- `Backspace`: Zeichen löschen
-- `Ctrl+C`: aktuelle Eingabe verwerfen
-- `Ctrl+L`: Terminal leeren
-- `Cmd+Enter`/`Ctrl+Enter` im Lisp-Editor: Auswahl oder aktuelle Zeile auswerten
+- `Enter`: evaluate the current buffer
+- `Ctrl+J`: insert a newline
+- `Arrow up/down`: history
+- `Arrow left/right`: move the cursor
+- `Backspace`: delete a character
+- `Ctrl+C`: discard the current input
+- `Ctrl+L`: clear the terminal
+- `Cmd+Enter`/`Ctrl+Enter` in a Lisp editor: evaluate the selection or the current line
 
-## Lifecycle-Fix
+## Lifecycle fix
 
-Start, Stop und Restart laufen über eine einzige Promise-Queue. Restart reiht
-keinen zweiten Queue-Eintrag aus einem bereits laufenden Queue-Eintrag ein.
-Außerdem wird ein LanguageClient im Zustand `Starting` erst nach Abschluss des
-Startversuchs gestoppt. Damit wird der Fehler
-`Client is not running and can't be stopped ... state is: starting` vermieden.
+Start, stop and restart all run through a single promise queue. Restart does
+not enqueue a second queue entry from within a queue entry that is already
+running. In addition, a LanguageClient in state `Starting` is only stopped
+once the start attempt has completed. That avoids the error
+`Client is not running and can't be stopped ... state is: starting`.
 
-## Neue Image-Werkzeuge
+## New image tools
 
-- **Stepping:** VS Codes Step Into/Over/Out ruft `swank:sldb-step`,
-  `swank:sldb-next` und `swank:sldb-out` auf. Der betreffende Lisp-Code
-  muss mit hoher Debug-Qualitaet kompiliert sein, etwa mit
+- **Stepping:** VS Code's step into/over/out calls `swank:sldb-step`,
+  `swank:sldb-next` and `swank:sldb-out`. The Lisp code in question has to be
+  compiled with a high debug quality, for instance with
   `(declaim (optimize (debug 3) (speed 0) (safety 3)))`.
-- **Compiler-Diagnostics:** Beim Speichern einer Lisp-Datei werden Swanks
-  Compiler-Notes in VS Codes Problems-Ansicht uebernommen. Abschaltbar
-  mit `clamps.compilerDiagnosticsOnSave`.
-- **Image-Browser:** Die CLAMPS-Seitenleiste enthaelt nun Pakete, Klassen
-  und Threads. Ein Klick uebergibt den Eintrag an den Objekt-Inspector.
+- **Compiler diagnostics:** when a Lisp file is saved, Swank's compiler notes
+  are carried into VS Code's problems view. Can be switched off with
+  `clamps.compilerDiagnosticsOnSave`.
+- **Image browsers:** the CLAMPS sidebar now contains packages, classes and
+  threads. A click hands the entry over to the object inspector.
 
-## Inspector-Verlauf und rekursiver Inspector (v77)
+## Inspector history and recursive inspector (v77)
 
-Der Objekt-Inspector besitzt eine Browser-Historie mit Zurueck, Vorwaerts
-und direkter Verlaufsauswahl. Navigierbare Teile haben zusaetzlich einen
-Pfeil: Er klappt das Unterobjekt inline auf, ohne die aktuelle Ansicht zu
-verlassen. Unterobjekte koennen bis zu acht Ebenen tief weiter aufgeklappt
-werden. Selbstreferenzen und andere Zyklen werden erkannt und als Rueckverweis
-auf die bereits sichtbare Objekt-ID angezeigt.
+The object inspector has a browser history with back, forward and a direct
+history pick list. Navigable parts additionally have an arrow: it expands the
+subobject inline without leaving the current page. Subobjects can be expanded
+further, up to eight levels deep. Self-references and other cycles are
+recognised and shown as a back reference to the object ID that is already
+visible.
 
-Ein Klick auf den Namen navigiert weiterhin klassisch in das Objekt; der
-Pfeil ist ausschliesslich fuer die rekursive Baumansicht zuständig.
+A click on the name still navigates into the object in the classic way; the
+arrow is exclusively for the recursive tree view.
 
-## Behobene Fehler in v76/v77 (v78)
+## Bugs fixed from v76/v77 (v78)
 
-Die drei Neuerungen aus v76/v77 waren in der ausgelieferten Fassung
-wirkungslos oder falsch. Alle drei Fehler waren nur gegen ein laufendes
-Image sichtbar, und genau das lief nicht: die Testsuite kannte weder
-`xref` noch das rekursive Aufklappen, und `check.py` zaehlt Klammern und
-Namen, keine Semantik.
+The three additions from v76/v77 were without effect or wrong in the version
+that shipped. All three bugs were visible only against a running image, and
+that is exactly what did not run: the test suite knew neither `xref` nor the
+recursive expansion, and `check.py` counts parens and names, not semantics.
 
-- **XREF ausser Definitionen komplett tot.** `xref-for-repl` uebergab
-  `resolve-symbol` den Paketnamen als String. `resolve-symbol` bindet
-  `*package*` an dieses Argument, und SBCL deklariert `*package*` als Typ
-  `PACKAGE` — der Typfehler wurde still zu `NIL` verschluckt.
-  `swank:xref` wurde nie aufgerufen; Aufrufer, Aufgerufene, Referenzen,
-  Bindungen, Setzer und Makroexpansionen meldeten stur „Symbol nicht
-  gefunden". Jetzt geht ein Paket-Objekt hinein, wie an allen anderen
-  sechs Aufrufstellen.
-- **Sprungziel weiterhin am Dateianfang.** `%tool-entry` belegte `:line`
-  mit 1, wenn das Backend keine Zeile liefert. Der Client bevorzugte die
-  Zeile vor dem Offset, der korrekt daneben stehende Zeichen-Offset blieb
-  ungenutzt — bei SBCL der Normalfall, weil Quellorte fast immer nur
-  `(:position N)` enthalten. `:line` bleibt jetzt `NIL`, und der Client
-  bevorzugt umgekehrt den Offset.
-- **Zyklenerkennung konnte nie ausloesen.** `%inspect-register` vergab
-  fuer dasselbe Objekt bei jedem Betreten eine neue ID. Der Client
-  erkennt Zyklen daran, dass die ID eines Unterobjekts schon in der Kette
-  der Vorfahren steht — das konnte so nicht zutreffen. Eine
-  `eq`-Umkehrtabelle liefert nun stabile IDs; sie wird bei der
-  FIFO-Raeumung und beim Freigeben mitgezogen.
+- **XREF entirely dead apart from definitions.** `xref-for-repl` passed
+  `resolve-symbol` the package name as a string. `resolve-symbol` binds
+  `*package*` to that argument, and SBCL declares `*package*` to be of type
+  `PACKAGE` — the type error was silently swallowed into `NIL`. `swank:xref`
+  was never called; callers, callees, references, bindings, setters and
+  macroexpansions stubbornly reported "symbol not found". Now a package
+  object goes in, as at all six other call sites.
+- **Jump target still at the start of the file.** `%tool-entry` set `:line`
+  to 1 when the backend supplies no line. The client preferred the line over
+  the offset, and the character offset standing correctly next to it went
+  unused — with SBCL the normal case, because source locations almost always
+  contain only `(:position N)`. `:line` now stays `NIL`, and the client
+  conversely prefers the offset.
+- **Cycle detection could never trigger.** `%inspect-register` handed out a
+  new ID for the same object on every entry. The client recognises cycles by
+  the ID of a subobject already appearing in the chain of ancestors — which
+  could never be true that way. An `eq` reverse table now supplies stable
+  IDs; it is carried along in the FIFO eviction and when releasing.
 
-Ausserdem:
+Also:
 
-- Labels werden auch in Attributen maskiert (`"` und `'`). String-Schluessel
-  einer Hashtable kommen aus `prin1-to-string`, sind also immer
-  `"key"` — das brach `data-label="…"` auf. Im Webview, das Skripte
-  ausfuehren darf und ueber die set-Nachricht Lisp auswerten laesst, war
-  das mehr als ein Darstellungsfehler.
-- Der Aufklapp-Pfeil erscheint nur an Teilen, die selbst Teile haben. Das
-  Image liefert dazu ein `expandable`-Feld; fehlt es (aelteres Image),
-  bleibt das alte Verhalten.
-- Jede Ebene hat ihren eigenen Filter. Vorher trug jeder dieselbe
-  `id="filter"`, sodass nur das oberste Feld ueberhaupt reagierte und
-  dabei auch Zeilen in aufgeklappten Unterobjekten ausblendete.
-- Der Inspect-Rueckfallweg eines XREF-Treffers funktioniert. `swank:xref`
-  liefert Namen als String, die alte `symbolp`-Probe war immer falsch.
-- Ein fehlendes Swank-Paket ergibt die vorgesehene Meldung statt eines
-  Paket-Typfehlers.
-- Eine zweite XREF-Suche waehrend einer laufenden wird gemeldet statt
-  kommentarlos verworfen.
-- `resolve-symbol` interniert keine Symbole mehr. Ein Tippfehler legte
-  bisher ueber `read-from-string` ein neues Symbol im Paket an und
-  lieferte es zurueck, als waere es gefunden worden.
-- `loadcheck.lisp` verwandelt `#:foo` nicht mehr in die Leseklausel
-  `#-foo`. Der Fehler war latent, weil `#:` bisher nur in Dateien stand,
-  die ohne Umschreiben lesbar sind.
+- Labels are escaped in attributes too (`"` and `'`). String keys of a hash
+  table come from `prin1-to-string` and are therefore always `"key"` — that
+  broke `data-label="…"` open. In the webview, which is allowed to run
+  scripts and lets Lisp be evaluated over the set message, that was more than
+  a display bug.
+- The expand arrow appears only on parts that have parts themselves. The
+  image supplies an `expandable` field for this; if it is missing (an older
+  image), the old behaviour remains.
+- Every level has its own filter. Previously each one carried the same
+  `id="filter"`, so that only the topmost field reacted at all, and it also
+  hid rows in expanded subobjects.
+- The inspect fallback path of an XREF hit works. `swank:xref` delivers names
+  as strings; the old `symbolp` test was always false.
+- A missing Swank package yields the intended message instead of a package
+  type error.
+- A second XREF search while one is running is reported instead of being
+  discarded without comment.
+- `resolve-symbol` no longer interns symbols. A typo used to create a new
+  symbol in the package via `read-from-string` and return it as if it had
+  been found.
+- `loadcheck.lisp` no longer turns `#:foo` into the read-time conditional
+  `#-foo`. The bug was latent, because up to then `#:` only occurred in files
+  that are readable without rewriting.
 
-Neue Gates: `sbcl --script lisp/test-xref.lisp` und
-`node test/xref.test.js`, beide in `npm run gates` verdrahtet. Gegen den
-Stand von v77 schlagen sie fehl.
+New gates: `sbcl --script lisp/test-xref.lisp` and `node test/xref.test.js`,
+both wired into `npm run gates`. Against the state of v77 they fail.
 
-## Mehrzeilige Eingaben an Swank (v79)
+## Multi-line input to Swank (v79)
 
-Mehrzeiliger Code kam im Image verstuemmelt an, sobald er ueber den
-Debugger lief — und das ist der Normalfall, denn
-`clamps.replUsesDebugger` steht auf `true`. Aus jedem Zeilenumbruch wurde
-der Buchstabe `n`:
+Multi-line code arrived in the image mangled as soon as it went through the
+debugger — and that is the normal case, because `clamps.replUsesDebugger` is
+`true`. Every newline became the letter `n`:
 
 ```text
 (dsp! simple (freq amp)          ->  (dsp! simple (freq amp)
@@ -119,43 +114,93 @@ der Buchstabe `n`:
     (out in in)))                     n (out in in))
 ```
 
-SBCL meldete daraufhin `undefined variable: n` bzw. `The variable n is
-unbound` — an einem Symbol, das im Quelltext nirgends steht.
+SBCL thereupon reported `undefined variable: n` or `The variable n is
+unbound` — on a symbol that appears nowhere in the source.
 
-Ursache war `JSON.stringify` zum Bauen von Lisp-Stringliteralen. Der
-Lisp-Reader kennt in Strings nur `\\` und `\"`; jedes andere `\x` liest er
-als das nackte Zeichen `x`. `\n` wurde also zu `n`, `\t` zu `t`. Weil
-Backslash und Anfuehrungszeichen in JSON und Lisp gleich maskiert werden,
-fiel es bei einzeiligen Eingaben nie auf.
+The cause was `JSON.stringify` being used to build Lisp string literals.
+Inside strings the Lisp reader knows only `\\` and `\"`; every other `\x` it
+reads as the bare character `x`. So `\n` became `n`, `\t` became `t`. Because
+backslash and quotation mark are escaped identically in JSON and in Lisp, it
+never showed up with single-line input.
 
-`lispString` in `swank.ts` machte es schon richtig, wurde aber nur an drei
-Stellen benutzt. Jetzt geht jeder String, der als Lisp-Quelltext ueber den
-Draht geht, darueber:
+`lispString` in `swank.ts` already did it correctly, but was used in only
+three places. Now every string that goes over the wire as Lisp source passes
+through it:
 
-- REPL-Auswertung im Debugger (`eval-for-repl-debuggable`)
-- Debug-Konsole und Hover (`eval-and-grab-output`, `eval-string-in-frame`)
-- `return-from-frame`, das Binden von Werten fuer den Inspector
-- `printSexpr` und damit `:emacs-rex` und `:emacs-return-string`
+- REPL evaluation in the debugger (`eval-for-repl-debuggable`)
+- the debug console and hover (`eval-and-grab-output`, `eval-string-in-frame`)
+- `return-from-frame`, and the binding of values for the inspector
+- `printSexpr`, and with it `:emacs-rex` and `:emacs-return-string`
 
-Ein echter Zeilenumbruch braucht keine Maskierung: er ist in einem
-Lisp-Stringliteral gueltig, und der Swank-Rahmen zaehlt Bytes.
+A real newline needs no escaping: it is valid inside a Lisp string literal,
+and the Swank frame counts bytes.
 
-Betroffen war nur der Weg ueber den Debugger. Die Bruecke baute ihre
-Formen schon immer mit `~S`, weshalb dieselbe Eingabe mit
-`clamps.replUsesDebugger: false` funktionierte — das war auch der
-Beweis fuer die Ursache.
+Only the route through the debugger was affected. The bridge always built its
+forms with `~S`, which is why the same input worked with
+`clamps.replUsesDebugger: false` — and that was also the proof of the cause.
 
-Neues Gate: `node test/lispstring.test.js`. Es prueft die Maskierung und
-sperrt `JSON.stringify` in Formen mit Lisp-Syntax statisch.
+New gate: `node test/lispstring.test.js`. It checks the escaping and
+statically forbids `JSON.stringify` in forms with Lisp syntax.
 
-## Autodoc und XREF-Navigation
+## Autodoc and XREF navigation
 
-- VS Code zeigt beim Tippen innerhalb einer Funktionsform die Lambda-Liste als Signature Help an.
-- Der aktive Parameter wird anhand der aktuellen Lisp-Form markiert.
-- `Gehe zu Definition` verwendet weiterhin die Swank-Quellorte.
-- `Referenzen suchen` ist nun auch als nativer LSP-Befehl verfügbar.
-- `Alt+-` springt zum Ausgangsort des letzten CLAMPS-XREF-Sprungs zurück.
-- `Alt+Shift+-` springt in der CLAMPS-XREF-Historie wieder vor.
+- While typing inside a function form, VS Code shows the lambda list as
+  signature help.
+- The active parameter is marked on the basis of the current Lisp form.
+- `Go to definition` still uses the Swank source locations.
+- `Find references` is now also available as a native LSP command.
+- `Alt+-` jumps back to the origin of the last CLAMPS XREF jump.
+- `Alt+Shift+-` moves forward again in the CLAMPS XREF history.
 
-Autodoc liegt additiv in `lisp/autodoc.lisp`. Kann das Modul nicht geladen
-werden, bleiben REPL, Completion, Debugger und die bisherige XREF-Suche aktiv.
+Autodoc lives additively in `lisp/autodoc.lisp`. If the module cannot be
+loaded, the REPL, completion, the debugger and the previous XREF search stay
+active.
+
+## Freq scope (1.0.1)
+
+`CLAMPS: Show Spectrum (Freq Scope)` opens a real-time spectrum of a sticker
+ring, modelled on SuperCollider's FreqScope: logarithmic or linear frequency
+axis, decibels vertically, peak hold with fall, and a cursor readout in hertz
+with the nearest note name and cent deviation.
+
+The FFT runs in Lisp (`sticker-spectrum-for-repl`), not in the webview, and
+what is transferred is one number per drawn column. The alternative — fetching
+samples and computing in the webview — would need, at 2048 points and 20
+frames per second, some 41 000 values per second down a wire that writes every
+number as text, because the analysis windows overlap. This way the amount of
+data depends on the window width in pixels rather than on the sample rate and
+the FFT size.
+
+A ring for the scope has to be undecimated and hold at least the FFT length:
+
+```lisp
+(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4096 1))
+(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)
+```
+
+and unconditionally in the `dsp!` body:
+
+```lisp
+(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* sig)
+```
+
+Three situations are named rather than silently accepted, because a spectrum
+always looks plausible:
+
+- A **decimated ring** is computed with the correct effective rate and marked
+  with a warning. Without a pre-filter, decimation folds everything above half
+  the effective rate back down, where it stands like a genuine partial. That
+  cannot be undone, so it has to be stated.
+- Without Incudine the **sample rate** is unknown; 48 000 Hz is then used as a
+  fallback and the display says so. A frequency axis that is scaled wrongly
+  and does not say that it might be is worse than none at all.
+- **Non-finite samples** are counted as 0 and reported. A feedback loop
+  running away produces NaN, and a single NaN colours the whole FFT: without
+  this handling the display would show silence at exactly the moment when one
+  is looking.
+
+New gates: `sbcl --script lisp/test-spectrum.lisp` checks the FFT against a
+naive DFT, the level accuracy of all three window functions, sub-bin frequency
+interpolation and the column reduction; `node test/freqscope.test.js` checks
+the note names, the peak hold and that the frequency axis is computed
+identically in `rpc.lisp`, in `freqScope.ts` and in the webview twin.

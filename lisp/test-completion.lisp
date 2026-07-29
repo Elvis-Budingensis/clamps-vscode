@@ -6,11 +6,12 @@
   (assert (member "mapcar" (labels-of "mc" "(mc") :test #'string=))
   (assert (member ":test" (labels-of ":te" "(:te") :test #'string=))
   (assert (member "my-value" (labels-of "mv" "(let ((my-value 1)) mv") :test #'string=)))
-;; APROPOS teilt %SYM-KIND mit der Completion. Dort stand
-;; (string-downcase (symbol-name kind)) — %SYM-KIND liefert aber eine
-;; LSP-Zahl. APROPOS lieferte deshalb bei JEDER Anfrage nur
-;; (:error "The value 3 is not of type SYMBOL"). Der handler-case hat den
-;; Fehler geschluckt, also fiel es im Betrieb nur als leere Liste auf.
+;; APROPOS shares %SYM-KIND with the completion. There it said
+;; (string-downcase (symbol-name kind)) — but %SYM-KIND returns an LSP
+;; NUMBER. APROPOS therefore returned nothing but
+;; (:error "The value 3 is not of type SYMBOL") on EVERY query. The
+;; handler-case swallowed the error, so in operation it only showed up as
+;; an empty list.
 (let ((r (apropos-for-repl "mapcar" "COMMON-LISP-USER" nil)))
   (assert (eq :ok (first r)))
   (assert (second r))
@@ -21,12 +22,12 @@
 (assert (string= "macro" (%sym-kind-label (%sym-kind 'when))))
 (assert (string= "kind-99" (%sym-kind-label 99)))
 
-;; Signaturvertrag: handle-completion in bridge-server.lisp schickt IMMER
-;; drei Argumente. Die Basisfassung in rpc.lisp nahm nur zwei, also
-;; scheiterte jede Vervollstaendigung mit "invalid number of arguments: 3",
-;; sobald completion.lisp nicht geladen war — ohne Fehlermeldung im Editor,
-;; es kamen einfach keine Vorschlaege. Beide Fassungen muessen drei Argumente
-;; annehmen, und "map" muss "mapcar" enthalten.
+;; The signature contract: handle-completion in bridge-server.lisp ALWAYS
+;; sends three arguments. The base version in rpc.lisp took only two, so
+;; every completion failed with "invalid number of arguments: 3" as soon
+;; as completion.lisp was not loaded — without an error message in the
+;; editor, simply no suggestions arrived. Both versions have to accept
+;; three arguments, and "map" has to contain "mapcar".
 (let ((r (completions-for-repl "map" "COMMON-LISP-USER" "(map")))
   (assert (eq :ok (first r)))
   (assert (member "mapcar" (third r) :key #'first :test #'string=)))
@@ -42,33 +43,34 @@
          (position label (mapcar #'first (third (completions-for-repl prefix "COMMON-LISP-USER" context)))
                    :test #'string=)))
 
-  ;; Der Tokenizer darf sich von Strings, Kommentaren und Zeichenliteralen
-  ;; keine Klammer unterschieben lassen.  Genau daran scheiterte die alte
-  ;; Fenster-Heuristik.
+  ;; The tokenizer must not let strings, comments or character literals
+  ;; slip it a paren.  That is exactly where the old window heuristic
+  ;; failed.
   (multiple-value-bind (tree open) (%completion-tokenize "(foo \"( bar\" ; (baz
  #\\( qu")
     (declare (ignore tree))
     (assert (= 1 (length open)))
     (assert (string= "foo" (first (first open))))
-    ;; foo, der String, das Zeichenliteral, "qu" — die Klammern darin zaehlen nicht.
+    ;; foo, the string, the character literal, "qu" — the parens inside
+    ;; them do not count.
     (assert (string= "qu" (first (last (first open))))))
 
-  ;; Unabgeschlossene Formen sind der Normalfall und ergeben die Kette der
-  ;; Formen, in denen der Cursor steht.
+  ;; Unclosed forms are the normal case and yield the chain of forms the
+  ;; cursor stands in.
   (multiple-value-bind (tree open) (%completion-tokenize "(defun f (x) (let ((y 1)) (+ y ")
     (declare (ignore tree))
     (assert (= 3 (length open)))
     (assert (string= "defun" (first (first open))))
     (assert (string= "+" (first (third open)))))
 
-  ;; Operatorposition kommt jetzt aus dem Parser, nicht aus einer
-  ;; Rueckwaertssuche nach der naechsten Klammer.
+  ;; Operator position now comes from the parser, not from a backwards
+  ;; search for the nearest paren.
   (assert (%completion-head-position-p (nth-value 1 (%completion-tokenize "(map"))))
   (assert (%completion-head-position-p (nth-value 1 (%completion-tokenize "(foo (bar"))))
   (assert (not (%completion-head-position-p (nth-value 1 (%completion-tokenize "(mapcar #'car li")))))
 
-  ;; Incudine-Formen binden.  dsp!-Parameter und with-samples-Variablen
-  ;; kannte der Scanner bis v81.13 ueberhaupt nicht.
+  ;; Incudine forms bind.  Up to v81.13 the scanner did not know dsp!
+  ;; parameters and with-samples variables at all.
   (let ((ctx "(dsp! simple (freq amp)
   (with-samples ((in (sine freq amp 0)))
     (out i"))
@@ -83,11 +85,11 @@
   (assert (member "quotient" (labels-of "qu" "(multiple-value-bind (quotient rem) (floor 3 2) qu") :test #'string=))
   (assert (member "row" (labels-of "ro" "(loop for row in rows do (print ro") :test #'string=))
 
-  ;; &-Marker und Keywords sind keine Variablennamen.
+  ;; &-markers and keywords are not variable names.
   (let ((found (labels-of "" "(defun f (a &optional b) ")))
     (assert (not (member "&optional" found :test #'string=))))
 
-  ;; Namen aus dem Scope ranken vor Namen aus benachbarten Formen.
+  ;; Names from the scope rank above names from neighbouring forms.
   (let ((ctx "(defun one (alpha) alpha)
 (defun two (alphabet) alph"))
     (let ((in-scope (rank-of "alphabet" "alph" ctx))
@@ -95,55 +97,55 @@
       (assert in-scope)
       (assert nearby)
       (assert (< in-scope nearby)
-              () "Scope-Name rankte auf ~D, benachbarter auf ~D." in-scope nearby)))
+              () "The scope name ranked at ~D, the neighbouring one at ~D." in-scope nearby)))
 
-  ;; &key-Parameter der umschliessenden Form stehen ganz oben und tragen
-  ;; ein Detail, das sagt woher sie kommen.
+  ;; &key parameters of the enclosing form come right at the top and
+  ;; carry a detail saying where they come from.
   (let ((items (third (completions-for-repl ":el" "COMMON-LISP-USER" "(make-array 3 :el"))))
     (assert items)
     (assert (string= ":element-type" (first (first items))))
     (assert (search "make-array" (third (first items)))))
 
-  ;; Bei leerem Symbolteil kommen ausschliesslich die &key-Namen — sonst
-  ;; waere der Leerzeichen-Trigger unbrauchbar.
+  ;; With an empty symbol part, exclusively the &key names arrive —
+  ;; otherwise the space trigger would be unusable.
   (let ((result (completions-for-repl "" "COMMON-LISP-USER" "(make-array 3 ")))
-    (assert (second result) () "Leeres Praefix muss isIncomplete melden.")
+    (assert (second result) () "An empty prefix must report isIncomplete.")
     (let ((found (mapcar #'first (third result))))
       (assert (member ":element-type" found :test #'string=))
       (assert (not (member "mapcar" found :test #'string=))
-              () "Leeres Praefix darf keine Symbole schicken.")))
+              () "An empty prefix must send no symbols.")))
 
-  ;; Ohne &key-Parameter bleibt der Leerzeichen-Trigger still.
+  ;; Without &key parameters the space trigger stays quiet.
   (assert (null (third (completions-for-repl "" "COMMON-LISP-USER" "(car "))))
 
-  ;; In Operatorposition sind Keywords kein sinnvoller Vorschlag.
+  ;; At operator position, keywords are not a sensible suggestion.
   (assert (null (third (completions-for-repl "" "COMMON-LISP-USER" "(make-array ("))))
 
-  ;; Wortanfaenge zaehlen: "mvb" muss multiple-value-bind finden, und zwar
-  ;; vor Symbolen, in denen m, v und b nur zufaellig vorkommen.
+  ;; Word starts count: "mvb" has to find multiple-value-bind, and to do
+  ;; so ahead of symbols in which m, v and b merely occur by chance.
   (let ((rank (rank-of "multiple-value-bind" "mvb" "(mvb")))
-    (assert rank () "mvb findet multiple-value-bind nicht.")
-    (assert (< rank 5) () "multiple-value-bind rankte erst auf ~D." rank))
+    (assert rank () "mvb does not find multiple-value-bind.")
+    (assert (< rank 5) () "multiple-value-bind only ranked at ~D." rank))
 
-  ;; v81.15 — Sichtbarkeit an der Bindungsstelle.
-  ;; Bei LET wird der Wert der zweiten Bindung im aeusseren Scope berechnet,
-  ;; ALPHA ist dort also noch nicht sichtbar.
+  ;; v81.15 — visibility at the binding site.
+  ;; Under LET the value of the second binding is computed in the outer
+  ;; scope, so ALPHA is not yet visible there.
   (assert (not (member "alpha" (labels-of "al" "(let ((alpha 1) (beta al") :test #'string=))
-          () "LET darf ALPHA in der Bindungsliste nicht anbieten.")
-  ;; Bei LET* schon.
+          () "LET must not offer ALPHA inside the binding list.")
+  ;; Under LET* it is.
   (assert (member "alpha" (labels-of "al" "(let* ((alpha 1) (beta al") :test #'string=)
-          () "LET* muss ALPHA in der Bindungsliste anbieten.")
-  ;; Incudines WITH-SAMPLES bindet sequenziell wie LET*.
+          () "LET* must offer ALPHA inside the binding list.")
+  ;; Incudine's WITH-SAMPLES binds sequentially like LET*.
   (assert (member "car1" (labels-of "ca" "(with-samples ((car1 (sine 330)) (mod (* car1 ca") :test #'string=))
-  ;; Im Rumpf sind bei beiden alle Namen sichtbar.
+  ;; In the body all the names are visible under both.
   (assert (member "alpha" (labels-of "al" "(let ((alpha 1) (beta 2)) al") :test #'string=))
-  ;; In der eigenen Lambda-Liste ist noch nichts gebunden.
+  ;; In its own lambda list nothing is bound yet.
   (assert (not (member "alpha" (labels-of "al" "(defun f (alpha al") :test #'string=))
-          () "Lambda-Liste darf ihre eigenen Namen noch nicht anbieten.")
-  ;; Im Rumpf dann doch.
+          () "A lambda list must not offer its own names yet.")
+  ;; In the body it is after all.
   (assert (member "alpha" (labels-of "al" "(defun f (alpha) al") :test #'string=))
 
-  ;; Paketqualifizierte Praefixe unterscheiden extern und intern weiterhin.
+  ;; Package-qualified prefixes still distinguish external from internal.
   (assert (member "common-lisp:mapcar" (labels-of "common-lisp:mapc" "(common-lisp:mapc")
                   :test #'string=)))
 

@@ -9,20 +9,20 @@ interface EvalResult {
 
 
 /**
- * Grober Lisp-Reader-Zustand eines Eingabepuffers.
+ * A rough Lisp reader state for an input buffer.
  *
- * Nötig, weil die REPL vorher jede Enter-Taste als vollständigen Ausdruck
- * an das Image geschickt hat. Bei "(dsp! si" lief der Reader dort ins
- * Dateiende — Fehlermeldung statt Fortsetzung. Wir entscheiden deshalb
- * schon hier, ob der Ausdruck fertig ist.
+ * Necessary because the REPL previously sent every Enter key to the image
+ * as a complete expression. With "(dsp! si" the reader there ran off the
+ * end of the file — an error message instead of a continuation. So we
+ * decide here already whether the expression is finished.
  *
- * Berücksichtigt Strings mit Escapes, Zeichenliterale (#\( zählt nicht
- * als Klammer), Zeilenkommentare und verschachtelte Blockkommentare.
+ * Takes strings with escapes, character literals (#\( does not count as a
+ * paren), line comments and nested block comments into account.
  */
 interface ReadState {
-  /** Offene Klammern; > 0 heißt unvollständig. */
+  /** Open parens; > 0 means incomplete. */
   depth: number;
-  /** Mehr ) als ( — der Ausdruck ist kaputt, nicht unvollständig. */
+  /** More ) than ( — the expression is broken, not incomplete. */
   tooManyClosers: boolean;
   inString: boolean;
   inBlockComment: boolean;
@@ -54,7 +54,7 @@ export function readState(text: string): ReadState {
       continue;
     }
 
-    // Zeichenliteral: #\( darf die Bilanz nicht verschieben
+    // Character literal: #\( must not shift the balance
     if (c === '#' && text[i + 1] === '\\') { i += 3; continue; }
     if (c === '#' && text[i + 1] === '|') { blockDepth++; i += 2; continue; }
     if (c === ';') {
@@ -93,23 +93,23 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private busy = false;
 
   /**
-   * Puffer beim letzten Tab. Zweimal Tab ohne Aenderung dazwischen listet
-   * die Kandidaten auf — dasselbe Verhalten wie in readline und in SLY.
-   * Ohne diese Merkung muesste man raten, ob der Benutzer die Liste sehen
-   * will, und man kaeme entweder zu schnell oder nie dazu.
+   * The buffer at the last Tab. Two Tabs without a change in between
+   * lists the candidates — the same behaviour as in readline and in SLY.
+   * Without this record one would have to guess whether the user wants to
+   * see the list, and one would get there either too early or never.
    */
   private lastCompletionAt: string | undefined;
 
   /**
-   * Terminalbreite in Spalten. Ohne sie lässt sich nicht ausrechnen, wie
-   * viele BILDSCHIRMzeilen eine Eingabe belegt: eine Lisp-Zeile ist
-   * regelmäßig breiter als das Panel und wird umbrochen. Die frühere
-   * Fassung zählte Pufferzeilen und liess beim Neuzeichnen jede
-   * umbrochene Zeile stehen — pro Tastendruck eine Kopie mehr.
+   * Terminal width in columns. Without it there is no way to compute how
+   * many SCREEN lines an input occupies: a Lisp line is regularly wider
+   * than the panel and gets wrapped. The earlier version counted buffer
+   * lines and left every wrapped line standing on redraw — one more copy
+   * per keystroke.
    */
   private cols = 80;
 
-  /** Bildschirmzeilen, die die letzte Eingabe belegt hat. */
+  /** Screen lines that the last input occupied. */
   private renderedRows = 1;
 
   /** open() gelaufen? setDimensions kommt teils davor. */
@@ -117,10 +117,9 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
 
   static show(getClient: () => LanguageClient | undefined): ClampsReplTerminal {
     if (!this.instance || !this.terminal) {
-      // Scrollback für die REPL sicherstellen. Das Pseudoterminal-API
-      // kennt keine per-Terminal-Option, daher setzen wir die
-      // Workspace-Einstellung — aber nur erhöhend, damit eine bereits
-      // höhere Nutzereinstellung nicht verkleinert wird.
+      // Make sure the REPL has scrollback. The pseudoterminal API knows
+      // no per-terminal option, so we set the workspace setting — but only
+      // upwards, so that an already higher user setting is not reduced.
       void this.ensureScrollback(10000);
 
       this.instance = new ClampsReplTerminal(getClient);
@@ -154,16 +153,16 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
         );
       }
     } catch {
-      // Nicht kritisch — wenn das Setzen fehlschlägt, bleibt nur der
-      // Default-Scrollback, die REPL funktioniert trotzdem.
+      // Not critical — if setting it fails, only the default scrollback
+      // remains and the REPL still works.
     }
   }
 
   static async evaluate(getClient: () => LanguageClient | undefined, code: string): Promise<void> {
     const repl = this.show(getClient);
     await repl.evaluateCode(code);
-    // Auch Auswertungen aus dem Editor können DSP-Nodes anlegen; sie
-    // gehen über evaluateCode, nicht über requestEval.
+    // Evaluations from the editor can create DSP nodes too; they go
+    // through evaluateCode, not through requestEval.
     void vscode.commands
       .executeCommand('clamps.incudineRefreshSoon')
       .then(undefined, () => undefined);
@@ -172,16 +171,16 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   private constructor(private readonly getClient: () => LanguageClient | undefined) {}
 
   open(initialDimensions?: vscode.TerminalDimensions): void {
-    // Breite gleich beim Öffnen übernehmen, sonst rechnet der erste
-    // Redraw mit dem 80-Spalten-Default.
+    // Adopt the width right at opening, otherwise the first redraw
+    // computes with the 80-column default.
     if (initialDimensions) this.cols = Math.max(20, initialDimensions.columns);
     this.write('\x1b[1mCLAMPS REPL\x1b[0m\r\n');
-    this.write('Dieselbe laufende SBCL-/Swank-Session wie der Editor.\r\n');
-    this.write('Enter: auswerten (unvollständige Formen laufen weiter) · Ctrl+J: neue Zeile\r\n');
-    this.write('Tab: vervollständigen (zweimal Tab listet) · Ctrl+L: leeren\r\n');
-    this.write('Ctrl+C: abbrechen · ↑/↓: Verlauf\r\n');
+    this.write('The same running SBCL/Swank session as the editor.\r\n');
+    this.write('Enter: evaluate (incomplete forms carry on) \u00b7 Ctrl+J: new line\r\n');
+    this.write('Tab: complete (twice lists) \u00b7 Ctrl+L: clear\r\n');
+    this.write('Ctrl+C: cancel · ↑/↓: history\r\n');
     if (vscode.workspace.getConfiguration('clamps').get<boolean>('replUsesDebugger', true)) {
-      this.write('Bei angehängtem Debugger öffnen Fehler den Lisp-Debugger.\r\n\r\n');
+      this.write('With the debugger attached, errors open the Lisp debugger.\r\n\r\n');
     } else {
       this.write('\r\n');
     }
@@ -194,14 +193,14 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   handleInput(data: string): void {
-    // Paste-Erkennung: Ein einzelner Tastendruck liefert genau EIN Zeichen
-    // (oder eine kurze Escape-Sequenz, die mit \x1b beginnt). Kommt mehr
-    // als ein Zeichen auf einmal und beginnt NICHT mit \x1b, ist es
-    // eingefügter Text — egal ob mit oder ohne Zeilenumbruch. (Auch
-    // "paste as one line" landet hier, weil es zwar die Newlines entfernt,
-    // aber immer noch als ein mehrzeichiger Block ankommt.) So löst kein
-    // eingebettetes \r ein vorzeitiges submit() aus und die Prompt-Zeile
-    // wird nur EINMAL gerendert statt pro Zeichen.
+    // Paste detection: a single keystroke delivers exactly ONE character
+    // (or a short escape sequence beginning with \x1b). If more than one
+    // character arrives at once and it does NOT begin with \x1b, it is
+    // pasted text — whether or not it contains a newline. ("Paste as one
+    // line" also ends up here, because although it removes the newlines it
+    // still arrives as one multi-character block.) That way no embedded
+    // \r triggers a premature submit() and the prompt line is rendered
+    // only ONCE instead of once per character.
     if (data.length > 1 && !data.startsWith('\x1b')) {
       this.handlePaste(data);
       return;
@@ -222,17 +221,17 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
         this.moveCursor(-1);
         index += 3;
       } else if (data.startsWith('\x1b[', index)) {
-        // Unbekannte CSI-Sequenz (F-Tasten wie ESC[24~ für F12, Home,
-        // End, PageUp, Entf ESC[3~, ...) komplett verschlucken — sonst
-        // landen die druckbaren Teile ("[24~") als Müll im Buffer.
-        // CSI-Format: ESC [ <Parameter '0'..';'> <Endzeichen>
+        // Swallow an unknown CSI sequence entirely (function keys such as
+        // ESC[24~ for F12, Home, End, PageUp, Delete ESC[3~, ...) —
+        // otherwise the printable parts ("[24~") land in the buffer as
+        // junk. CSI format: ESC [ <parameters '0'..';'> <final character>
         let j = index + 2;
         while (j < data.length && data[j] >= '0' && data[j] <= ';') j++;
-        if (j < data.length) j++; // Endzeichen (Buchstabe oder ~) mitnehmen
+        if (j < data.length) j++; // take the final character (a letter or ~) along
         index = j;
       } else if (data.startsWith('\x1b', index)) {
-        // Einzelnes ESC oder unbekannte Nicht-CSI-Sequenz: ESC + ein
-        // Folgezeichen verschlucken.
+        // A lone ESC or an unknown non-CSI sequence: swallow ESC plus one
+        // following character.
         index += Math.min(2, data.length - index);
       } else {
         const ch = data[index++];
@@ -256,9 +255,9 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
             this.renderInput();
             break;
           case '\t':
-            // Tab vervollstaendigt, statt ein Tabulatorzeichen in den
-            // Puffer zu legen. Ein Tab im Lisp-Quelltext ist ohnehin
-            // nichts, was man tippen will.
+            // Tab completes rather than putting a tab character into the
+            // buffer. A tab in Lisp source is not something one wants to
+            // type anyway.
             void this.complete();
             break;
           default:
@@ -269,16 +268,16 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Fügt eingefügten (gepasteten) Text ein. Zeilenumbrüche (\r\n, \r, \n)
-   * werden zu einem einheitlichen \n normalisiert und als Teil des
-   * Buffers eingefügt — NICHT als submit interpretiert. So kann man
-   * mehrzeilige Formen einfügen, ohne dass jede Zeile sofort abgeschickt
-   * wird. Gerendert wird nur EINMAL am Ende, nicht pro Zeichen.
+   * Inserts pasted text. Newlines (\r\n, \r, \n) are normalised to a
+   * uniform \n and inserted as part of the buffer — NOT interpreted as a
+   * submit. That way multi-line forms can be pasted without every line
+   * being sent off immediately. Rendering happens only ONCE at the end,
+   * not per character.
    */
   private handlePaste(data: string): void {
     const normalized = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    // Steuerzeichen außer \n und \t herausfiltern, damit kein \x03 o.ä.
-    // im Buffer landet.
+    // Filter out control characters except \n and \t, so that no \x03 or
+    // the like ends up in the buffer.
     const cleaned = Array.from(normalized)
       .filter(ch => ch === '\n' || ch === '\t' || ch >= ' ')
       .join('');
@@ -310,10 +309,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       return;
     }
 
-    // Unvollständig? Dann nicht abschicken, sondern weitertippen lassen.
-    // Fluchtweg: endet der Puffer schon auf einer Leerzeile, hat der
-    // Nutzer zweimal Enter gedrückt — dann doch abschicken, damit man
-    // bei einem echten Tippfehler nicht in der Fortsetzung festhängt.
+    // Incomplete? Then do not send it, let the user carry on typing.
+    // An escape route: if the buffer already ends on a blank line, the
+    // user has pressed Enter twice — then send it after all, so that a
+    // genuine typo does not leave one stuck in the continuation.
     const state = readState(this.buffer);
     const incomplete =
       (state.depth > 0 || state.inString || state.inBlockComment) &&
@@ -325,8 +324,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     }
 
     this.clearInputLine();
-    // Das Eingetippte stehen lassen: sonst ist nach einer Fehlermeldung
-    // nicht mehr zu sehen, worauf sie sich bezieht.
+    // Leave what was typed standing: otherwise, after an error message,
+    // there is no seeing what it refers to.
     this.write(
       `\x1b[36m${this.packageName}>\x1b[0m ${this.normalizeNewlines(code)}\r\n`
     );
@@ -340,21 +339,21 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Läuft eine CLAMPS-Debug-Session, wird über deren Swank-Verbindung
-   * ausgewertet statt über die Bridge.
+   * If a CLAMPS debug session is running, evaluation goes over its Swank
+   * connection rather than over the bridge.
    *
-   * Der Grund: Fehler in der REPL sollen den Debugger öffnen. Die Bridge
-   * kann das nicht — eval-for-repl fängt dort jede Condition ab, und ein
-   * :debug-Ereignis liesse sich über den Anfrage/Antwort-Kanal ohnehin
-   * nicht weiterreichen. Über den Debug-Socket kommt es an.
+   * The reason: errors in the REPL should open the debugger. The bridge
+   * cannot do that — there eval-for-repl catches every condition, and a
+   * :debug event could not be passed on over the request/response channel
+   * anyway. Over the debug socket it arrives.
    *
-   * Ohne angehängten Debugger bleibt alles wie bisher: Fehler werden zu
-   * Text, die REPL läuft weiter.
+   * Without an attached debugger everything stays as before: errors
+   * become text and the REPL carries on.
    */
   private get debugSession(): vscode.DebugSession | undefined {
-    // Standardmäßig AUS. Die Umleitung ist der jüngste und am wenigsten
-    // erprobte Teil; sie soll den stabilen Rest nicht mitreißen können.
-    // Einschalten über clamps.replUsesDebugger.
+    // OFF by default. The redirection is the newest and least tried part;
+    // it must not be able to drag the stable rest down with it. Switch it
+    // on via clamps.replUsesDebugger.
     const enabled = vscode.workspace
       .getConfiguration('clamps')
       .get<boolean>('replUsesDebugger', true);
@@ -371,7 +370,7 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     const session = this.debugSession;
     const client = this.getClient();
     if (!session && (!client || client.state !== State.Running)) {
-      this.write('\x1b[31mCLAMPS ist nicht verbunden. Führe „CLAMPS: Start“ aus.\x1b[0m\r\n');
+      this.write('\x1b[31mCLAMPS is not connected. Run "CLAMPS: Start".\x1b[0m\r\n');
       return;
     }
 
@@ -416,10 +415,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       this.write(`\x1b[31m${this.normalizeNewlines(message)}\x1b[0m\r\n`);
     } finally {
       this.busy = false;
-      // Node-Browser nachziehen: eine Auswertung kann DSP-Nodes erzeugt
-      // oder entfernt haben. Gehört in finally, nicht in catch — dort
-      // lief er nur bei fehlgeschlagenen Auswertungen, also gerade nicht
-      // nach einem erfolgreichen (dsp!)- oder (rt-start)-Aufruf.
+      // Pull the node browser along: an evaluation may have created or
+      // removed DSP nodes. This belongs in finally, not in catch — there
+      // it only ran on failed evaluations, that is, precisely not after a
+      // successful (dsp!) or (rt-start) call.
       void vscode.commands
         .executeCommand('clamps.incudineRefreshSoon')
         .then(undefined, () => undefined);
@@ -443,22 +442,22 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     }
   }
 
-  /** Zeichen, die zu einem Lisp-Symbol gehoeren. Spiegelt
-   *  symbol-constituent-p in bridge-server.lisp. Laufen die beiden
-   *  auseinander, schneidet der Client ein anderes Praefix ab als der
-   *  Server erwartet — und die Vorschlaege passen still nicht mehr. */
+  /** Characters that belong to a Lisp symbol. Mirrors
+   *  symbol-constituent-p in bridge-server.lisp. If the two drift apart,
+   *  the client cuts off a different prefix from the one the server
+   *  expects — and the suggestions silently stop fitting. */
   private static readonly SYMBOL_CHARS = /[A-Za-z0-9\-+*/<>=!?_%&^~.:@]*$/;
 
-  /** Der getippte Symbolanfang links vom Cursor. */
+  /** The typed start of a symbol to the left of the cursor. */
   private currentToken(): string {
     const upToCursor = this.buffer.slice(0, this.cursor);
     return ClampsReplTerminal.SYMBOL_CHARS.exec(upToCursor)?.[0] ?? '';
   }
 
   /**
-   * Tab-Completion. Ein Kandidat wird eingesetzt, mehrere werden auf ihren
-   * laengsten gemeinsamen Anfang gekuerzt, und bringt der nichts mehr,
-   * zeigt der zweite Tab die Liste.
+   * Tab completion. A single candidate is inserted, several are shortened
+   * to their longest common prefix, and if that gains nothing more, the
+   * second Tab shows the list.
    */
   private async complete(): Promise<void> {
     if (this.busy) return;
@@ -477,8 +476,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       );
       items = r?.items ?? [];
     } catch {
-      // Eine fehlgeschlagene Completion ist kein Grund, die Eingabe zu
-      // stoeren. Still bleiben und weitertippen lassen.
+      // A failed completion is no reason to disturb the input. Stay quiet
+      // and let the user carry on typing.
       return;
     }
     if (items.length === 0) return;
@@ -490,8 +489,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
 
     if (insertion.length > token.length) {
       this.replaceToken(token, insertion);
-      // Nach dem Einsetzen ist die Merkung hinfaellig: der naechste Tab
-      // soll erneut fragen, nicht sofort listen.
+      // After insertion the record is void: the next Tab should ask
+      // again, not list immediately.
       this.lastCompletionAt = undefined;
       return;
     }
@@ -505,10 +504,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Laengster gemeinsamer Anfang. Zeichengenau verglichen: die Bridge
-   * liefert Symbolnamen immer klein geschrieben, ein Vergleich ohne
-   * Ruecksicht auf Gross-/Kleinschreibung wuerde also nichts gewinnen und
-   * koennte gemischte Schreibweise einsetzen.
+   * The longest common prefix. Compared character for character: the
+   * bridge always delivers symbol names in lower case, so a
+   * case-insensitive comparison would gain nothing and could insert mixed
+   * case.
    */
   private static commonPrefix(labels: string[]): string {
     let prefix = labels[0] ?? '';
@@ -529,9 +528,9 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Kandidaten ueber der Eingabezeile ausgeben und danach die Eingabe neu
-   * zeichnen — wie cancelInput() es macht, sonst bleibt die alte
-   * Prompt-Zeile stehen.
+   * Print the candidates above the input line and then redraw the input —
+   * the way cancelInput() does it, otherwise the old prompt line stays
+   * standing.
    */
   private writeCandidates(items: { label: string; detail?: string }[]): void {
     const shown = items.slice(0, 40);
@@ -593,21 +592,21 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   /**
-   * Wie viele Bildschirmzeilen die letzte Eingabe belegt hat. Ohne das
-   * lässt sich eine mehrzeilige Eingabe nicht wieder wegräumen — die
-   * frühere Fassung löschte immer nur die aktuelle Zeile und liess bei
-   * Fortsetzungen Reste stehen.
+   * How many screen lines the last input occupied. Without this a
+   * multi-line input cannot be cleared away again — the earlier version
+   * always cleared only the current line and left remnants standing on
+   * continuations.
    */
 
   /**
-   * Von VS Code beim Öffnen und bei jeder Größenänderung aufgerufen.
+   * Called by VS Code on opening and on every resize.
    */
   setDimensions(dimensions: vscode.TerminalDimensions): void {
     const cols = Math.max(20, dimensions.columns);
     if (cols === this.cols) return;
     this.cols = cols;
-    // Nach einer Größenänderung stimmt die alte Zeilenrechnung nicht
-    // mehr; nicht versuchen aufzuräumen, sondern frisch anfangen.
+    // After a resize the old line arithmetic no longer holds; do not try
+    // to tidy up, start afresh instead.
     this.renderedRows = 1;
     if (this.opened) {
       this.write('\r\n');
@@ -615,12 +614,12 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     }
   }
 
-  /** Prompt-Breite in Spalten (ohne die ANSI-Sequenzen, die 0 breit sind). */
+  /** Prompt width in columns (without the ANSI sequences, which are 0 wide). */
   private get promptWidth(): number {
     return this.packageName.length + 2;
   }
 
-  /** Bildschirmzeilen, die eine Pufferzeile bei aktueller Breite belegt. */
+  /** Screen lines that one buffer line occupies at the current width. */
   private rowsFor(lineLength: number): number {
     return Math.max(1, Math.ceil((this.promptWidth + lineLength) / this.cols));
   }
@@ -629,8 +628,8 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     this.clearInputLine();
 
     const prompt = `\x1b[36m${this.packageName}>\x1b[0m `;
-    // Fortsetzungszeilen: gleiche Breite wie der Prompt, damit die
-    // Einrückung des Ausdrucks erhalten bleibt.
+    // Continuation lines: the same width as the prompt, so that the
+    // indentation of the expression is preserved.
     const contPrompt = `\x1b[36m${'.'.repeat(this.packageName.length)}>\x1b[0m `;
 
     const lines = this.buffer.split('\n');
@@ -638,12 +637,12 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       lines.map((l, i) => (i === 0 ? prompt : contPrompt) + l).join('\r\n')
     );
 
-    // Bildschirmzeilen zählen, nicht Pufferzeilen.
+    // Count screen lines, not buffer lines.
     const rowsPerLine = lines.map(l => this.rowsFor(l.length));
     const totalRows = rowsPerLine.reduce((a, b) => a + b, 0);
     this.renderedRows = totalRows;
 
-    // Cursorposition im Puffer -> Bildschirmzeile/-spalte
+    // Cursor position in the buffer -> screen line/column
     const before = this.buffer.slice(0, this.cursor).split('\n');
     const cursorLine = before.length - 1;
     const cursorColInLine = before[before.length - 1].length;
@@ -655,10 +654,10 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
     let cursorRow: number;
     let cursorCol: number;
     if (flat > 0 && flat % this.cols === 0) {
-      // Genau auf der Umbruchgrenze. xterm.js bricht verzögert um: der
-      // Cursor bleibt am ENDE der vollen Zeile stehen, nicht am Anfang
-      // der nächsten. Ohne diesen Zweig käme hier eine Zeile zu viel
-      // heraus und die Cursorbewegung würde negativ.
+      // Exactly on the wrap boundary. xterm.js wraps lazily: the cursor
+      // stays at the END of the full line, not at the start of the next
+      // one. Without this branch one line too many would come out here and
+      // the cursor movement would go negative.
       cursorRow = lineOffset + flat / this.cols - 1;
       cursorCol = this.cols - 1;
     } else {
@@ -666,7 +665,7 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
       cursorCol = flat % this.cols;
     }
 
-    // Nach dem Schreiben steht der Cursor in der letzten Bildschirmzeile.
+    // After writing, the cursor is in the last screen line.
     const up = Math.max(0, totalRows - 1 - cursorRow);
     if (up > 0) this.write(`\x1b[${up}A`);
     this.write('\r');
@@ -674,7 +673,7 @@ export class ClampsReplTerminal implements vscode.Pseudoterminal {
   }
 
   private clearInputLine(): void {
-    // An den Anfang der Eingabe hoch, dann alles darunter löschen.
+    // Up to the start of the input, then clear everything below it.
     if (this.renderedRows > 1) this.write(`\x1b[${this.renderedRows - 1}A`);
     this.write('\r\x1b[0J');
     this.renderedRows = 1;

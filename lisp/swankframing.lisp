@@ -1,25 +1,25 @@
-;;;; swankframing.lisp — Regressionstest für die Swank-Rahmung.
+;;;; swankframing.lisp — a regression test for the Swank framing.
 ;;;;
-;;;; Aufruf: sbcl --script lisp/swankframing.lisp
+;;;; Run: sbcl --script lisp/swankframing.lisp
 ;;;;
-;;;; Der Anlass: der 6-stellige Hex-Header des Swank-Protokolls zählt
-;;;; BYTES der UTF-8-Kodierung. send-swank-text schrieb (length text) —
-;;;; die ZEICHENzahl — und read-swank-message las (make-string len) plus
-;;;; read-sequence, also so viele ZEICHEN, wie Bytes angekündigt waren.
-;;;; Auf reinem ASCII stimmt beides zufällig überein. Sobald ein Umlaut,
-;;;; ein Gedankenstrich oder ein ° im Payload steckte — eine deutsche
-;;;; Docstring aus autodoc/describe-symbol, ein Completion-Kontext aus
-;;;; einer Datei mit deutschen Kommentaren — war der Strom verschoben.
-;;;; Der nächste Header war unlesbar, swank-reader-loop endete, und ab da
-;;;; feuerte KEIN Callback aus *pending-requests* mehr: Definition,
-;;;; Completion, Signature Help und Hover antworteten schlicht nie.
+;;;; The occasion: the six-digit hex header of the Swank protocol counts
+;;;; the BYTES of the UTF-8 encoding. send-swank-text wrote (length text)
+;;;; — the CHARACTER count — and read-swank-message read (make-string len)
+;;;; plus read-sequence, that is, as many CHARACTERS as the announced
+;;;; number of bytes. On pure ASCII the two happen to agree. As soon as an
+;;;; umlaut, an em dash or a ° sat in the payload — a German docstring
+;;;; from autodoc/describe-symbol, a completion context from a file with
+;;;; German comments — the stream was out of step. The next header was
+;;;; unreadable, swank-reader-loop ended, and from then on NO callback
+;;;; from *pending-requests* fired any more: definition, completion,
+;;;; signature help and hover simply never answered.
 ;;;;
-;;;; Deshalb prüft dieser Test ZWEI Nachrichten hintereinander und beide
-;;;; Richtungen. Mit nur einer Nachricht wäre der Fehler unsichtbar — die
-;;;; erste kommt trotz Überlesen scheinbar heil an.
+;;;; This test therefore checks TWO messages in a row and both directions.
+;;;; With only one message the bug would be invisible — the first appears
+;;;; to arrive intact despite the overreading.
 ;;;;
-;;;; Getestet wird gegen eine echte Datei mit Byte-Element-Typ, weil
-;;;; genau der Element-Typ des Stroms der Kern des Fehlers war.
+;;;; The test runs against a real file with a byte element type, because
+;;;; the element type of the stream was precisely the heart of the bug.
 
 (require :sb-posix)
 
@@ -33,9 +33,9 @@
       (format t "~&  ok  ~A~%" name)
       (progn
         (incf *failed*)
-        (format t "~&FEHLER ~A~%  erwartet: ~S~%  bekommen: ~S~%" name expected actual))))
+        (format t "~&FAILED ~A~%  expected: ~S~%  got:      ~S~%" name expected actual))))
 
-;;; --- bridge-server.lisp teilweise laden (wie framingtest.lisp) -------
+;;; --- Load bridge-server.lisp partially (as in framingtest.lisp) ------
 
 (defun token-chars-p (c) (or (alphanumericp c) (find c "+-*/=<>!?%&$_.")))
 
@@ -86,10 +86,10 @@
                 (let ((s (make-string (file-length in))))
                   (subseq s 0 (read-sequence s in))))))
     (ensure-stubs text)
-    ;; Die Datei schreibt bt:with-lock-held, das Ersatzpaket heisst also
-    ;; "BT" — nicht "BORDEAUX-THREADS". Ohne diesen Stub wuerde
-    ;; with-lock-held als Funktionsaufruf gelesen und (*swank-lock*)
-    ;; als Funktion aufgerufen.
+    ;; The file writes bt:with-lock-held, so the replacement package is
+    ;; called "BT" — not "BORDEAUX-THREADS". Without this stub,
+    ;; with-lock-held would be read as a function call and (*swank-lock*)
+    ;; called as a function.
     (let ((wlh (or (find-symbol "WITH-LOCK-HELD" (or (find-package "BT")
                                                      (find-package "SWANKFRAMING")))
                    (find-symbol "WITH-LOCK-HELD" (or (find-package "BORDEAUX-THREADS")
@@ -113,12 +113,12 @@
                          (error () nil)))))))
       count)))
 
-(format t "~&~D Definitionen aus bridge-server.lisp ausgewertet.~%"
+(format t "~&~D definitions from bridge-server.lisp evaluated.~%"
         (load-definitions "lisp/bridge-server.lisp"))
 
-;;; --- Nutzlasten mit Nicht-ASCII --------------------------------------
-;;; Genau die Sorte, die im Betrieb wirklich vorkommt: eine deutsche
-;;; Docstring als Antwort, ein Completion-Kontext mit Umlauten als Anfrage.
+;;; --- Payloads with non-ASCII ------------------------------------------
+;;; Exactly the sort that really occurs in operation: a German docstring
+;;; as an answer, a completion context with umlauts as a request.
 
 (defparameter *payload-1*
   "(:return (:ok (\"(rt-start &key gültig)\" (\"größe\" \"höhe\") \"Startet den Realtime-Server — prüft Übersteuerung.\")) 7)")
@@ -127,21 +127,21 @@
   "(:return (:ok (\"zweite Nachricht: ÄÖÜ ß — °C\")) 8)")
 
 (defun safe-read (stream)
-  "read-swank-message darf im Test nicht durchschlagen. Bei verschobenem
-Strom ist der naechste Header Muell, parse-integer fliegt — und ein Gate,
-das mit Backtrace abbricht, sagt weniger als eines, das den Fehler
-benennt. Deshalb hier abfangen und :desync zurueckgeben."
+  "read-swank-message must not blow through in the test. With the stream
+out of step the next header is junk and parse-integer throws — and a gate
+that aborts with a backtrace says less than one that names the failure.
+Hence catch it here and return :desync."
   (handler-case (read-swank-message stream)
     (error (e) (declare (ignore e)) :desync)))
 
 (defun req-id (msg)
-  "Request-ID einer Swank-Antwort, oder NIL statt Absturz. Ohne das
-scheiterte bei verschobenem Strom nicht die Pruefung, sondern (third
-:desync) — und der Backtrace verdeckte die uebrigen Meldungen."
+  "The request ID of a Swank answer, or NIL rather than a crash. Without
+this, with the stream out of step it was not the check that failed but
+(third :desync) — and the backtrace obscured the remaining messages."
   (and (consp msg) (third msg)))
 
 (defun swank-frame-bytes (text)
-  "Baut eine Swank-Nachricht mit KORREKTER Byte-Länge."
+  "Builds a Swank message with the CORRECT byte length."
   (let ((body (sb-ext:string-to-octets text :external-format :utf-8)))
     (concatenate '(vector (unsigned-byte 8))
                  (sb-ext:string-to-octets (format nil "~6,'0X" (length body))
@@ -158,23 +158,23 @@ scheiterte bei verschobenem Strom nicht die Pruefung, sondern (third
   (with-open-file (in path :element-type '(unsigned-byte 8))
     (let ((m1 (safe-read in))
           (m2 (safe-read in)))
-      ;; Die erste Nachricht kommt auch mit dem alten Fehler scheinbar
-      ;; heil an — nur verschoben. Die ZWEITE entlarvt ihn.
-      (check "Lesen: erste Nachricht ist eine :return-Form"
+      ;; The first message appears to arrive intact even with the old bug
+      ;; — only out of step. The SECOND one exposes it.
+      (check "reading: the first message is a :return form"
              (and (consp m1) (first m1)) :return)
-      (check "Lesen: zweite Nachricht intakt (Strom nicht verschoben)"
+      (check "reading: the second message is intact (stream in step)"
              (and (consp m2) (first m2)) :return)
       (check "Lesen: Umlaute korrekt dekodiert"
              (and (consp m2) (search "°C" (format nil "~S" m2)) t)
              t)
-      (check "Lesen: zweite Nachricht ist nicht :unreadable"
+      (check "reading: the second message is not :unreadable"
              (eq m2 :unreadable) nil)
-      (check "Lesen: Strom nicht verschoben (kein :desync)"
+      (check "reading: the stream is in step (no :desync)"
              (eq m2 :desync) nil)
-      (check "Lesen: Request-ID der zweiten Nachricht"
+      (check "reading: the request ID of the second message"
              (req-id m2) 8))))
 
-;;; --- Test 2: Schreibseite, Header zählt Bytes ------------------------
+;;; --- Test 2: the writing side, the header counts bytes ----------------
 
 (let* ((path "/tmp/swankframing-out.bin")
        (text "(:emacs-rex (clamps-bridge-rpc:completions-for-repl \"grö\" \"CL-USER\" \";; Prüft Übersteuerung\") \"CL-USER\" t 1)"))
@@ -191,11 +191,11 @@ scheiterte bei verschobenem Strom nicht die Pruefung, sondern (third
             (actual (- (with-open-file (f path :element-type '(unsigned-byte 8))
                          (file-length f))
                        6)))
-        (check "Schreiben: Header zählt Bytes, nicht Zeichen" announced actual)
-        (check "Schreiben: Bytes > Zeichen bei Umlauten (Test greift wirklich)"
+        (check "writing: the header counts bytes, not characters" announced actual)
+        (check "writing: bytes > characters with umlauts (the test really bites)"
                (> announced (length text)) t)))))
 
-;;; --- Test 3: Round-Trip über die echten Funktionen -------------------
+;;; --- Test 3: a round trip over the real functions ---------------------
 
 (let ((path "/tmp/swankframing-rt.bin")
       (text *payload-1*))
@@ -213,4 +213,4 @@ scheiterte bei verschobenem Strom nicht die Pruefung, sondern (third
 (if (> *failed* 0)
     (progn (format t "~&~D Test(s) fehlgeschlagen.~%" *failed*)
            (sb-ext:exit :code 1))
-    (format t "~&ok — Swank-Rahmung zählt Bytes, Strom bleibt synchron.~%"))
+    (format t "~&ok — the Swank framing counts bytes, the stream stays in step.~%"))

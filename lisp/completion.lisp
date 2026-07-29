@@ -1,16 +1,16 @@
-;;;; completion.lisp — additive, SLY-artige Completion-Erweiterung.
+;;;; completion.lisp — an additive, SLY-like completion extension.
 ;;;;
-;;;; Diese Datei überschreibt ausschließlich COMPLETIONS-FOR-REPL aus
-;;;; rpc.lisp. Das Original bleibt unverändert und kann durch Entfernen
-;;;; dieser LOAD-Zeile jederzeit wiederhergestellt werden.
+;;;; This file overrides COMPLETIONS-FOR-REPL from rpc.lisp and nothing
+;;;; else. The original stays unchanged and can be restored at any time by
+;;;; removing this LOAD line.
 
 (in-package :clamps-bridge-rpc)
 
 (defparameter *completion-fuzzy-limit* 300)
 
-;; In Common Lisp gibt es in Strings kein \t / \n / \r — "\t\r\n" waere
-;; buchstaeblich "trn" und haette t, r und n als Trennzeichen behandelt.
-;; Deshalb echte Zeichenobjekte.
+;; In Common Lisp there is no \t / \n / \r inside strings — "\t\r\n"
+;; would literally be "trn" and would have treated t, r and n as
+;; separators. Hence real character objects.
 (defparameter *completion-whitespace*
   (coerce (list #\Space #\Tab #\Return #\Newline #\Page) 'string))
 
@@ -18,9 +18,9 @@
   (and c (find c *completion-whitespace*)))
 
 (defun %completion-segment-hits (pattern name)
-  "Wie viele Zeichen aus PATTERN treffen einen Wortanfang in NAME.
+  "How many characters from PATTERN hit the start of a word in NAME.
 
-Wortanfang heisst: Position 0 oder direkt nach - / * / % / +."
+The start of a word means: position 0, or directly after - / * / % / +."
   (let ((hits 0) (pidx 0) (len (length name)))
     (loop for i from 0 below len
           while (< pidx (length pattern))
@@ -31,14 +31,14 @@ Wortanfang heisst: Position 0 oder direkt nach - / * / % / +."
     hits))
 
 (defun %completion-subsequence-score (pattern name)
-  "Fuzzy score; kleinere Werte sind besser, NIL bedeutet kein Treffer."
+  "Fuzzy score; smaller values are better, NIL means no match."
   (let ((p (string-downcase pattern)) (n (string-downcase name)))
     (cond
       ((zerop (length p)) 1000)
       ((%prefix-match-p n p) (- (length n) (length p)))
       (t
-       ;; Keine Bindung von CL:PI / CL:FIRST / CL:LAST — PI ist eine
-       ;; Konstante und das Paket COMMON-LISP ist gesperrt.
+       ;; No binding of CL:PI / CL:FIRST / CL:LAST — PI is a constant and
+       ;; the COMMON-LISP package is locked.
        (let ((pidx 0) (hit-first nil) (hit-last nil) (gaps 0))
          (loop for ni from 0 below (length n)
                while (< pidx (length p))
@@ -48,26 +48,25 @@ Wortanfang heisst: Position 0 oder direkt nach - / * / % / +."
                     (setf hit-last ni)
                     (incf pidx))
          (when (= pidx (length p))
-           ;; Treffer auf Segmentanfaengen zaehlen mehr: "mvb" soll
-           ;; multiple-value-bind finden und nicht irgendein Symbol, in dem
-           ;; m, v und b zufaellig in dieser Reihenfolge vorkommen.
+           ;; Hits at the start of a segment count for more: "mvb" should
+           ;; find multiple-value-bind and not some symbol in which m, v
+           ;; and b happen to occur in that order.
            (let ((segment-hits (%completion-segment-hits p n)))
              (+ 100 (* 4 (or hit-first 0)) (* 3 gaps)
                 (- (length n) (length p))
                 (* -8 segment-hits)))))))))
 
 (defun %completion-tokenize (source)
-  "Zerlege SOURCE in einen Formenbaum, ohne den Reader zu bemuehen.
+  "Break SOURCE into a tree of forms without troubling the reader.
 
-Rueckgabe: (values TREE OPEN-CHAIN).  TREE enthaelt die abgeschlossenen
-Formen, OPEN-CHAIN die am Ende von SOURCE noch offenen Formen von aussen
-nach innen.  Da SOURCE am Cursor endet, ist die letzte Kette genau der
-Pfad der Formen, in denen der Cursor steht.
+Returns: (values TREE OPEN-CHAIN).  TREE contains the completed forms,
+OPEN-CHAIN the forms still open at the end of SOURCE, from the outside
+in.  Since SOURCE ends at the cursor, that last chain is exactly the path
+of the forms the cursor stands in.
 
-Ein Knoten ist entweder ein String (Atom) oder eine Liste (Form).
-Strings, Zeilenkommentare und Zeichenliterale werden uebersprungen, damit
-ein \"(\" im Text keine Form oeffnet.  Halbfertige Eingaben sind der
-Normalfall und kein Fehler."
+A node is either a string (an atom) or a list (a form).  Strings, line
+comments and character literals are skipped, so that a \"(\" in the text
+opens no form.  Half-finished input is the normal case and not an error."
   (let* ((len (length source))
          (stack (list (cons :root '())))
          (i 0))
@@ -122,48 +121,48 @@ Normalfall und kein Fehler."
     ("define-vug-macro" . :named-lambda) ("define-ugen" . :named-lambda)
     ("dolist" . :iteration) ("dotimes" . :iteration)
     ("loop" . :loop))
-  "Formen, aus denen lexikalische Namen entnommen werden.
+  "Forms from which lexical names are taken.
 
-Die Incudine-Formen stehen hier gleichberechtigt: in einem dsp!-Koerper
-sind FREQ, AMP und die with-samples-Variablen die Namen, die man
-tatsaechlich tippt.  Bis v81.13 kannte der Scanner sie nicht.")
+The Incudine forms have equal standing here: in a dsp! body, FREQ, AMP
+and the with-samples variables are the names one actually types.  Up to
+v81.13 the scanner did not know them.")
 
 (defparameter *completion-sequential-binders*
   '("let*" "with-samples" "with" "do*" "prog*")
-  "Binder, deren Namen schon in den folgenden Initialformen sichtbar sind.
+  "Binders whose names are already visible in the following init forms.
 
-Incudines WITH-SAMPLES und WITH binden sequenziell wie LET*, nicht
-parallel wie LET.")
+Incudine's WITH-SAMPLES and WITH bind sequentially like LET*, not in
+parallel like LET.")
 
 (defun %completion-atom-p (node) (stringp node))
 
 (defun %completion-clean-name (token)
-  "Nil fuer alles, was kein brauchbarer lexikalischer Name ist."
+  "Nil for anything that is not a usable lexical name."
   (let ((s (string-downcase (or token ""))))
     (cond ((zerop (length s)) nil)
           ((char= (char s 0) #\&) nil)      ; &optional, &key, &rest
-          ((find #\: s) nil)                ; Keywords und qualifizierte Symbole
+          ((find #\: s) nil)                ; keywords and qualified symbols
           ((every #'digit-char-p s) nil)
           ((string= s "nil") nil)
           ((string= s "t") nil)
           (t s))))
 
 (defun %completion-lambda-list-names (node)
-  "Namen aus einer Lambda-Liste; &-Marker und Defaultwerte bleiben aussen vor."
+  "Names from a lambda list; &-markers and default values are left out."
   (when (listp node)
     (let ((out '()) (skip nil))
       (dolist (item node (nreverse out))
         (cond ((and (%completion-atom-p item)
                     (plusp (length item))
                     (char= (char item 0) #\&))
-               ;; Nach &aux und &environment kommen keine Benutzernamen,
-               ;; die man vervollstaendigen will.
+               ;; After &aux and &environment come no user names one would
+               ;; want to complete.
                (setf skip (member (string-downcase item) '("&aux" "&environment")
                                   :test #'string=)))
               (skip nil)
               ((%completion-atom-p item)
                (let ((n (%completion-clean-name item))) (when n (push n out))))
-              ;; (var default) oder ((:key var) default)
+              ;; (var default) or ((:key var) default)
               ((and (consp item) (%completion-atom-p (first item)))
                (let ((n (%completion-clean-name (first item)))) (when n (push n out))))
               ((and (consp item) (consp (first item))
@@ -172,7 +171,7 @@ parallel wie LET.")
                  (when n (push n out)))))))))
 
 (defun %completion-binding-list-names (node)
-  "Namen aus einer LET-artigen Bindungsliste."
+  "Names from a LET-like binding list."
   (when (listp node)
     (let ((out '()))
       (dolist (binding node (nreverse out))
@@ -183,7 +182,7 @@ parallel wie LET.")
             (when n (push n out))))))))
 
 (defun %completion-form-names (form)
-  "Namen, die FORM selbst bindet.  FORM ist ein geparster Knoten."
+  "Names that FORM itself binds.  FORM is a parsed node."
   (let* ((head (and (consp form) (%completion-atom-p (first form))
                     (string-downcase (first form))))
          (rule (and head (cdr (assoc head *completion-binding-forms* :test #'string=)))))
@@ -205,7 +204,7 @@ parallel wie LET.")
              (dolist (a (%completion-lambda-list-names (second binding)))
                (push a out))))))
       (:loop
-       ;; LOOP hat keine Bindungsliste, sondern Schluesselwoerter.
+       ;; LOOP has no binding list but keywords.
        (let ((out '()) (take nil))
          (dolist (item form (nreverse out))
            (cond ((and (%completion-atom-p item)
@@ -219,7 +218,7 @@ parallel wie LET.")
       (t nil))))
 
 (defun %completion-collect-names (node)
-  "Alle bindenden Namen im Teilbaum NODE."
+  "All binding names in the subtree NODE."
   (let ((out (copy-list (%completion-form-names node))))
     (when (consp node)
       (dolist (child node)
@@ -228,12 +227,13 @@ parallel wie LET.")
     out))
 
 (defun %completion-attach-open (open-chain)
-  "Haenge jede offene Form als letztes Kind ihrer Elternform an.
+  "Attach every open form as the last child of its parent form.
 
-Der Tokenizer traegt Kinder erst beim Schliessen in die Elternform ein.
-Noch offene Formen fehlen dort also — und genau die enthalten den Cursor.
-Bei \"(labels ((helper (acc) ac\" waere die Bindungsliste sonst leer und
-weder HELPER noch ACC kaemen als Kandidat heraus."
+The tokenizer only enters children into the parent form when it closes.
+Forms that are still open are therefore missing there — and those are
+precisely the ones containing the cursor.  At \"(labels ((helper (acc) ac\"
+the binding list would otherwise be empty and neither HELPER nor ACC
+would come out as a candidate."
   (let ((reversed (reverse open-chain))
         (built '()))
     (dolist (form reversed built)
@@ -241,16 +241,16 @@ weder HELPER noch ACC kaemen als Kandidat heraus."
                         built)))))
 
 (defun %completion-open-scope-names (open-chain)
-  "Namen der Formen, die den Cursor enthalten — mit Beachtung der Bindungsstelle.
+  "Names of the forms containing the cursor — respecting the binding site.
 
-Bis v81.14 galt jeder Name einer umschliessenden Bindungsform als sichtbar,
-auch wenn der Cursor noch in der Bindungsliste selbst stand.  In
+Up to v81.14 every name of an enclosing binding form counted as visible,
+even when the cursor was still inside the binding list itself.  In
 
   (let ((alpha 1) (beta al
 
-ist ALPHA bei LET gerade NICHT sichtbar — der Wert von BETA wird im
-aeusseren Scope berechnet.  Bei LET* und bei Incudines WITH-SAMPLES ist er
-es.  Diese Funktion unterscheidet das."
+ALPHA is precisely NOT visible under LET — the value of BETA is computed
+in the outer scope.  Under LET* and under Incudine's WITH-SAMPLES it is.
+This function tells the two apart."
   (let ((augmented (%completion-attach-open open-chain))
         (out '()))
     (loop for rest on open-chain
@@ -261,12 +261,12 @@ es.  Diese Funktion unterscheidet das."
                                (string-downcase (first raw))))
                     (rule (and head (cdr (assoc head *completion-binding-forms*
                                                 :test #'string=))))
-                    ;; An welcher Argumentposition steht die Bindungs- bzw.
-                    ;; Lambda-Liste?  Bei LET und LAMBDA an 1, bei DEFUN und
-                    ;; dsp! an 2 (dort steht der Name davor).  FLET, LABELS
-                    ;; und LOOP bleiben aussen vor: dort ist der Cursor in der
-                    ;; Bindungsliste bereits im Rumpf einer lokalen Funktion,
-                    ;; deren Parameter sichtbar sind.
+                    ;; At which argument position does the binding or
+                    ;; lambda list stand?  For LET and LAMBDA at 1, for
+                    ;; DEFUN and dsp! at 2 (the name comes first there).
+                    ;; FLET, LABELS and LOOP are left out: there the cursor
+                    ;; in the binding list is already in the body of a
+                    ;; local function whose parameters are visible.
                     (binding-index (case rule
                                      ((:bindings :lambda-list :iteration) 1)
                                      (:named-lambda 2)
@@ -279,29 +279,29 @@ es.  Diese Funktion unterscheidet das."
                   (setf out (nconc out (copy-list (%completion-form-names aug)))))
                  ((and (eq rule :bindings)
                        (member head *completion-sequential-binders* :test #'string=))
-                  ;; Sequenzieller Binder: die bereits abgeschlossenen
-                  ;; frueheren Bindungen sind sichtbar, die gerade getippte
-                  ;; noch nicht.
+                  ;; A sequential binder: the earlier bindings that are
+                  ;; already complete are visible, the one currently being
+                  ;; typed is not yet.
                   (setf out (nconc out (%completion-binding-list-names deeper))))
                  (t
-                  ;; Paralleler Binder oder Lambda-Liste: hier ist noch
-                  ;; nichts von dieser Form sichtbar.
+                  ;; A parallel binder or a lambda list: nothing from this
+                  ;; form is visible yet.
                   nil))))
     out))
 
 (defun %completion-local-names (source)
-  "Lexikalische Namen aus SOURCE.
+  "Lexical names from SOURCE.
 
-Rueckgabe: (values IN-SCOPE NEARBY).  IN-SCOPE stammt aus den Formen, in
-denen der Cursor tatsaechlich steht, NEARBY aus abgeschlossenen Formen im
-selben Fenster.  Die Trennung ist der Punkt: bis v81.13 bekam beides
-denselben starken Bonus, und ein zufaellig aufgeschnappter Aufrufkopf aus
-einem laengst geschlossenen Formular rankte ueber dem richtigen Symbol."
+Returns: (values IN-SCOPE NEARBY).  IN-SCOPE comes from the forms the
+cursor actually stands in, NEARBY from completed forms in the same
+window.  The separation is the point: up to v81.13 both got the same
+strong bonus, and a call head picked up by chance from a long-closed form
+ranked above the right symbol."
   (multiple-value-bind (tree open-chain) (%completion-tokenize (or source ""))
     (let ((in-scope '()) (nearby '()))
       (setf in-scope (%completion-open-scope-names open-chain))
-      ;; Auch abgeschlossene Unterformen im selben Rumpf koennen binden,
-      ;; etwa ein frueheres LET im selben DEFUN.
+      ;; Completed subforms in the same body can bind as well, an earlier
+      ;; LET in the same DEFUN for instance.
       (dolist (form (%completion-attach-open open-chain))
         (dolist (child form)
           (when (consp child)
@@ -314,7 +314,7 @@ einem laengst geschlossenen Formular rankte ueber dem richtigen Symbol."
                               in-scope :test #'string=)))))
 
 (defun %completion-enclosing-head (open-chain)
-  "Der Operator der innersten offenen Form, oder nil."
+  "The operator of the innermost open form, or nil."
   (let ((innermost (first (last open-chain))))
     (and (consp innermost)
          (%completion-atom-p (first innermost))
@@ -322,12 +322,12 @@ einem laengst geschlossenen Formular rankte ueber dem richtigen Symbol."
          (first innermost))))
 
 (defun %completion-head-position-p (open-chain)
-  "T, wenn der Cursor an Operatorposition steht.
+  "T when the cursor stands at operator position.
 
-Frueher wurde dafuer rueckwaerts nach der naechsten oeffnenden Klammer
-gesucht.  Der Parser weiss es genauer: Operatorposition heisst, dass die
-innerste offene Form ausser dem gerade getippten Praefix noch nichts
-enthaelt."
+This used to be found by searching backwards for the nearest opening
+paren.  The parser knows better: operator position means that the
+innermost open form contains nothing yet apart from the prefix currently
+being typed."
   (let ((innermost (first (last open-chain))))
     (and innermost (<= (length innermost) 1))))
 
@@ -338,10 +338,10 @@ enthaelt."
     (error () nil)))
 
 (defun %completion-keyword-parameters (head package)
-  "Die &key-Parameternamen der Lambda-Liste von HEAD, klein geschrieben.
+  "The &key parameter names of HEAD's lambda list, in lower case.
 
-Das ist der Unterschied zwischen \":\" plus dem gesamten KEYWORD-Paket und
-dem, was an dieser Stelle tatsaechlich sinnvoll ist."
+This is the difference between \":\" plus the entire KEYWORD package and
+what actually makes sense at this place."
   (handler-case
       (let ((sym (and head (%completion-find-symbol head package)))
             (introspect (find-symbol "FUNCTION-LAMBDA-LIST" :sb-introspect)))
@@ -370,12 +370,12 @@ dem, was an dieser Stelle tatsaechlich sinnvoll ist."
         (t (%sym-kind sym))))
 
 (defun completions-for-repl (prefix package-name &optional context)
-  "Fuzzy, paket- und kontextbezogene Completion.
-CONTEXT ist der Quelltext vor dem Cursor (begrenzt durch die Bridge).
+  "Fuzzy, package- and context-aware completion.
+CONTEXT is the source before the cursor (bounded by the bridge).
 
-Bei leerem Symbolteil werden bewusst NUR die &key-Parameter der
-umschliessenden Form geliefert.  Sonst muesste hinter jedem Leerzeichen
-das halbe Image kommen, und der Leerzeichen-Trigger waere unbrauchbar."
+With an empty symbol part, deliberately ONLY the &key parameters of the
+enclosing form are returned.  Otherwise half the image would have to come
+after every space, and the space trigger would be unusable."
   (handler-case
       (destructuring-bind (pkg-part sym-part internal-p) (%split-prefix prefix)
         (multiple-value-bind (tree open-chain) (%completion-tokenize (or context ""))
@@ -416,24 +416,24 @@ das halbe Image kommen, und der Leerzeichen-Trigger waere unbrauchbar."
                                (push-row (label-for name) kind
                                          (or (%arglist sym) "")
                                          (or (%short-doc sym) "") score bias))))))
-                ;; 1. &key-Parameter der umschliessenden Form.  Diese sind an
-                ;;    dieser Stelle die einzigen Keywords, die sicher passen.
+                ;; 1. &key parameters of the enclosing form.  At this place
+                ;;    they are the only keywords that certainly fit.
                 (dolist (name arg-keywords)
                   (let ((score (%completion-subsequence-score sym-part name)))
                     (when score
                       (push-row (concatenate 'string ":" name) 14
-                                (format nil "&key von ~(~A~)" enclosing)
+                                (format nil "&key of ~(~A~)" enclosing)
                                 "" score -200))))
                 (unless empty-p
-                  ;; 2. Lexikalische Namen: erst die im Scope, dann die aus
-                  ;;    benachbarten geschlossenen Formen.
+                  ;; 2. Lexical names: those in scope first, then those
+                  ;;    from neighbouring closed forms.
                   (dolist (name in-scope)
                     (let ((score (%completion-subsequence-score sym-part name)))
-                      (when score (push-row name 6 "lexikalisch (im Scope)" "" score -100))))
+                      (when score (push-row name 6 "lexical (in scope)" "" score -100))))
                   (dolist (name nearby)
                     (let ((score (%completion-subsequence-score sym-part name)))
                       (when score (push-row name 6 "lexikalisch (benachbart)" "" score -20))))
-                  ;; 3. Symbole des Zielpakets.
+                  ;; 3. Symbols of the target package.
                   (when target
                     (if (and pkg-part (not internal-p) (not (string= pkg-part "KEYWORD")))
                         (do-external-symbols (sym target) (consider-symbol sym))
@@ -444,10 +444,10 @@ das halbe Image kommen, und der Leerzeichen-Trigger waere unbrauchbar."
                                             (< (fifth a) (fifth b))))))
                 (let* ((truncated (or empty-p (> (length rows) *completion-fuzzy-limit*)))
                        (limited (subseq rows 0 (min (length rows) *completion-fuzzy-limit*))))
-                  ;; Bei leerem Symbolteil ist das Ergebnis absichtlich
-                  ;; unvollstaendig: der Client muss nach dem naechsten Zeichen
-                  ;; erneut fragen, statt lokal auf dieser Teilmenge zu filtern.
+                  ;; With an empty symbol part the result is deliberately
+                  ;; incomplete: the client has to ask again after the next
+                  ;; character instead of filtering locally on this subset.
                   (list :ok truncated
                         (mapcar (lambda (r) (subseq r 0 4)) limited))))))))
     (error (e)
-      (list :ok nil (list (list (format nil "; Completion-Fehler: ~A" e) 1 "" ""))))))
+      (list :ok nil (list (list (format nil "; completion error: ~A" e) 1 "" ""))))))

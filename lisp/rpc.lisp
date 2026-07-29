@@ -1,32 +1,32 @@
-;;;; rpc.lisp — RPC-Funktionen für die VS-Code-Bridge.
+;;;; rpc.lisp — RPC functions for the VS Code bridge.
 ;;;;
-;;;; Bewusst frei von CLAMPS, Swank, Slynk und Incudine: hier drin steckt
-;;;; nur portables CL plus ein paar SBCL-Interna (sb-mop, sb-kernel,
-;;;; sb-introspect). Dadurch lässt sich die Datei gegen ein nacktes SBCL
-;;;; laden und testen, ohne den kompletten Audio-Stack hochzufahren:
+;;;; Deliberately free of CLAMPS, Swank, Slynk and Incudine: what is in
+;;;; here is only portable CL plus a few SBCL internals (sb-mop,
+;;;; sb-kernel, sb-introspect). That makes it possible to load and test
+;;;; the file against a bare SBCL without bringing up the whole audio
+;;;; stack:
 ;;;;
 ;;;;   sbcl --load lisp/rpc.lisp
 ;;;;
-;;;; bootstrap.lisp lädt diese Datei; die Trennung existiert nur, damit
-;;;; Tests nicht am Prozess-Setup hängen.
+;;;; bootstrap.lisp loads this file; the separation exists only so that
+;;;; the tests do not depend on the process setup.
 
 (in-package :cl-user)
 
 ;;; ---------------------------------------------------------------------
-;;; Eval-Kanal für die VS-Code-REPL
+;;; Eval channel for the VS Code REPL
 ;;;
-;;; Die Bridge ruft CLAMPS-BRIDGE-EVAL per Swank-RPC auf. Bewusst NICHT
-;;; swank:listener-eval verwendet: das druckt REPL-Nebeneffekte auf einen
-;;; an Emacs gebundenen Stream und ist von außen schwer sauber
-;;; abzugreifen. Stattdessen fangen wir stdout/stderr in einen String,
-;;; werten mehrere aufeinanderfolgende Forms aus (wie eine echte REPL-
-;;; Eingabe mit mehreren Ausdrücken) und geben Werte + Ausgabe als EINEN
-;;; String zurück. Die Funktion lebt im COMMON-LISP-USER-Paket, ist aber
-;;; über ihren vollen Namen aufrufbar.
+;;; The bridge calls CLAMPS-BRIDGE-EVAL over Swank RPC. Deliberately NOT
+;;; using swank:listener-eval: that prints REPL side effects onto a
+;;; stream bound to Emacs and is hard to tap cleanly from outside.
+;;; Instead we capture stdout/stderr into a string, evaluate several
+;;; consecutive forms (like a real REPL input with several expressions)
+;;; and return values + output as ONE string. The function lives in the
+;;; COMMON-LISP-USER package but is callable by its full name.
 ;;;
-;;; Rückgabe: eine Liste (:ok "<ausgabe+werte>" "<paketname>") bzw.
-;;; (:error "<fehlertext>" "<paketname>"). Die Bridge übersetzt das in
-;;; das JSON {output, package}, das der TypeScript-Client erwartet.
+;;; Returns: a list (:ok \"<output+values>\" \"<package name>\") or
+;;; (:error \"<error text>\" \"<package name>\"). The bridge translates
+;;; that into the JSON {output, package} the TypeScript client expects.
 ;;; ---------------------------------------------------------------------
 
 (defpackage :clamps-bridge-rpc
@@ -49,6 +49,7 @@
            #:sticker-state-record-for-repl #:sticker-state-record-sample-for-repl
            #:sticker-state-record-rms-for-repl
            #:sticker-samples-since-for-repl #:sticker-keys-for-repl
+           #:sticker-spectrum-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -69,7 +70,7 @@
     (error () nil)))
 
 (defun %package-qualified (sym)
-  "Symbolname mit Paket, damit slot-value es im richtigen Paket findet."
+  "Symbol name with package, so that slot-value finds it in the right package."
   (let ((pkg (symbol-package sym)))
     (if pkg
         (format nil "~A::~A" (string-downcase (package-name pkg))
@@ -77,9 +78,9 @@
         (string-downcase (symbol-name sym)))))
 
 (defun %preview (val)
-  "Kurze, einzeilige Druckdarstellung für Slot-/Element-Vorschauen.
-   Bewusst hart begrenzt: die Vorschau steht neben jedem Eintrag in der
-   Liste, da darf nichts umbrechen oder minutenlang drucken."
+  "Short, single-line printed form for slot/element previews.
+   Deliberately capped hard: the preview stands next to every entry in
+   the list, so nothing there may wrap or print for minutes."
   (handler-case
       (let ((s (let ((*print-length* 6)
                      (*print-level* 2)
@@ -90,13 +91,13 @@
         (if (> (length s) 90)
             (concatenate 'string (subseq s 0 87) "...")
             s))
-    (error () "#<nicht druckbar>")))
+    (error () "#<not printable>")))
 
 (defun %fn-name (fn)
-  "Funktionsname über SBCL-Interna. Die Kandidaten sind versionsabhängig:
-   sb-impl::function-name existiert in neueren SBCLs (>= 2.6) nicht mehr,
-   sb-kernel:%fun-name schon. Wir probieren der Reihe nach und geben nil
-   zurück, wenn keiner greift — die Meta-Zeile entfällt dann eben."
+  "Function name via SBCL internals. The candidates are version
+   dependent: sb-impl::function-name no longer exists in newer SBCLs
+   (>= 2.6), sb-kernel:%fun-name does. We try them in turn and return nil
+   when none of them works — the meta line is then simply omitted."
   (dolist (cand '(("%FUN-NAME"    . :sb-kernel)
                   ("FUNCTION-NAME" . :sb-impl)
                   ("FUN-NAME"      . :sb-kernel))
@@ -110,8 +111,9 @@
                (error () nil))))
       (when r (return r)))))
 
-;; sb-introspect ist nicht per Default im Image; ohne require findet
-;; find-symbol das Paket gar nicht erst und die Lambda-Liste fehlt still.
+;; sb-introspect is not in the image by default; without the require,
+;; find-symbol does not even find the package and the lambda list is
+;; silently missing.
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (handler-case (require :sb-introspect) (error () nil)))
 
@@ -123,39 +125,39 @@
     (error () nil)))
 
 (defvar +unbound+ (make-symbol "UNBOUND")
-  "Eindeutiger Marker für nicht gebundene Slots. Ein uninterniertes
-   Symbol, damit es sich mit keinem echten Wert verwechseln lässt.")
+  "Unique marker for unbound slots. An uninterned symbol, so that it
+   cannot be confused with any real value.")
 
 (defun %inspect-describe (obj)
-  "Beschreibt OBJ typspezifisch. Liefert (kind meta parts):
+  "Describes OBJ per type. Returns (kind meta parts):
 
-     kind  — Kategorie-String für den Client
-     meta  — Liste von (schlüssel . wert) Strings, Kopfzeilen-Infos
-     parts — Liste von (label wert preview setter)
+     kind  — category string for the client
+     meta  — list of (key . value) strings, header information
+     parts — list of (label value preview setter)
 
-   WERT ist das echte Lisp-Objekt, nicht ein Zugriffs-Ausdruck; darüber
-   navigiert der Inspector, ohne beim Klick etwas neu zu berechnen.
+   VALUE is the real Lisp object, not an access expression; the
+   inspector navigates over it without recomputing anything on a click.
 
-   SETTER ist eine Funktion (lambda (neuer-wert) ...) oder nil, wenn der
-   Teil nicht schreibbar ist. Die Alternative wäre gewesen, das Setzen in
-   einer zweiten Funktion nochmal nach Typ zu unterscheiden — dann gäbe
-   es zwei typecase-Kaskaden, die auseinanderlaufen können. So steht die
-   Zuordnung Teil -> Schreibweg an genau einer Stelle.
+   SETTER is a function (lambda (new-value) ...) or nil when the part is
+   not writable. The alternative would have been to distinguish the
+   setting by type once more in a second function — then there would be
+   two typecase cascades that can drift apart. This way the mapping
+   part -> write path lives in exactly one place.
 
-   Die Reihenfolge im typecase ist relevant: null vor symbol/list,
-   string vor vector, vector vor array, und package/pathname/random-state
-   vor structure-object (in SBCL sind das defstructs)."
+   The order in the typecase matters: null before symbol/list, string
+   before vector, vector before array, and package/pathname/random-state
+   before structure-object (in SBCL those are defstructs)."
   (typecase obj
     (null
-     (list "atom" (list (cons "hinweis" "nil — leere Liste und Symbol")) nil))
+     (list "atom" (list (cons "note" "nil — the empty list and a symbol")) nil))
 
     (hash-table
      (let ((parts '()) (i 0) (truncated nil))
        (maphash (lambda (k v)
                   (if (< i 1000)
                       (progn
-                        ;; k ist pro Aufruf frisch gebunden, die Closure
-                        ;; fängt also den richtigen Schlüssel ein.
+                        ;; k is bound freshly on each iteration, so the
+                        ;; closure captures the right key.
                         (push (list (%preview k) v (%preview v)
                                     (lambda (new) (setf (gethash k obj) new)))
                               parts)
@@ -187,7 +189,7 @@
            nil))
 
     (pathname
-     ;; Pathnames sind unveränderlich — kein Setter.
+     ;; Pathnames are immutable — no setter.
      (list "pathname"
            (list (cons "namestring" (handler-case (namestring obj)
                                       (error () "—")))
@@ -239,10 +241,10 @@
                                          (setf (slot-value obj sl) new))))))))))
 
     (cons
-     ;; Bounded traversal: verträgt dotted und zirkuläre Listen.
+     ;; Bounded traversal: tolerates dotted and circular lists.
      (let ((parts '()) (i 0) (tail obj))
        (loop while (and (consp tail) (< i 1000))
-             do (let ((cell tail))   ; frische Bindung für die Closure
+             do (let ((cell tail))   ; a fresh binding for the closure
                   (push (list (princ-to-string i) (car cell)
                               (%preview (car cell))
                               (lambda (new) (setf (car cell) new)))
@@ -309,8 +311,8 @@
                           (%preview (symbol-value obj))
                           (lambda (new) (setf (symbol-value obj) new)))))
             (when (fboundp obj)
-              ;; Bewusst kein Setter: eine Funktionsdefinition versehentlich
-              ;; über ein Eingabefeld zu überschreiben, wäre zu leicht.
+              ;; Deliberately no setter: overwriting a function definition
+              ;; by accident through an input field would be too easy.
               (list (list "symbol-function" (symbol-function obj)
                           (%preview (symbol-function obj)) nil)))
             (when (symbol-plist obj)
@@ -335,7 +337,7 @@
                  (cons "octal" (format nil "#o~O" obj))
                  (cons "binary" (if (< (integer-length obj) 256)
                                     (format nil "#b~B" obj)
-                                    "— zu groß —"))
+                                    "— too large —"))
                  (cons "integer-length"
                        (princ-to-string (integer-length obj))))
            nil))
@@ -364,7 +366,7 @@
            nil))
 
     (complex
-     ;; Zahlen sind unveränderlich — real- und imagpart nur lesbar.
+     ;; Numbers are immutable — realpart and imagpart are read-only.
      (list "number"
            (list (cons "realpart" (%preview (realpart obj)))
                  (cons "imagpart" (%preview (imagpart obj))))
@@ -381,62 +383,62 @@
     (t (list "atom" nil nil))))
 
 ;;; ---------------------------------------------------------------------
-;;; Objekt-Tabelle
+;;; Object table
 ;;;
-;;; Der Inspector navigiert über IDs statt über re-evaluierbare
-;;; Ausdrücke. Damit inspiziert man tatsächlich das vorhandene Objekt
-;;; statt bei jedem Klick eine Neuberechnung anzustoßen, die bei
-;;; Seiteneffekten ein anderes Objekt liefert.
+;;; The inspector navigates by IDs rather than by re-evaluable
+;;; expressions. That way you really inspect the object that is there,
+;;; instead of triggering a recomputation on every click that with side
+;;; effects would yield a different object.
 ;;;
-;;; Lebensdauer: Einträge halten starke Referenzen, verhindern also GC.
-;;; Das ist beabsichtigt (ein angezeigtes Objekt darf nicht unter der
-;;; Hand verschwinden), aber bei laufendem Audio heikel — deshalb die
-;;; FIFO-Grenze und das explizite Freigeben beim Schließen des Panels.
+;;; Lifetime: entries hold strong references and therefore prevent GC.
+;;; That is intended (a displayed object must not vanish behind your
+;;; back), but delicate while audio is running — hence the FIFO limit and
+;;; the explicit release when the panel is closed.
 ;;; ---------------------------------------------------------------------
 
 (defvar *inspect-table* (make-hash-table :test 'eql)
   "id (fixnum) -> Objekt")
 (defvar *inspect-ids* (make-hash-table :test 'eq)
-  "Objekt -> id, die Umkehrung von *INSPECT-TABLE*.
+  "object -> id, the inverse of *INSPECT-TABLE*.
 
-   Ohne diese Tabelle bekam DASSELBE Objekt bei jedem Betreten eine neue
-   Nummer. Der Client erkennt Zyklen daran, dass die ID eines
-   Unterobjekts schon in der Kette der Vorfahren steht — das konnte so
-   nie zutreffen, die Zyklenerkennung war wirkungslos und eine
-   selbstbezügliche Struktur klappte stumpf bis zur Tiefengrenze durch.
+   Without this table THE SAME object got a new number every time it was
+   entered. The client recognises cycles by the ID of a subobject already
+   appearing in the chain of ancestors — which could never be true that
+   way, the cycle detection was ineffective, and a self-referential
+   structure simply unfolded to the depth limit.
 
-   Test ist EQ, also Identität: zwei gleich aussehende Listen sind zwei
-   Objekte und bekommen zu Recht zwei Nummern.")
+   The test is EQ, that is, identity: two lists that look alike are two
+   objects and rightly get two numbers.")
 (defvar *inspect-order* '()
-  "IDs in Einfügereihenfolge, jüngste zuerst — für die FIFO-Räumung.")
+  "IDs in insertion order, newest first — for the FIFO eviction.")
 (defvar *inspect-counter* 0)
 
 (defvar *inspect-parts-cache* (make-hash-table :test 'eql)
-  "id -> (kind meta parts), die zuletzt berechnete Beschreibung.
+  "id -> (kind meta parts), the most recently computed description.
 
-   Ohne den Cache berechnete inspect-part-for-repl bei JEDEM Klick alle
-   Teile neu, nur um einen davon zu benutzen: bei einem ATS-Vektor mit
-   tausend Partials also tausend prin1-to-string-Aufrufe für Vorschauen,
-   von denen 999 weggeworfen werden.
+   Without the cache, inspect-part-for-repl recomputed all parts on EVERY
+   click just to use one of them: for an ATS vector with a thousand
+   partials that means a thousand prin1-to-string calls for previews, 999
+   of which are thrown away.
 
-   Der ursprüngliche Grund dagegen — die Teile würden Objekte am GC
-   vorbei festhalten — war ein Denkfehler: die Teile eines Vektors hält
-   der Vektor ohnehin, und der Vektor steht bereits in *inspect-table*.
-   Der Cache kostet also keine zusätzliche Retention und wird zusammen
-   mit der Tabelle freigegeben.")
+   The original argument against it — that the parts would keep objects
+   from the GC — was a mistake in reasoning: the parts of a vector are
+   held by the vector anyway, and the vector already sits in
+   *inspect-table*. The cache therefore costs no additional retention and
+   is released together with the table.")
 
 (defparameter *inspect-capacity* 500
-  "Höchstzahl gehaltener Objekte. Darüber fliegen die ältesten raus.
-   Verhindert, dass eine lange Inspektionssitzung Audio-Buffer am GC
-   vorbei am Leben hält.")
+  "Maximum number of retained objects. Beyond that the oldest ones fly
+   out. Prevents a long inspection session from keeping audio buffers
+   alive past the GC.")
 
 (defun %inspect-register (obj)
-  "Legt OBJ ab und liefert dessen ID.
+  "Stores OBJ and returns its ID.
 
-   Ist OBJ schon bekannt, kommt die BESTEHENDE ID zurück — nur so kann
-   der Client erkennen, dass er im Kreis läuft. Der Eintrag rutscht
-   dabei in der Räumungsreihenfolge wieder nach vorn: was gerade
-   angeschaut wird, soll nicht als Ältestes hinausfliegen."
+   If OBJ is already known, the EXISTING ID comes back — only that way
+   can the client tell that it is going round in circles. The entry moves
+   back to the front of the eviction order in the process: what is being
+   looked at right now should not be the oldest thing to fly out."
   (let ((known (gethash obj *inspect-ids*)))
     (when known
       (setf *inspect-order* (cons known (remove known *inspect-order*)))
@@ -449,9 +451,10 @@
       (let ((keep (subseq *inspect-order* 0 *inspect-capacity*)))
         (dolist (old (nthcdr *inspect-capacity* *inspect-order*))
           (multiple-value-bind (victim found) (gethash old *inspect-table*)
-            ;; Umkehrtabelle mitziehen, sonst zeigt sie auf geräumte IDs
-            ;; und inspect-part-for-repl meldet "nicht mehr verfügbar"
-            ;; für ein Objekt, das gerade neu registriert wurde.
+            ;; Take the reverse table along, otherwise it points at
+            ;; evicted IDs and inspect-part-for-repl reports "no longer
+            ;; available" for an object that has just been registered
+            ;; anew.
             (when (and found (eql (gethash victim *inspect-ids*) old))
               (remhash victim *inspect-ids*)))
           (remhash old *inspect-table*)
@@ -460,16 +463,16 @@
     id))
 
 (defun inspect-release-for-repl ()
-  "Gibt alle gehaltenen Objekte frei. Der Client ruft das beim Schließen
-   des Inspector-Panels.
+  "Releases all retained objects. The client calls this when the inspector
+   panel is closed.
 
-   *INSPECT-IDS* MUSS mit: die Umkehrtabelle hält die Objekte selbst als
-   Schlüssel, hier stehen also starke Referenzen auf alles, was je
-   angeschaut wurde — genau das, was Freigeben verhindern soll. Und
-   funktional noch schlimmer: bliebe sie stehen, käme beim erneuten
-   Inspizieren desselben Objekts die alte ID zurück, zu der es in
-   *INSPECT-TABLE* keinen Eintrag mehr gibt. Der nächste Klick meldete
-   dann 'Objekt nicht mehr verfügbar' für ein frisch geöffnetes Panel."
+   *INSPECT-IDS* MUST go too: the reverse table holds the objects
+   themselves as keys, so it contains strong references to everything
+   ever looked at — precisely what releasing is meant to prevent. And
+   functionally worse: if it stayed, inspecting the same object again
+   would return the old ID, for which there is no longer an entry in
+   *INSPECT-TABLE*. The next click would then report 'object no longer
+   available' for a freshly opened panel."
   (clrhash *inspect-table*)
   (clrhash *inspect-parts-cache*)
   (clrhash *inspect-ids*)
@@ -477,26 +480,26 @@
   (list :ok))
 
 (defun %inspect-expandable-p (val)
-  "Hat VAL selbst Teile, lohnt sich also ein Aufklapp-Pfeil?
+  "Does VAL itself have parts, i.e. is an expand arrow worthwhile?
 
-   Der Client kann das nicht wissen: er sieht nur Label und Vorschau und
-   müsste jeden Teil laden, um es herauszufinden. Ohne diese Auskunft
-   bekommt JEDE gebundene Zeile einen Pfeil — auch Fixnums und Strings,
-   die aufgeklappt nur 'Keine navigierbaren Teile' zeigen.
+   The client cannot know this: it sees only label and preview and would
+   have to load every part to find out. Without this information EVERY
+   bound row gets an arrow — including fixnums and strings, which when
+   expanded show only 'No navigable parts'.
 
-   Bewusst ein billiger Typtest und kein Aufruf von %inspect-describe:
-   die Vorhersage steht neben jedem der bis zu 1000 Teile, ein echtes
-   Beschreiben wäre genau die Rechenlast, die der Teile-Cache vermeidet.
-   Die Zweige spiegeln %inspect-describe; bei Grenzfällen (Symbol ohne
-   Wert und ohne Funktion) darf ein Pfeil ins Leere führen, das ist
-   harmloser als ein fehlender Pfeil an einem betretbaren Objekt."
+   Deliberately a cheap type test and not a call to %inspect-describe:
+   the prediction sits next to each of up to 1000 parts, and really
+   describing them would be exactly the computation the parts cache
+   avoids. The branches mirror %inspect-describe; in borderline cases (a
+   symbol with neither value nor function) an arrow may lead nowhere,
+   which is more harmless than a missing arrow on an enterable object."
   (when (eq val +unbound+)
     (return-from %inspect-expandable-p nil))
   (typecase val
     (null nil)
     ((or number character string package random-state) nil)
     (hash-table (plusp (hash-table-count val)))
-    (pathname t)                        ; directory-Teil
+    (pathname t)                        ; the directory part
     (cons t)
     ((and vector (not string)) (plusp (length val)))
     (array (plusp (array-total-size val)))
@@ -506,7 +509,7 @@
     (t nil)))
 
 (defun %describe-registered (obj id)
-  "Baut die Antwort für ein bereits registriertes Objekt."
+  "Builds the answer for an already registered object."
   (let ((type-str (let ((*print-case* :downcase))
                     (princ-to-string (type-of obj))))
         (print-str (let ((*print-length* 100)
@@ -514,10 +517,10 @@
                          (*print-circle* t))
                      (prin1-to-string obj))))
     (destructuring-bind (kind meta parts) (%inspect-describe obj)
-      ;; Für die spätere Navigation aufheben.
+      ;; Keep it for the later navigation.
       (setf (gethash id *inspect-parts-cache*) parts)
       (list :ok id type-str print-str
-            ;; (label index preview navigierbar-p schreibbar-p aufklappbar-p)
+            ;; (label index preview navigable-p writable-p expandable-p)
             (loop for p in parts
                   for i from 0
                   collect (list (first p) i (or (third p) "")
@@ -528,8 +531,8 @@
             (mapcar (lambda (m) (list (car m) (cdr m))) meta)))))
 
 (defun inspect-for-repl (expr-string package-name)
-  "Wertet EXPR-STRING aus, registriert das Ergebnis und beschreibt es.
-   Rückgabe: (:ok id type print parts kind meta) oder (:error msg ...)."
+  "Evaluates EXPR-STRING, registers the result and describes it.
+   Returns: (:ok id type print parts kind meta) or (:error msg ...)."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
@@ -542,29 +545,29 @@
         (list :error (format nil "~A" e) "" nil "error" nil)))))
 
 (defun inspect-id-for-repl (id)
-  "Beschreibt das Objekt mit ID neu — für Refresh, wenn es sich
-   inzwischen geändert hat."
+  "Describes the object with ID anew — for refresh, when it has changed
+   in the meantime."
   (handler-case
       (multiple-value-bind (obj found) (gethash id *inspect-table*)
         (if found
-            ;; Cache verwerfen: Refresh existiert gerade dafür, dass sich
-            ;; das Objekt inzwischen geändert haben kann.
+            ;; Discard the cache: refresh exists precisely because the
+            ;; object may have changed in the meantime.
             (progn (remhash id *inspect-parts-cache*)
                    (%describe-registered obj id))
-            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+            (list :error "Object no longer available (reopen the panel)"
                   "" nil "error" nil)))
     (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
 
 (defun inspect-part-for-repl (id index)
-  "Navigiert vom Objekt ID zu dessen Teil INDEX.
+  "Navigates from object ID to its part INDEX.
 
-   Nutzt die beim Beschreiben abgelegte Teileliste. Fehlt sie (Cache
-   geräumt, Image neu gestartet), wird einmal neu berechnet — richtig
-   bleibt das Ergebnis in beiden Fällen, nur langsamer."
+   Uses the parts list stored while describing. If it is missing (cache
+   evicted, image restarted) it is recomputed once — the result stays
+   correct in both cases, only slower."
   (handler-case
       (multiple-value-bind (obj found) (gethash id *inspect-table*)
         (if (not found)
-            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+            (list :error "Object no longer available (reopen the panel)"
                   "" nil "error" nil)
             (let ((parts (or (gethash id *inspect-parts-cache*)
                              (let ((d (%inspect-describe obj)))
@@ -573,18 +576,18 @@
               (let ((part (nth index parts)))
                 (cond
                   ((null part)
-                   (list :error "Teil existiert nicht mehr" "" nil "error" nil))
+                   (list :error "Part no longer exists" "" nil "error" nil))
                   ((eq (second part) +unbound+)
-                   (list :error "Slot ist nicht gebunden" "" nil "error" nil))
+                   (list :error "Slot is unbound" "" nil "error" nil))
                   (t (let ((v (second part)))
                        (%describe-registered v (%inspect-register v)))))))))
     (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
 
 (defun %sym-kind (sym)
-  "LSP CompletionItemKind. Die Zahlen sind LSP-Konstanten; die Auswahl
-   bestimmt nur, welches Icon VS Code zeigt. Makros bekommen bewusst ein
-   anderes Icon als Funktionen — beim Lesen fremden CLAMPS-Codes ist der
-   Unterschied wichtiger als in den meisten Sprachen."
+  "LSP CompletionItemKind. The numbers are LSP constants; the choice only
+   determines which icon VS Code shows. Macros deliberately get a
+   different icon from functions — when reading somebody else's CLAMPS
+   code the difference matters more than in most languages."
   (cond
     ((keywordp sym) 20)                                   ; EnumMember
     ((macro-function sym) 14)                             ; Keyword
@@ -600,8 +603,8 @@
 
 (defun %sym-kind-label (kind)
   "Lesbarer Name zu einer LSP-CompletionItemKind-Zahl.
-Gebraucht von APROPOS-FOR-REPL: dort stand (symbol-name (%sym-kind sym)),
-und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
+Needed by APROPOS-FOR-REPL: there it said (symbol-name (%sym-kind sym)),
+and %SYM-KIND returns a NUMBER. APROPOS therefore only ever returned
 (:error \"The value 3 is not of type SYMBOL\")."
   (case kind
     (2 "method")
@@ -616,14 +619,14 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (t (format nil "kind-~A" kind))))
 
 (defun %arglist (sym)
-  "Lambda-Liste als String, oder nil. sb-introspect kennt auch Makros."
+  "Lambda list as a string, or nil. sb-introspect knows macros too."
   (handler-case
       (let ((f (find-symbol "FUNCTION-LAMBDA-LIST" :sb-introspect)))
         (when (and f (fboundp sym))
           (let ((ll (funcall f sym)))
-            ;; Bei parameterlosen Funktionen ist die Lambda-Liste NIL;
-            ;; princ-to-string macht daraus "nil", was in der Detail-
-            ;; spalte wie ein Wert aussieht statt wie eine leere Liste.
+            ;; For functions without parameters the lambda list is NIL;
+            ;; princ-to-string turns that into "nil", which in the detail
+            ;; column looks like a value rather than an empty list.
             (if (null ll)
                 "()"
                 (let ((*print-case* :downcase) (*print-pretty* nil))
@@ -631,8 +634,8 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (error () nil)))
 
 (defun %short-doc (sym)
-  "Erste Zeile der Dokumentation, gekappt — die Completion-Liste ist
-   kein Ort für dreißigzeilige Docstrings."
+  "First line of the documentation, truncated — the completion list is no
+   place for thirty-line docstrings."
   (handler-case
       (let ((d (or (documentation sym 'function)
                    (documentation sym 'variable)
@@ -645,7 +648,7 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
 
 (defun %split-prefix (prefix)
   "Zerlegt PREFIX in (paketname symbolteil internal-p). Paketname nil
-   bedeutet: im aktuellen Paket suchen.
+   means: search in the current package.
      \"rt-\"             -> (nil \"rt-\" nil)
      \"incudine:rt-\"    -> (\"INCUDINE\" \"rt-\" nil)
      \"incudine::rt-\"   -> (\"INCUDINE\" \"rt-\" t)
@@ -663,29 +666,31 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
        (string-equal pattern name :end2 (length pattern))))
 
 (defparameter *completion-limit* 300
-  "Obergrenze für Kandidaten. Wird sie erreicht, meldet die Bridge
-   isIncomplete=t und VS Code fragt beim nächsten Zeichen erneut an —
-   sonst müssten wir bei leerem Präfix zehntausende Symbole schicken.")
+  "Upper limit for candidates. When it is reached the bridge reports
+   isIncomplete=t and VS Code asks again at the next character —
+   otherwise we would have to send tens of thousands of symbols for an
+   empty prefix.")
 
 (defun completions-for-repl (prefix package-name &optional context)
-  "Symbolvervollständigung für PREFIX im Kontext von PACKAGE-NAME.
+  "Symbol completion for PREFIX in the context of PACKAGE-NAME.
 
-   CONTEXT wird hier NICHT ausgewertet, muss aber angenommen werden:
-   handle-completion in bridge-server.lisp schickt grundsätzlich drei
-   Argumente, weil completion.lisp den Quelltext vor dem Cursor für
-   lokale Bindungen und Kopfposition braucht. Ohne dieses &optional
-   scheiterte JEDER Vervollständigungsversuch mit \"invalid number of
-   arguments: 3\", sobald completion.lisp nicht geladen war — und damit
-   war der angebliche Rückfall auf die Basis-Completion keiner: es kamen
-   überhaupt keine Vorschläge mehr. Die Signaturen der Basis- und der
-   Erweiterungsfassung müssen deckungsgleich bleiben.
+   CONTEXT is NOT evaluated here, but it has to be accepted:
+   handle-completion in bridge-server.lisp always sends three arguments,
+   because completion.lisp needs the source before the cursor for local
+   bindings and head position. Without this &optional EVERY completion
+   attempt failed with \"invalid number of arguments: 3\" as soon as
+   completion.lisp was not loaded — so the supposed fallback to the base
+   completion was no fallback at all: no suggestions arrived any more.
+   The signatures of the base and the extended version must stay
+   congruent.
 
-   Bewusst nicht swank:simple-completions: das liefert nur Namen. Hier
-   kommen Art (Funktion/Makro/Variable/Klasse), Lambda-Liste und erste
-   Doku-Zeile in einem einzigen Roundtrip mit — bei Incudine-DSP- und
-   CLAMPS-Funktionen ist die Arglist beim Tippen der eigentliche Nutzen.
+   Deliberately not swank:simple-completions: that returns names only.
+   Here the kind (function/macro/variable/class), the lambda list and the
+   first line of documentation come along in a single round trip — for
+   Incudine DSP and CLAMPS functions the arglist while typing is the real
+   benefit.
 
-   Rückgabe: (:ok truncated-p ((label kind detail doc) ...))"
+   Returns: (:ok truncated-p ((label kind detail doc) ...))"
   (declare (ignore context))
   (handler-case
       (destructuring-bind (pkg-part sym-part internal-p) (%split-prefix prefix)
@@ -705,9 +710,10 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                          (when (%prefix-match-p name sym-part)
                            (incf count)
                            (push (list
-                                  ;; Label mit Qualifier, falls der Nutzer
-                                  ;; einen getippt hat — sonst ersetzt
-                                  ;; VS Code den Paketteil nicht mit.
+                                  ;; Label with qualifier, if the user
+                                  ;; typed one — otherwise VS Code does
+                                  ;; not replace the package part along
+                                  ;; with it.
                                   (let ((n (string-downcase name)))
                                     (cond ((string= pkg-part "KEYWORD")
                                            (concatenate 'string ":" n))
@@ -720,9 +726,9 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                                   (or (%arglist sym) "")
                                   (or (%short-doc sym) ""))
                                  out))))))
-              ;; Ohne Qualifier: alles im aktuellen Paket Sichtbare.
-              ;; Mit einfachem Doppelpunkt: nur externe Symbole — genau
-              ;; die, die das Paket als Schnittstelle anbietet.
+              ;; Without a qualifier: everything visible in the current
+              ;; package. With a single colon: external symbols only —
+              ;; exactly those the package offers as its interface.
               (if (and pkg-part (not internal-p)
                        (not (string= pkg-part "KEYWORD")))
                   (do-external-symbols (sym target) (consider sym))
@@ -731,17 +737,17 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
           (list :ok truncated
                 (sort (nreverse out) #'string< :key #'first))))
     (error (e)
-      (list :ok nil (list (list (format nil "; Completion-Fehler: ~A" e)
+      (list :ok nil (list (list (format nil "; completion error: ~A" e)
                                 1 "" ""))))))
 
 (defparameter *rt-packages* '(:incudine :clamps :incudine.util)
-  "Pakete, in denen nach den RT-Funktionen gesucht wird, in dieser
-   Reihenfolge. rt-status liegt in INCUDINE; CLAMPS steht mit drin,
-   falls dort eigene Wrapper hinzukommen.")
+  "Packages searched for the RT functions, in this order. rt-status lives
+   in INCUDINE; CLAMPS is in the list in case wrappers of its own are
+   added there.")
 
 (defun %rt-sym (name)
-  "Erstes fbound-Symbol NAME aus *rt-packages*. Liefert (values symbol
-   paketname) oder nil."
+  "First fbound symbol NAME from *rt-packages*. Returns (values symbol
+   package-name) or nil."
   (dolist (pkg-name *rt-packages* nil)
     (let ((pkg (find-package pkg-name)))
       (when pkg
@@ -750,12 +756,12 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
             (return (values sym (package-name pkg)))))))))
 
 (defun %incudine (name)
-  "Rückwärtskompatibler Alias — sucht inzwischen in allen *rt-packages*."
+  "Backwards-compatible alias — by now it searches all of *rt-packages*."
   (%rt-sym name))
 
 (defun %rt-symbols ()
-  "Alle RT-*-Symbole aus *rt-packages* — Diagnosehilfe, wenn keiner der
-   erwarteten Namen greift."
+  "All RT-* symbols from *rt-packages* — a diagnostic aid when none of the
+   expected names works."
   (let ((out '()))
     (dolist (pkg-name *rt-packages*)
       (let ((pkg (find-package pkg-name)))
@@ -773,17 +779,17 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (sort out #'string<)))
 
 (defun rt-status-for-repl ()
-  "Zustand des Incudine-Realtime-Servers für die Statusleiste.
+  "State of the Incudine realtime server for the status bar.
 
-   Hintergrund: CLAMPS setzt in rts-start/rts-stop per
-   slynk:eval-in-emacs ein Modeline-Label (\"DSP ✓\"). Ohne Emacs-
-   Connection ist dieser Aufruf im Bootstrap ein No-op, wodurch in
-   VS Code jede Anzeige fehlt, ob DSP läuft.
+   Background: in rts-start/rts-stop CLAMPS sets a modeline label
+   (\"DSP ✓\") via slynk:eval-in-emacs. Without an Emacs connection that
+   call is a no-op in the bootstrap, which is why in VS Code there is no
+   indication at all whether DSP is running.
 
-   Rückgabe: (:ok running-p ((schlüssel . wert) ...)), Werte als Strings."
+   Returns: (:ok running-p ((key . value) ...)), values as strings."
   (handler-case
       (if (notany #'find-package *rt-packages*)
-          (list :ok nil (list (cons "pakete" "weder incudine noch clamps geladen")))
+          (list :ok nil (list (cons "packages" "neither incudine nor clamps loaded")))
           (let ((running :unbekannt)
                 (info '()))
 
@@ -793,7 +799,7 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                 (handler-case
                     (let ((v (funcall sym)))
                       (push (cons "rt-status"
-                                  (format nil "~A (aus ~A)"
+                                  (format nil "~A (from ~A)"
                                           (string-downcase (princ-to-string v))
                                           (string-downcase where)))
                             info)
@@ -801,31 +807,31 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                             (and (member v '(:started :running :on)) t)))
                   (error () nil))))
 
-            ;; 2) Fallback: rt-running-p (ältere/andere Versionen)
+            ;; 2) Fallback: rt-running-p (older/other versions)
             (when (eq running :unbekannt)
               (multiple-value-bind (sym where) (%rt-sym "RT-RUNNING-P")
                 (when sym
                   (handler-case
                       (progn
                         (setf running (and (funcall sym) t))
-                        (push (cons "quelle"
-                                    (format nil "rt-running-p aus ~A"
+                        (push (cons "source"
+                                    (format nil "rt-running-p from ~A"
                                             (string-downcase where)))
                               info))
                     (error () nil)))))
 
-            ;; 3) Nichts gefunden: nicht raten, sondern zeigen was da ist.
+            ;; 3) Nothing found: do not guess, show what is there.
             (when (eq running :unbekannt)
               (setf running nil)
               (let ((syms (%rt-symbols)))
-                (push (cons "hinweis"
+                (push (cons "note"
                             (if syms
-                                (format nil "kein rt-status/rt-running-p; vorhanden: ~{~A~^, ~}"
+                                (format nil "no rt-status/rt-running-p; present: ~{~A~^, ~}"
                                         (subseq syms 0 (min 8 (length syms))))
-                                "keine RT-Symbole gefunden"))
+                                "no RT symbols found"))
                       info)))
 
-            ;; Zusatzinfos für den Tooltip; jede einzeln abgesichert.
+            ;; Extra information for the tooltip; each one guarded on its own.
             (dolist (probe '(("sample-rate" . "RT-SAMPLE-RATE")
                              ("block-size"  . "BLOCK-SIZE")
                              ("client"      . "RT-CLIENT-NAME")
@@ -840,21 +846,22 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
 
             (list :ok running (nreverse info))))
     (error (e)
-      (list :ok nil (list (cons "fehler" (princ-to-string e)))))))
+      (list :ok nil (list (cons "error" (princ-to-string e)))))))
 
 (defun inspect-set-part-for-repl (id index value-string package-name)
-  "Setzt Teil INDEX des Objekts ID auf das Ergebnis von VALUE-STRING.
+  "Sets part INDEX of object ID to the result of VALUE-STRING.
 
-   VALUE-STRING wird im Kontext von PACKAGE-NAME gelesen UND ausgewertet
-   — man soll \"(list 1 2)\" oder \"*foo*\" eintippen können, nicht nur
-   Literale. *read-eval* bleibt aus, damit #. nicht zusätzlich greift.
+   VALUE-STRING is read AND evaluated in the context of PACKAGE-NAME —
+   one should be able to type \"(list 1 2)\" or \"*foo*\", not just
+   literals. *read-eval* stays off so that #. does not take effect on top
+   of that.
 
-   Danach wird das Objekt neu beschrieben, weil sich durch das Setzen
-   auch Kopfzeilen ändern können (etwa hash-table count)."
+   Afterwards the object is described anew, because setting can also
+   change header lines (hash-table count, for instance)."
   (handler-case
       (multiple-value-bind (obj found) (gethash id *inspect-table*)
         (if (not found)
-            (list :error "Objekt nicht mehr verfügbar (Panel neu öffnen)"
+            (list :error "Object no longer available (reopen the panel)"
                   "" nil "error" nil)
             (let* ((parts (or (gethash id *inspect-parts-cache*)
                               (third (%inspect-describe obj))))
@@ -862,9 +869,9 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                    (setter (and part (fourth part))))
               (cond
                 ((null part)
-                 (list :error "Teil existiert nicht mehr" "" nil "error" nil))
+                 (list :error "Part no longer exists" "" nil "error" nil))
                 ((null setter)
-                 (list :error "Dieser Teil ist nicht schreibbar"
+                 (list :error "This part is not writable"
                        "" nil "error" nil))
                 (t
                  (let* ((pkg (or (find-package (string-upcase package-name))
@@ -872,14 +879,14 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                         (new (let ((*package* pkg) (*read-eval* nil))
                                (eval (read-from-string value-string)))))
                    (funcall setter new)
-                   ;; Cache verwerfen: Vorschauen und Kopfzeilen sind alt.
+                   ;; Discard the cache: previews and header lines are stale.
                    (remhash id *inspect-parts-cache*)
                    (%describe-registered obj id)))))))
     (error (e) (list :error (format nil "~A" e) "" nil "error" nil))))
 
 (defun %offset->line-col (filepath offset)
-  "Zählt Zeilen/Spalten bis OFFSET (0-indexiert für LSP). Läuft im
-   Image, wo die Datei sicher lesbar ist."
+  "Counts lines/columns up to OFFSET (0-indexed for LSP). Runs in the
+   image, where the file is certain to be readable."
   (handler-case
       (with-open-file (s filepath :direction :input
                                    :external-format :utf-8)
@@ -895,13 +902,12 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (error () (list 0 0))))
 
 (defun %resolve-source-file (raw-file)
-  "Übersetzt einen Datei-Eintrag aus einer Swank-Location in einen
-   existierenden physischen Pfad. SBCL-interne Definitionen kommen als
-   Logical Pathnames (SYS:SRC;CODE;LIST.LISP) — translate-logical-pathname
-   macht daraus den echten Pfad der installierten SBCL-Quellen. Gibt
-   NIL zurück, wenn die Datei nicht existiert (z.B. SBCL ohne Quellen
-   installiert), damit der Client das ehrlich melden kann statt ins
-   Leere zu springen."
+  "Translates a file entry from a Swank location into an existing physical
+   path. SBCL-internal definitions arrive as logical pathnames
+   (SYS:SRC;CODE;LIST.LISP) — translate-logical-pathname turns that into
+   the real path of the installed SBCL sources. Returns NIL when the file
+   does not exist (SBCL installed without sources, say), so that the
+   client can report that honestly instead of jumping into the void."
   (handler-case
       (let* ((path (etypecase raw-file
                      (pathname raw-file)
@@ -912,28 +918,29 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (error () nil)))
 
 (defun resolve-symbol (symbol-string pkg)
-  "Löst SYMBOL-STRING zu einem echten Symbol-Objekt auf. Behandelt
-   qualifizierte Namen (incudine:rt-start, clamps::foo) direkt über den
-   Reader; für nackte Namen (rt-start) wird zuerst im übergebenen Paket
-   PKG gesucht, dann fällt es auf einen unqualifizierten Reader-Versuch
-   zurück. Gibt NIL zurück, wenn nichts gefunden wird."
+  "Resolves SYMBOL-STRING to a real symbol object. Handles qualified names
+   (incudine:rt-start, clamps::foo) directly through the reader; for bare
+   names (rt-start) it first searches in the given package PKG and then
+   falls back to an unqualified reader attempt. Returns NIL when nothing
+   is found."
   (handler-case
       (let ((*package* pkg) (*read-eval* nil))
         (if (find #\: symbol-string)
-            ;; Qualifizierter Name: Reader macht das korrekt.
+            ;; Qualified name: the reader gets this right.
             (let ((obj (read-from-string symbol-string)))
               (and (symbolp obj) obj))
-            ;; Nackter Name: erst im Paket suchen (findet auch geerbte
-            ;; und interne Symbole), dann bild-weit, dann Reader-Fallback.
+            ;; Bare name: search in the package first (which also finds
+            ;; inherited and internal symbols), then image-wide, then the
+            ;; reader fallback.
             (let ((upcased (string-upcase symbol-string)))
               (multiple-value-bind (sym status) (find-symbol upcased pkg)
                 (cond
                   (status sym)
-                  ;; Nicht im aktuellen Paket sichtbar (z.B. rt-start ohne
-                  ;; (in-package :incudine) in der Datei): über alle Pakete
-                  ;; suchen. Bevorzugt ein Symbol, das tatsächlich fboundp
-                  ;; oder boundp ist, damit wir nicht ein zufälliges
-                  ;; gleichnamiges Keyword o.ä. erwischen.
+                  ;; Not visible in the current package (rt-start without
+                  ;; (in-package :incudine) in the file, say): search
+                  ;; across all packages. A symbol that is actually
+                  ;; fboundp or boundp is preferred, so that we do not
+                  ;; catch some accidental keyword of the same name.
                   (t (let ((candidates '()))
                        (dolist (p (list-all-packages))
                          (multiple-value-bind (s st) (find-symbol upcased p)
@@ -943,19 +950,19 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                                                     (find-class s nil)))
                                     candidates)
                            (first candidates)
-                           ;; Reader-Rückfall nur für Namen mit
-                           ;; Maskierung (|foo bar|, a\.b): genau die
-                           ;; kann die find-symbol-Schleife oben nicht
-                           ;; finden, weil sie stumpf upcased.
+                           ;; The reader fallback only for escaped names
+                           ;; (|foo bar|, a\.b): those are exactly the
+                           ;; ones the find-symbol loop above cannot find,
+                           ;; because it bluntly upcases.
                            ;;
-                           ;; Für alles andere wäre er schädlich, denn
-                           ;; READ-FROM-STRING INTERNIERT: ein Tippfehler
-                           ;; in der XREF-Eingabe legte bisher ein neues
-                           ;; Symbol im Paket an und lieferte es zurück,
-                           ;; als wäre es gefunden worden. Das Paket
-                           ;; verschmutzte bei jedem Vertipper, und der
-                           ;; Aufrufer bekam :ok mit leerer Trefferliste
-                           ;; statt "Symbol nicht gefunden".
+                           ;; For anything else it would be harmful,
+                           ;; because READ-FROM-STRING INTERNS: a typo in
+                           ;; the XREF input used to create a new symbol
+                           ;; in the package and return it as if it had
+                           ;; been found. The package was polluted by
+                           ;; every slip of the finger, and the caller got
+                           ;; :ok with an empty hit list instead of
+                           ;; "symbol not found".
                            (and (not (find #\: symbol-string))
                                 (or (find #\| symbol-string)
                                     (find #\\ symbol-string))
@@ -965,11 +972,11 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
     (error () nil)))
 
 (defun trace-toggle-for-repl (symbol-string package-name)
-  "Schaltet Trace für die Funktion am Symbol an/aus (SLIME
-   C-c C-t Verhalten). (trace) ohne Argumente liefert die Liste der
-   aktuell getracten Funktionsnamen — darüber wird der Zustand geprüft.
-   trace/untrace sind Makros, daher der Umweg über eval mit
-   eingesetztem Symbol. Gibt (:ok STATUS-TEXT TRACED-P) zurück."
+  "Toggles tracing for the function at the symbol (the SLIME C-c C-t
+   behaviour). (trace) without arguments returns the list of currently
+   traced function names — the state is checked through that.
+   trace/untrace are macros, hence the detour through eval with the
+   symbol substituted in. Returns (:ok STATUS-TEXT TRACED-P)."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
@@ -977,29 +984,29 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
                (sym (resolve-symbol symbol-string pkg)))
           (cond
             ((null sym)
-             (list :error (format nil "Symbol ~A nicht gefunden." symbol-string) nil))
+             (list :error (format nil "Symbol ~A not found." symbol-string) nil))
             ((not (fboundp sym))
-             (list :error (format nil "~A ist keine Funktion." sym) nil))
+             (list :error (format nil "~A is not a function." sym) nil))
             (t
              (let ((traced (member sym (eval '(trace)) :test #'eq)))
                (if traced
                    (progn
                      (eval `(untrace ,sym))
-                     (list :ok (format nil "Trace AUS: ~A" sym) nil))
+                     (list :ok (format nil "Trace OFF: ~A" sym) nil))
                    (progn
                      (eval `(trace ,sym))
-                     (list :ok (format nil "Trace AN: ~A - Aufrufe erscheinen in der REPL" sym) t)))))))
+                     (list :ok (format nil "Trace ON: ~A - calls appear in the REPL" sym) t)))))))
       (error (e)
         (list :error (format nil "~A" e) nil)))))
 
-;;; Zustand der Beobachtungswerkzeuge. Bewusst HIER, vor der ersten
-;;; Benutzung in traced-for-repl: nach hinten gestellt melden SBCLs
-;;; Compiler beide als undefined variable, und diese Warnungen landen
-;;; jetzt in clamps.log — dem Ort, an dem man einen Absturz sucht.
+;;; State of the observation tools. Deliberately HERE, before the first
+;;; use in traced-for-repl: placed further down, SBCL's compiler reports
+;;; both as undefined variables, and those warnings now end up in
+;;; clamps.log — the place where one looks for a crash.
 (defvar *clamps-function-breakpoints* (make-hash-table :test #'equal))
 
 (defvar *rt-breakpoint-notes* nil
-  "Symbole, für die ein Breakpoint im Echtzeit-Thread übersprungen wurde.")
+  "Symbols for which a breakpoint in the realtime thread was skipped.")
 
 (defun %restore-function-breakpoint (key)
   (let ((record (gethash key *clamps-function-breakpoints*)))
@@ -1011,22 +1018,22 @@ und %SYM-KIND liefert eine ZAHL. APROPOS lieferte deshalb immer nur
         (remhash key *clamps-function-breakpoints*)))))
 
 (defun traced-for-repl ()
-  "Liste der aktuell getraceten Funktionen für den Trace-Browser.
+  "List of the currently traced functions for the trace browser.
 
-(TRACE) ohne Argumente liefert laut Standard die getraceten Namen; das
-ist portabler als in SBCLs Innereien zu greifen. Namen können auch
-zusammengesetzt sein ((SETF FOO), (METHOD BAR (T))), deshalb wird
-princ-to-string benutzt und nicht symbol-name.
+(TRACE) without arguments returns the traced names according to the
+standard; that is more portable than reaching into SBCL's internals.
+Names can also be compound ((SETF FOO), (METHOD BAR (T))), which is why
+princ-to-string is used and not symbol-name.
 
-Zusätzlich kommen die Funktions-Breakpoints mit, damit der Browser beide
-Arten von Beobachtung an einer Stelle zeigt — sonst sucht man den Grund
-für ein anhaltendes Image an zwei Orten."
+The function breakpoints come along as well, so that the browser shows
+both kinds of observation in one place — otherwise you look for the
+reason why an image keeps halting in two places."
   (handler-case
       (let ((entries nil))
         (dolist (name (eval '(trace)))
           (push (list :label (princ-to-string name)
                       :description "TRACE"
-                      :tooltip "Aufrufe erscheinen in der REPL. Klick: inspizieren."
+                      :tooltip "Calls appear in the REPL. Click to inspect."
                       :icon "radio-tower"
                       :inspect (and (symbolp name) (%package-qualified name)))
                 entries))
@@ -1036,15 +1043,15 @@ für ein anhaltendes Image an zwei Orten."
            (let ((sym (getf record :symbol)))
              (let ((skipped (member sym *rt-breakpoint-notes*)))
                (push (list :label (princ-to-string sym)
-                           ;; Vermerk, falls der Breakpoint im Echtzeit-
-                           ;; Thread uebersprungen wurde. Ohne diesen
-                           ;; Hinweis wirkt er kaputt.
+                           ;; A note, in case the breakpoint was skipped
+                           ;; in the realtime thread. Without this hint it
+                           ;; looks broken.
                            :description (if skipped
                                             "BREAKPOINT (im RT-Thread uebersprungen)"
                                             "BREAKPOINT")
                            :tooltip (if skipped
-                                        "Wurde im Incudine-Echtzeit-Thread aufgerufen und dort NICHT angehalten — ein BREAK haette den Audio-Callback blockiert."
-                                        "Haelt beim Eintritt in die Funktion an.")
+                                        "Was called in the Incudine realtime thread and NOT halted there — a BREAK would have blocked the audio callback."
+                                        "Halts on entry to the function.")
                            :icon (if skipped "warning" "debug-breakpoint")
                            :inspect (%package-qualified sym))
                      entries))))
@@ -1053,11 +1060,11 @@ für ein anhaltendes Image an zwei Orten."
     (error (e) (list :error (princ-to-string e)))))
 
 (defun untrace-one-for-repl (label)
-  "Nimmt genau einen Eintrag zurück — Trace oder Funktions-Breakpoint.
-LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
+  "Removes exactly one entry — a trace or a function breakpoint.
+LABEL is the string that traced-for-repl returned."
   (handler-case
       (let ((hit nil))
-        ;; Erst die Breakpoints: dort ist der Vergleich eindeutig.
+        ;; Breakpoints first: there the comparison is unambiguous.
         (maphash (lambda (key record)
                    (declare (ignore record))
                    (when (string-equal key label) (setf hit key)))
@@ -1070,42 +1077,41 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
           (when (string= (princ-to-string name) label)
             (eval `(untrace ,name))
             (return-from untrace-one-for-repl
-              (list :ok (format nil "Trace aus: ~A" label)))))
-        (list :error (format nil "~A ist nicht beobachtet." label)))
+              (list :ok (format nil "Trace off: ~A" label)))))
+        (list :error (format nil "~A is not observed." label)))
     (error (e) (list :error (princ-to-string e)))))
 
 (defun untrace-all-for-repl ()
-  "Schaltet alle Traces aus. Gibt (:ok TEXT) zurück."
+  "Switches all traces off. Returns (:ok TEXT)."
   (handler-case
       (let ((traced (eval '(trace))))
         (eval '(untrace))
         (list :ok (if traced
-                      (format nil "Alle Traces aus (~A Funktion~:P)." (length traced))
-                      "Es war nichts getraced.")))
+                      (format nil "All traces off (~A function~:P)." (length traced))
+                      "Nothing was traced.")))
     (error (e) (list :error (format nil "~A" e)))))
 
 (defun find-definitions-for-repl (symbol-string package-name)
-  "Findet alle Definitionsorte des Symbols — auch für eingebaute
-   SBCL-Funktionen, Variablen, Makros, Klassen (das M-. Erlebnis).
-   Gibt (:ok ((file line col label) ...)) zurück; Einträge, deren
-   Quelldatei nicht auffindbar ist, kommen mit file=NIL und dem Label,
-   damit der Client sie anzeigen kann (z.B. 'Quelle nicht installiert')."
+  "Finds all definition sites of the symbol — including for built-in SBCL
+   functions, variables, macros and classes (the M-. experience).
+   Returns (:ok ((file line col label) ...)); entries whose source file
+   cannot be found come with file=NIL and the label, so that the client
+   can display them (as 'source not installed', for instance)."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
         (let* ((*package* pkg)
-               ;; Symbol zu einem echten Symbol-Objekt auflösen, dann
-               ;; Swank mit dem VOLLQUALIFIZIERTEN Namen füttern. Grund:
-               ;; find-definitions-for-emacs findet "rt-start" NICHT,
-               ;; wenn man nur das Paket INCUDINE mitgibt, aber
-               ;; "incudine:rt-start" schon. Wir bestimmen also das
-               ;; Home-Paket des Symbols und bauen den qualifizierten
-               ;; Namen selbst.
+               ;; Resolve the symbol to a real symbol object, then feed
+               ;; Swank the FULLY QUALIFIED name. The reason:
+               ;; find-definitions-for-emacs does NOT find "rt-start" when
+               ;; you only pass the package INCUDINE, but it does find
+               ;; "incudine:rt-start". So we determine the home package of
+               ;; the symbol and build the qualified name ourselves.
                (sym (resolve-symbol symbol-string pkg))
                (query-name (if sym
                                (let ((*package* (find-package :keyword)))
-                                 ;; prin1 mit keyword-package erzwingt volle
-                                 ;; Paket-Qualifizierung im ausgegebenen Namen.
+                                 ;; prin1 with the keyword package forces full
+                                 ;; Package qualification in the emitted name.
                                  (let ((*print-case* :downcase)
                                        (*print-readably* nil))
                                    (prin1-to-string sym)))
@@ -1119,8 +1125,8 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                    (loc (second def)))
               (when (and (consp loc) (eq (first loc) :location))
                 (let ((file nil) (position nil))
-                  ;; Location-Teile einsammeln: (:file "...") (:position n)
-                  ;; oder (:buffer ...) (:offset start n) je nach Quelle.
+                  ;; Collect the location parts: (:file "...") (:position n)
+                  ;; or (:buffer ...) (:offset start n), depending on the source.
                   (dolist (part (rest loc))
                     (when (consp part)
                       (case (first part)
@@ -1135,42 +1141,43 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                             (%offset->line-col resolved
                                                (max 0 (1- (or position 1))))
                           (push (list resolved line col label) results))
-                        ;; Datei nicht auffindbar: Label trotzdem melden.
+                        ;; File not found: report the label anyway.
                         (push (list nil 0 0 label) results)))))))
           (list :ok (nreverse results)))
       (error (e)
         (list :error (format nil "~A" e))))))
 
 (defun disassemble-for-repl (symbol-string package-name)
-  "Disassembliert die Funktion, auf die SYMBOL-STRING im Paket
-   PACKAGE-NAME zeigt, und gibt den nativen Maschinencode als Text
-   zurück. Das ist genau das, was SBCLs (disassemble #'fn) auf
-   *standard-output* schreibt — wir fangen es in einen String.
-   Gibt (STATUS OUTPUT-STRING PACKAGE-STRING) zurück."
+  "Disassembles the function that SYMBOL-STRING points to in package
+   PACKAGE-NAME and returns the native machine code as text. That is
+   exactly what SBCL's (disassemble #'fn) writes to *standard-output* —
+   we capture it into a string. Returns
+   (STATUS OUTPUT-STRING PACKAGE-STRING)."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
         (let* ((*package* pkg)
-               ;; Symbol aus dem String lesen (respektiert Paket-Prefixe
-               ;; wie clamps::rts-start, weil *package* gebunden ist).
+               ;; Read the symbol from the string (this respects package
+               ;; prefixes such as clamps::rts-start, because *package* is
+               ;; bound).
                (sym (let ((*read-eval* nil))
                       (read-from-string symbol-string))))
           (cond
             ((not (symbolp sym))
              (list :error
-                   (format nil "~S ist kein Symbol." sym)
+                   (format nil "~S is not a symbol." sym)
                    (package-name pkg)))
             ((not (fboundp sym))
              (list :error
-                   (format nil "~A ist keine Funktion (fboundp = nil)." sym)
+                   (format nil "~A is not a function (fboundp = nil)." sym)
                    (package-name pkg)))
             ((macro-function sym)
-             ;; disassemble auf ein Makro ist wenig sinnvoll — die
-             ;; Expander-Funktion würde disassembliert, nicht das, was
-             ;; der Nutzer erwartet. Ehrlich zurückmelden.
+             ;; disassemble on a macro makes little sense — the expander
+             ;; function would be disassembled, not what the user expects.
+             ;; Report that honestly.
              (list :error
-                   (format nil "~A ist ein Makro, kein disassemblierbarer Funktionsaufruf.~%~
-                                Für Makros eignet sich Macroexpand." sym)
+                   (format nil "~A is a macro, not a disassemblable function call.~%~
+                                For macros, use macroexpand instead." sym)
                    (package-name pkg)))
             (t
              (let ((out (make-string-output-stream)))
@@ -1181,12 +1188,12 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
         (list :error (format nil "~A" e) (package-name pkg))))))
 
 (defun macroexpand-for-repl (code-string package-name full-p)
-  "Liest die ERSTE Form aus CODE-STRING und expandiert sie im Paket
-   PACKAGE-NAME. FULL-P nil = macroexpand-1 (nur eine Ebene, meist
-   nützlicher beim interaktiven Arbeiten), FULL-P non-nil = macroexpand
-   (vollständig). Gibt (STATUS OUTPUT-STRING PACKAGE-STRING) zurück.
-   Die Ausgabe ist pretty-printed, damit der expandierte Code lesbar
-   formatiert ist statt als eine lange Zeile."
+  "Reads the FIRST form from CODE-STRING and expands it in package
+   PACKAGE-NAME. FULL-P nil = macroexpand-1 (one level only, usually more
+   useful when working interactively), FULL-P non-nil = macroexpand
+   (fully). Returns (STATUS OUTPUT-STRING PACKAGE-STRING). The output is
+   pretty-printed so that the expanded code is formatted readably instead
+   of as one long line."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
@@ -1204,10 +1211,10 @@ LABEL ist die Zeichenkette, die traced-for-repl geliefert hat."
                                       (*print-right-margin* 80)
                                       (*print-case* :downcase))
                                   (prin1-to-string expansion))
-                                ;; Kein Makro -> das ehrlich zurückmelden,
-                                ;; statt die unveränderte Form als
-                                ;; vermeintliche Expansion auszugeben.
-                                (format nil ";; keine Makroexpansion (kein Makroaufruf)~%~A"
+                                ;; Not a macro -> report that honestly
+                                ;; instead of emitting the unchanged form
+                                ;; as a supposed expansion.
+                                (format nil ";; no macro expansion (not a macro call)~%~A"
                                         (let ((*print-pretty* t)
                                               (*print-case* :downcase))
                                           (prin1-to-string expansion))))))
@@ -1254,17 +1261,17 @@ REPL results that are still visible and reusable."
     id))
 
 (defun %presentation-type-label (value)
-  "Kurzes, lesbares Typ-Etikett fuer die REPL-Zeile.
+  "A short, readable type label for the REPL line.
 
-Nicht type-of: das liefert bei Zahlen und Sequenzen den exakten
-Typspezifizierer statt eines Namens — 2 wird zu
-\"(integer 0 4611686018427387903)\", \"abc\" zu \"(simple-array character
-(3))\", #(1 2) zu \"(simple-vector 2)\". In der Zeile
-\"[#4 (integer 0 4611686018427387903)] ,inspect 4\" ist das unbrauchbar.
-class-of gibt den Klassennamen, also fixnum bzw. simple-vector.
+Not type-of: for numbers and sequences that yields the exact type
+specifier instead of a name — 2 becomes
+\"(integer 0 4611686018427387903)\", \"abc\" becomes \"(simple-array
+character (3))\", #(1 2) becomes \"(simple-vector 2)\". In the line
+\"[#4 (integer 0 4611686018427387903)] ,inspect 4\" that is useless.
+class-of gives the class name, that is, fixnum or simple-vector.
 
-Fuer die seltenen Faelle ohne Klassennamen (anonyme Klassen) bleibt
-type-of der Rueckfall — ein Etikett ist besser als keins."
+For the rare cases without a class name (anonymous classes) type-of
+remains the fallback — a label is better than none."
   (let ((*print-case* :downcase)
         (*print-pretty* nil))
     (or (ignore-errors
@@ -1276,7 +1283,7 @@ type-of der Rueckfall — ein Etikett ist besser als keins."
 (defun presentation-value (id)
   "Return a live REPL result by id. Intended for explicit user actions only."
   (multiple-value-bind (value found) (gethash id *presentation-table*)
-    (if found value (error "Presentation ~D ist nicht mehr verfuegbar (Registry haelt die letzten ~D Ergebnisse)."
+    (if found value (error "Presentation ~D is no longer available (the registry keeps the last ~D results)."
                    id *presentation-capacity*))))
 
 (defun indentation-rules-for-repl ()
@@ -1386,7 +1393,7 @@ DSP body can call the recorder unconditionally."
   (check-type capacity (and fixnum (integer 1)))
   (check-type decimation (and fixnum (integer 1)))
   (unless (member element-type '(t double-float))
-    (error "sticker element-type muss T oder DOUBLE-FLOAT sein, nicht ~S."
+    (error "sticker element-type must be T or DOUBLE-FLOAT, not ~S."
            element-type))
   (let ((double-p (eq element-type 'double-float)))
     (%make-sticker-state
@@ -1554,7 +1561,7 @@ dsp! bodies use STICKER-STATE-RECORD-SAMPLE-FOR-REPL instead."
                       (svref (sticker-state-values state) index)))))
 
 (defun %sticker-state-tail (state n)
-  "Die N juengsten Werte des Rings, aeltester zuerst."
+  "The N newest values of the ring, oldest first."
   (let* ((count (sticker-state-count state))
          (n (max 0 (min n count)))
          (capacity (sticker-state-capacity state))
@@ -1567,38 +1574,38 @@ dsp! bodies use STICKER-STATE-RECORD-SAMPLE-FOR-REPL instead."
                       (svref (sticker-state-values state) index)))))
 
 (defun %finite-sample (value)
-  "NaN und Unendlich auf 0 abbilden.
+  "Map NaN and infinity to 0.
 
-Der JSON-Schreiber der Bridge gibt Fliesskommazahlen mit ~F aus; ein NaN
-oder eine Unendlichkeit erzeugt dort ungueltiges JSON und legt die
-Verbindung lahm.  Genau diese Werte entstehen aber, wenn eine Rueckkopplung
-im DSP hochlaeuft — also gerade in dem Moment, in dem man auf den Pegel
-schaut."
+The bridge's JSON writer prints floating-point numbers with ~F; a NaN or
+an infinity produces invalid JSON there and paralyses the connection.
+But those are exactly the values that arise when a feedback loop in the
+DSP runs away — that is, precisely at the moment when one is looking at
+the level."
   (handler-case
       (let ((x (float value 1.0d0)))
         (if (and (= x x) (< (abs x) 1.0d38)) x 0.0d0))
     (error () 0.0d0)))
 
 (defun sticker-samples-since-for-repl (key since &optional (limit 4096))
-  "Neue Werte eines registrierten Rings seit Sequenznummer SINCE.
+  "New values of a registered ring since sequence number SINCE.
 
-Rueckgabe: (:ok SEQUENCE DROPPED VALUES).  SEQUENCE ist der neue Stand,
-den der Aufrufer beim naechsten Mal mitschickt.  DROPPED sagt, wie viele
-Werte zwischen zwei Abfragen aus dem Ring gefallen sind — die Anzeige darf
-das nicht als Luecke verschweigen, sonst sieht ein ueberlaufener Ring aus
-wie ein lueckenloser Verlauf.
+Returns: (:ok SEQUENCE DROPPED VALUES).  SEQUENCE is the new position,
+which the caller sends along the next time.  DROPPED says how many values
+fell out of the ring between two queries — the display must not conceal
+that as a gap, otherwise an overflowing ring looks like an unbroken
+course.
 
-Ohne dieses Verfahren muesste bei jeder Abfrage der ganze Ring uebertragen
-werden.  Bei 256 Werten ist das egal, bei einem Spektrogramm mit 30
-Abfragen pro Sekunde nicht."
+Without this scheme the whole ring would have to be transferred on every
+query.  At 256 values that does not matter; for a spectrogram at 30
+queries per second it does."
   (let ((state (gethash key *sticker-records*)))
     (if (not (typep state 'sticker-state))
         (list :ok 0 0 nil)
         (let* ((sequence (sticker-state-sequence state))
                (count (sticker-state-count state))
-               ;; SINCE > SEQUENCE heisst: der Ring wurde neu angelegt oder
-               ;; die Sequenz ist uebergelaufen.  Dann alles Vorhandene neu
-               ;; schicken statt eine negative Differenz zu rechnen.
+               ;; SINCE > SEQUENCE means: the ring was newly created or
+               ;; the sequence overflowed.  Then send everything present
+               ;; again instead of computing a negative difference.
                (pending (if (> since sequence) count (- sequence since)))
                (available (min pending count))
                (take (min available limit))
@@ -1607,7 +1614,7 @@ Abfragen pro Sekunde nicht."
                 (mapcar #'%finite-sample (%sticker-state-tail state take)))))))
 
 (defun sticker-keys-for-repl ()
-  "Registrierte Ringe mit ihren Kenndaten, ohne die Werte selbst."
+  "Registered rings with their parameters, without the values themselves."
   (list :ok
         (loop for key being the hash-keys of *sticker-records* using (hash-value state)
               when (typep state 'sticker-state)
@@ -1616,6 +1623,327 @@ Abfragen pro Sekunde nicht."
                               (sticker-state-decimation state)
                               (string-downcase (symbol-name (sticker-state-element-type state)))
                               (sticker-state-sequence state)))))
+
+;;; ---------------------------------------------------------------------
+;;; Spectrum of a sticker ring
+;;; ---------------------------------------------------------------------
+;;;
+;;; The FFT runs here, not in the display.  That is the only decision in
+;;; this section that would really hurt if it had been taken the other
+;;; way round:
+;;;
+;;; A spectroscope needs the newest N samples for every frame, and needs
+;;; them overlapping — at 1024 points and 20 frames per second that is
+;;; 20480 values per second down a wire that writes every number as text.
+;;; This is independent of whether the ring is filled that fast; the
+;;; windows simply overlap.  Compute here instead and send only the
+;;; columns that get drawn, and the amount of data depends on the window
+;;; width in pixels rather than on sample rate and FFT size: 256 numbers
+;;; per frame, whether the analysis uses 512 or 8192 points.
+;;;
+;;; The second reason is the axis.  Plotted logarithmically, above a few
+;;; kilohertz a large share of the bins falls into the same pixel column
+;;; anyway.  Transfer the bins first and combine them afterwards, and you
+;;; have transferred them for nothing.
+
+(defparameter *two-pi* (* 2 (coerce pi 'double-float)))
+
+(defun %power-of-two-p (n)
+  (and (integerp n) (> n 0) (zerop (logand n (1- n)))))
+
+(defvar *fft-window-cache* (make-hash-table :test 'equal)
+  "Window functions by (kind . length).
+
+Only the windows are cached, not the working arrays of the FFT.  A
+window is only read after being created and is therefore safe to share;
+a working array is written to, and two simultaneous queries — two rings,
+two open displays — would overwrite each other's intermediate results.
+The memory saved would not be worth the silently wrong reading.")
+
+(defun %fft-window (kind size)
+  "Window of length SIZE.  KIND is \"rect\", \"hann\" or \"blackman-harris\".
+
+Blackman-Harris is included because the ATS analysis uses it: anyone who
+looks at a spectrum in the editor and then analyses the same recording
+should not have to compare two different side-lobe pictures."
+  (let* ((name (string-downcase (string kind)))
+         (key (cons name size)))
+    (or (gethash key *fft-window-cache*)
+        (setf (gethash key *fft-window-cache*)
+              (let ((w (make-array size :element-type 'double-float
+                                        :initial-element 1.0d0))
+                    ;; The periodic form (divisor SIZE), not the
+                    ;; symmetric one (SIZE-1).  Only with it is a sine
+                    ;; falling exactly on a bin centre leak-free — with
+                    ;; the symmetric form a small remainder stays in the
+                    ;; neighbouring bins that looks like a sideband and is
+                    ;; none.  For filter design it would be the other way
+                    ;; round; here we are analysing.
+                    (denominator (float (max 1 size) 1.0d0)))
+                (cond
+                  ((string= name "rect") w)
+                  ((string= name "blackman-harris")
+                   (dotimes (i size w)
+                     (let ((x (/ (* *two-pi* i) denominator)))
+                       (setf (aref w i)
+                             (+ 0.35875d0
+                                (- (* 0.48829d0 (cos x)))
+                                (* 0.14128d0 (cos (* 2.0d0 x)))
+                                (- (* 0.01168d0 (cos (* 3.0d0 x)))))))))
+                  (t
+                   (dotimes (i size w)
+                     (let ((x (/ (* *two-pi* i) denominator)))
+                       (setf (aref w i) (* 0.5d0 (- 1.0d0 (cos x))))))))))) ))
+
+(defun %fft-forward (re im)
+  "In-place radix-2 FFT.  RE and IM have the same length, a power of two.
+The return values are those same two arrays.
+
+Deliberately a complete complex FFT of our own rather than a variant
+tailored to real input: halving the computation time would be
+irrelevant here — a 2048-point pass twenty times a second is nothing —
+while the additional packing arithmetic is exactly the sort of code in
+which a bin shifted by one hides, the kind you cannot see in the
+picture."
+  (declare (type (simple-array double-float (*)) re im)
+           (optimize (speed 3) (safety 1)))
+  (let ((n (length re)))
+    (declare (type fixnum n))
+    ;; Bit-Umkehr-Vertauschung.
+    (let ((j 0))
+      (declare (type fixnum j))
+      (dotimes (i (max 0 (1- n)))
+        (declare (type fixnum i))
+        (when (< i j)
+          (rotatef (aref re i) (aref re j))
+          (rotatef (aref im i) (aref im j)))
+        (let ((m (ash n -1)))
+          (declare (type fixnum m))
+          (loop while (and (>= m 1) (>= j m))
+                do (decf j m) (setf m (ash m -1)))
+          (incf j m))))
+    ;; Butterflies; the span doubles at each stage.
+    (let ((span 1))
+      (declare (type fixnum span))
+      (loop while (< span n)
+            do (let* ((jump (the fixnum (* 2 span)))
+                      (delta (/ (- *two-pi*) (float jump 1.0d0))))
+                 (declare (type fixnum jump) (type double-float delta))
+                 (dotimes (group span)
+                   (declare (type fixnum group))
+                   (let* ((angle (* delta (float group 1.0d0)))
+                          (wr (cos angle))
+                          (wi (sin angle)))
+                     (declare (type double-float angle wr wi))
+                     (loop for pair of-type fixnum from group below n by jump
+                           do (let* ((match (the fixnum (+ pair span)))
+                                     (tr (- (* wr (aref re match))
+                                            (* wi (aref im match))))
+                                     (ti (+ (* wr (aref im match))
+                                            (* wi (aref re match)))))
+                                (declare (type double-float tr ti))
+                                (setf (aref re match) (- (aref re pair) tr)
+                                      (aref im match) (- (aref im pair) ti))
+                                (incf (aref re pair) tr)
+                                (incf (aref im pair) ti)))))
+                 (setf span jump))))
+    (values re im)))
+
+(defun %sticker-state-tail-samples (state n)
+  "The N newest values as a double-float array, oldest first."
+  (let* ((count (sticker-state-count state))
+         (n (max 0 (min n count)))
+         (capacity (sticker-state-capacity state))
+         (double-p (eq (sticker-state-element-type state) 'double-float))
+         (start (if (zerop capacity)
+                    0
+                    (mod (- (sticker-state-write-index state) n) capacity)))
+         (out (make-array n :element-type 'double-float
+                            :initial-element 0.0d0)))
+    (dotimes (offset n out)
+      (let ((index (mod (+ start offset) (max 1 capacity))))
+        (setf (aref out offset)
+              (if double-p
+                  (aref (sticker-state-samples state) index)
+                  (%finite-sample (svref (sticker-state-values state) index))))))))
+
+(defun %rt-value (name)
+  "Value of a bound symbol NAME from *rt-packages*, otherwise NIL."
+  (dolist (pkg-name *rt-packages* nil)
+    (let ((pkg (find-package pkg-name)))
+      (when pkg
+        (let ((sym (find-symbol (string-upcase name) pkg)))
+          (when (and sym (boundp sym))
+            (return (ignore-errors (symbol-value sym)))))))))
+
+(defun %spectrum-sample-rate ()
+  "Sample rate for the frequency axis.  (values RATE KNOWN-P).
+
+Without Incudine there is no real rate, and then every figure in hertz
+is a guess.  48000 is therefore not a silent default value: KNOWN-P says
+whether the value comes from the audio side, and the display labels the
+axis accordingly.  A frequency axis that is scaled wrongly and does not
+say that it might be is worse than none at all."
+  (let ((from-function
+          (let ((sym (%rt-sym "RT-SAMPLE-RATE")))
+            (when sym (ignore-errors (funcall sym))))))
+    (let ((raw (or (and (realp from-function) (plusp from-function)
+                        from-function)
+                   (let ((v (%rt-value "*SAMPLE-RATE*")))
+                     (and (realp v) (plusp v) v)))))
+      (if raw
+          (values (float raw 1.0d0) t)
+          (values 48000.0d0 nil)))))
+
+(defun %finite-db (value floor-db)
+  "Put non-finite dB values on the floor.
+
+%finite-sample maps NaN to 0 — right for a sample, the opposite for a
+decibel value: 0 dB is full scale.  A feedback loop that is producing
+NaN right now would thereby look like a spectrum at full level across
+all frequencies."
+  (handler-case
+      (let ((x (float value 1.0d0)))
+        (if (and (= x x) (< (abs x) 1.0d38)) (max floor-db (min 0.0d0 x)) floor-db))
+    (error () floor-db)))
+
+(defun %spectrum-edge (index columns f-min f-max log-p)
+  "Lower frequency of column INDEX (0..COLUMNS, i.e. edges, not centres)."
+  (let ((fraction (/ (float index 1.0d0) (float columns 1.0d0))))
+    (if log-p
+        (* f-min (expt (/ f-max f-min) fraction))
+        (+ f-min (* fraction (- f-max f-min))))))
+
+(defun sticker-spectrum-for-repl (key &optional (fft-size 1024) (window "hann")
+                                            (columns 256) (mode "log")
+                                            (floor-db -96.0))
+  "Spectrum of the newest FFT-SIZE values of the ring KEY.
+
+Returns: (:ok HEADER VALUES) or (:error TEXT).
+
+HEADER is
+  (SAMPLE-RATE EFFECTIVE-RATE FFT-SIZE MODE F-MIN F-MAX FLOOR-DB
+   PEAK-FREQ PEAK-DB BIN-WIDTH WARNINGS)
+
+VALUES are COLUMNS decibel values, lowest frequency first, each the
+maximum of the bins of its column.  Maximum and not mean, because a
+single partial would otherwise look the weaker the wider the column is —
+and the columns get wider and wider towards high frequencies.
+
+The scaling is chosen so that a sine of amplitude 1 on a bin centre
+gives 0 dB, independently of window and window length."
+  (let ((state (gethash key *sticker-records*)))
+    (cond
+      ((not (typep state 'sticker-state))
+       (list :error (format nil "No ring registered under ~S." key)))
+      ((not (%power-of-two-p fft-size))
+       (list :error (format nil "FFT length ~A is not a power of two." fft-size)))
+      ((or (< fft-size 64) (> fft-size 16384))
+       (list :error (format nil "FFT length ~A is outside 64..16384." fft-size)))
+      ((< (sticker-state-capacity state) fft-size)
+       (list :error (format nil "Ring ~S holds ~D values, the FFT needs ~D."
+                            key (sticker-state-capacity state) fft-size)))
+      ((< (sticker-state-count state) fft-size)
+       (list :error (format nil "Ring ~S has only ~D of ~D values so far."
+                            key (sticker-state-count state) fft-size)))
+      (t
+       (multiple-value-bind (sample-rate rate-known-p) (%spectrum-sample-rate)
+         (let* ((columns (max 16 (min 1024 (truncate columns))))
+                (floor-db (min -6.0d0 (float floor-db 1.0d0)))
+                (decimation (sticker-state-decimation state))
+                (effective-rate (/ sample-rate (float (max 1 decimation) 1.0d0)))
+                (bin-width (/ effective-rate (float fft-size 1.0d0)))
+                (nyquist (* 0.5d0 effective-rate))
+                (half (ash fft-size -1))
+                (samples (%sticker-state-tail-samples state fft-size))
+                (w (%fft-window window fft-size))
+                (re (make-array fft-size :element-type 'double-float
+                                         :initial-element 0.0d0))
+                (im (make-array fft-size :element-type 'double-float
+                                         :initial-element 0.0d0))
+                (window-sum 0.0d0)
+                (nonfinite 0)
+                (warnings '()))
+           (declare (type double-float window-sum))
+           ;; Windowing.  Non-finite samples become 0 — otherwise a
+           ;; single NaN colours the whole spectrum and the picture shows
+           ;; silence although the DSP is running away.
+           (dotimes (i fft-size)
+             (let ((x (aref samples i)))
+               (unless (and (= x x) (< (abs x) 1.0d38))
+                 (incf nonfinite)
+                 (setf x 0.0d0))
+               (incf window-sum (aref w i))
+               (setf (aref re i) (* x (aref w i)))))
+           (%fft-forward re im)
+           (let* ((scale (/ 2.0d0 (max 1.0d-12 window-sum)))
+                  (db (make-array half :element-type 'double-float
+                                       :initial-element floor-db)))
+             (dotimes (k half)
+               (let* ((magnitude (* scale (sqrt (+ (* (aref re k) (aref re k))
+                                                   (* (aref im k) (aref im k))))))
+                      (value (if (> magnitude 1.0d-12)
+                                 (* 20.0d0 (log magnitude 10.0d0))
+                                 floor-db)))
+                 (setf (aref db k) (%finite-db value floor-db))))
+             ;; Peak: bin 0 is left out, a DC offset is not a tone.  The
+             ;; parabola through the three neighbours in dB gives the
+             ;; frequency between the bins — the same computation with
+             ;; which the ATS analysis places its partials.
+             (let ((best 1) (peak-freq 0.0d0) (peak-db floor-db))
+               (loop for k from 1 below half
+                     do (when (> (aref db k) (aref db best)) (setf best k)))
+               (when (> (aref db best) floor-db)
+                 (let ((delta 0.0d0))
+                   (when (and (> best 0) (< best (1- half)))
+                     (let* ((left (aref db (1- best)))
+                            (centre (aref db best))
+                            (right (aref db (1+ best)))
+                            (divisor (- (+ left right) (* 2.0d0 centre))))
+                       (unless (zerop divisor)
+                         (setf delta (max -0.5d0
+                                          (min 0.5d0
+                                               (* 0.5d0 (/ (- left right) divisor))))))))
+                   (setf peak-freq (* (+ (float best 1.0d0) delta) bin-width)
+                         peak-db (aref db best))))
+               ;; Spaltenreduktion.
+               (let* ((log-p (and (string-equal (string mode) "log")
+                                  (< bin-width (* 0.5d0 nyquist))))
+                      (f-min (if log-p (max 20.0d0 bin-width) 0.0d0))
+                      (f-max nyquist)
+                      (values* '()))
+                 (loop for c from (1- columns) downto 0
+                       do (let* ((lo-freq (%spectrum-edge c columns f-min f-max log-p))
+                                 (hi-freq (%spectrum-edge (1+ c) columns f-min f-max log-p))
+                                 (lo (max (if log-p 1 0)
+                                          (min (1- half) (round lo-freq bin-width))))
+                                 (hi (max (1+ lo)
+                                          (min half (round hi-freq bin-width))))
+                                 (best-db floor-db))
+                            (loop for k from lo below hi
+                                  do (when (> (aref db k) best-db)
+                                       (setf best-db (aref db k))))
+                            (push best-db values*)))
+                 (unless rate-known-p
+                   (push "Sample rate unknown (Incudine not loaded), axis computed with 48000 Hz"
+                         warnings))
+                 (when (> decimation 1)
+                   (push (format nil "Ring is decimated by ~D: effectively ~,1F Hz, everything above that is folded in"
+                                 decimation effective-rate)
+                         warnings))
+                 (when (> nonfinite 0)
+                   (push (format nil "~D non-finite samples counted as 0"
+                                 nonfinite)
+                         warnings))
+                 (list :ok
+                       (list sample-rate effective-rate fft-size
+                             (if log-p "log" "lin")
+                             f-min f-max floor-db
+                             (%finite-sample peak-freq)
+                             (%finite-db peak-db floor-db)
+                             bin-width
+                             (nreverse warnings))
+                       values*))))))))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok
@@ -1643,21 +1971,20 @@ Abfragen pro Sekunde nicht."
   (list :ok))
 
 (defun eval-for-repl-debuggable (code-string package-name)
-  "Wie eval-for-repl, aber OHNE handler-case.
+  "Like eval-for-repl, but WITHOUT handler-case.
 
-   Der Unterschied ist der ganze Zweck: eval-for-repl fängt jede
-   Condition ab und macht Text daraus. Swank tritt dadurch nie in seinen
-   Debugger ein, und die REPL kann keinen auslösen. Diese Fassung lässt
-   die Condition durch, damit Swank ein :debug-Ereignis schickt.
+   The difference is the whole point: eval-for-repl catches every
+   condition and turns it into text. Swank therefore never enters its
+   debugger, and the REPL cannot trigger one. This version lets the
+   condition through, so that Swank sends a :debug event.
 
-   Deshalb darf sie NUR über die Verbindung des Debug-Adapters gerufen
-   werden — der kann das Ereignis empfangen und Restarts zurückschicken.
-   Über die Bridge gerufen würde der Aufruf hängen, weil dort niemand
-   antwortet.
+   It may therefore ONLY be called over the debug adapter's connection —
+   that one can receive the event and send restarts back. Called over the
+   bridge, the call would hang, because nobody answers there.
 
-   *debug-io* und *query-io* bleiben hier bewusst UNGEBUNDEN: über sie
-   verhandelt Swank mit dem Debugger. Nur die Ausgabeströme werden
-   umgeleitet."
+   *debug-io* and *query-io* deliberately stay UNBOUND here: Swank
+   negotiates with the debugger over them. Only the output streams are
+   redirected."
   (let* ((pkg (or (find-package (string-upcase package-name))
                   (find-package :common-lisp-user)))
          (out (make-string-output-stream)))
@@ -1689,29 +2016,29 @@ Abfragen pro Sekunde nicht."
                                              (> (length value-text) 0))
                                         (string #\Newline) "")
                                     value-text)))
-        ;; *package* auslesen, nicht pkg: ein (in-package ...) im Code
-        ;; hat es innerhalb dieser Bindung verändert.
+        ;; Read out *package*, not pkg: an (in-package ...) in the code
+        ;; has changed it inside this binding.
         (list :ok combined (package-name *package*) presentations)))))
 
 (defun eval-for-repl (code-string package-name)
-  "Wertet CODE-STRING im Paket PACKAGE-NAME aus. Fängt Standard-Output
-   und alle Rückgabewerte ein. Gibt (STATUS OUTPUT-STRING PACKAGE-STRING)
-   zurück, STATUS ist :OK oder :ERROR."
+  "Evaluates CODE-STRING in package PACKAGE-NAME. Captures standard output
+   and all return values. Returns (STATUS OUTPUT-STRING PACKAGE-STRING),
+   where STATUS is :OK or :ERROR."
   (let* ((pkg (or (find-package (string-upcase package-name))
                   (find-package :common-lisp-user)))
          (out (make-string-output-stream))
-         ;; Ein Synonym-Stream, der auf out zeigt, damit alle Streams
-         ;; wirklich denselben Puffer teilen.
+         ;; A synonym stream pointing at out, so that all streams really
+         ;; share the same buffer.
          (two-way (make-two-way-stream (make-string-input-stream "") out)))
     (declare (ignorable two-way))
     (handler-case
-        ;; ALLE Standard-Output-Streams auf out binden. Vorher waren nur
-        ;; *standard-output*/*error-output*/*trace-output* gebunden; CLAMPS
-        ;; (z.B. (clamps), describe) schreibt aber teils über *debug-io*,
-        ;; *query-io* und *terminal-io*. Blieb einer davon an Swanks
-        ;; Original-Stream gebunden, erschien die Ausgabe zusätzlich über
-        ;; Swank und damit DOPPELT in der REPL. Jetzt teilen sich alle
-        ;; denselben Puffer.
+        ;; Bind ALL standard output streams to out. Previously only
+        ;; *standard-output*/*error-output*/*trace-output* were bound; but
+        ;; CLAMPS (e.g. (clamps), describe) partly writes through
+        ;; *debug-io*, *query-io* and *terminal-io*. If one of those stayed
+        ;; bound to Swank's original stream, the output additionally
+        ;; appeared through Swank and therefore TWICE in the REPL. Now they
+        ;; all share the same buffer.
         (let* ((*package* pkg)
                (*standard-output* out)
                (*error-output* out)
@@ -1721,8 +2048,8 @@ Abfragen pro Sekunde nicht."
                (*terminal-io* (make-two-way-stream (make-string-input-stream "") out))
                (values-strings '())
                (presentations '()))
-          ;; Mehrere Forms nacheinander lesen und auswerten, damit eine
-          ;; REPL-Zeile wie "(defparameter *x* 1) *x*" komplett läuft.
+          ;; Read and evaluate several forms in sequence, so that a REPL
+          ;; line like "(defparameter *x* 1) *x*" runs completely.
           (with-input-from-string (in code-string)
             (loop
               (let ((form (read in nil :eof)))
@@ -1746,17 +2073,18 @@ Abfragen pro Sekunde nicht."
                                                  (> (length value-text) 0))
                                             (string #\Newline) "")
                                         value-text))
-                 ;; *package* AUSLESEN, nicht pkg: wenn der Code ein
-                 ;; (in-package ...) enthielt, hat sich *package* innerhalb
-                 ;; dieser Bindung geändert. pkg zeigt weiter aufs alte
-                 ;; Paket — deshalb blieb der REPL-Prompt hängen.
+                 ;; READ OUT *package*, not pkg: if the code contained an
+                 ;; (in-package ...), *package* has changed inside this
+                 ;; binding. pkg still points at the old package — which
+                 ;; is why the REPL prompt used to get stuck.
                  (current-pkg-name (package-name *package*)))
             (list :ok combined current-pkg-name presentations)))
       (error (e)
         (let ((printed (get-output-stream-string out)))
-          ;; Vierter Wert NIL: derselbe Vertrag wie im Erfolgszweig.
-          ;; Vorher war der Fehlerzweig dreistellig, der Erfolgszweig
-          ;; vierstellig — jeder Aufrufer musste das selbst abfangen.
+          ;; Fourth value NIL: the same contract as in the success
+          ;; branch. Previously the error branch had three elements and
+          ;; the success branch four — every caller had to catch that
+          ;; itself.
           (list :error
                 (concatenate 'string printed
                              (if (> (length printed) 0) (string #\Newline) "")
@@ -1766,27 +2094,27 @@ Abfragen pro Sekunde nicht."
 
 
 ;;; ---------------------------------------------------------------------
-;;; Incudine Node Browser (read-only)
+;;; Incudine node browser (read-only)
 ;;;
-;;; Liest den laufenden Node-Baum, ohne Incudine zu verändern. Die
-;;; Incudine-Symbole werden erst zur Laufzeit aufgelöst, damit rpc.lisp
-;;; weiterhin gegen ein nacktes SBCL ohne Incudine ladbar bleibt.
+;;; Reads the running node tree without modifying Incudine. The Incudine
+;;; symbols are only resolved at runtime, so that rpc.lisp stays loadable
+;;; against a bare SBCL without Incudine.
 ;;; ---------------------------------------------------------------------
 
 (defparameter *node-accessors*
   '("DOGRAPH" "NODE-ID" "NODE-NAME" "GROUP" "GROUP-P"
     "CONTROL-NAMES" "CONTROL-LIST" "PAUSE-P" "DONE-P" "NODE-UPTIME")
-  "Incudine-Symbole, die der Snapshot benutzt. Welche davon es in der
-   installierten Version wirklich gibt, ist nicht garantiert — deshalb
-   wird das gemeldet statt stillschweigend zu Lücken zu führen.")
+  "Incudine symbols that the snapshot uses. Which of them really exist in
+   the installed version is not guaranteed — which is why that is
+   reported instead of silently leading to gaps.")
 
 (defun %node-accessor-report ()
-  "Liste der fehlenden Accessoren, als Strings. Leer heisst: alle da.
+  "List of the missing accessors, as strings. Empty means: all present.
 
-   Nötig, weil ein fehlender Accessor sonst unsichtbar bleibt: ein
-   nicht auflösbares GROUP etwa liefert für jeden Node parent=nil, und
-   der Baum erscheint flach — was wie ein leeres Setup aussieht statt
-   wie ein fehlendes Symbol."
+   Necessary because a missing accessor would otherwise stay invisible:
+   an unresolvable GROUP, for instance, yields parent=nil for every node,
+   and the tree appears flat — which looks like an empty setup rather
+   than a missing symbol."
   (let ((pkg (find-package :incudine))
         (missing '()))
     (when pkg
@@ -1822,9 +2150,9 @@ Abfragen pro Sekunde nicht."
                                 (let* ((samples (round (incudine:node-uptime n)))
                                        (sr (ignore-errors
                                             (incudine:rt-sample-rate))))
-                                  ;; Samples zusätzlich in Sekunden: die
-                                  ;; reine Sample-Zahl ist beim Hinsehen
-                                  ;; nicht einzuordnen.
+                                  ;; Samples in seconds as well: the raw
+                                  ;; sample count cannot be placed at a
+                                  ;; glance.
                                   (if (and sr (> sr 0))
                                       (format nil \"~,1Fs (~D samples)\"
                                               (/ samples sr) samples)
@@ -1838,46 +2166,45 @@ Abfragen pro Sekunde nicht."
                                               :value (clamps-bridge-rpc::%preview cv))))
           result)))
      (nreverse result))"
-  "Quelltext des Traversals als String.
+  "Source text of the traversal as a string.
 
-   Grund für den Umweg über read-from-string: incudine:dograph ist ein
-   Makro und die Symbole existieren beim Laden dieser Datei nicht
-   zwingend. Beim Lesen ist *read-eval* aus, es wird also nichts zur
-   Lesezeit ausgeführt; ausgewertet wird nur genau dieser feste Text.")
+   The reason for the detour through read-from-string: incudine:dograph
+   is a macro and the symbols do not necessarily exist when this file is
+   loaded. While reading, *read-eval* is off, so nothing is executed at
+   read time; what is evaluated is only this one fixed text.")
 
 (defun incudine-node-tree-for-repl ()
-  "Read-only Snapshot des Incudine-Node-Baums.
+  "Read-only snapshot of the Incudine node tree.
 
-   Rückgabe: (:ok hinweis nodes) | (:unavailable grund nil)
-             | (:error meldung nil)
+   Returns: (:ok note nodes) | (:unavailable reason nil)
+            | (:error message nil)
 
-   HINWEIS ZUR NEBENLÄUFIGKEIT: Der Graph wird vom Realtime-Thread
-   verändert, gelesen wird hier aus einem Swank-Worker. Ein Snapshot
-   während laufendem DSP kann daher einen Zwischenzustand zeigen
-   (Node gerade entfernt, Controls halb gesetzt). Für eine Anzeige ist
-   das hinnehmbar; die einzelnen Zugriffe sind zusätzlich in
-   ignore-errors gekapselt, damit ein unter der Hand verschwundener
-   Node nicht den ganzen Snapshot kippt."
+   A NOTE ON CONCURRENCY: the graph is modified by the realtime thread
+   and read here from a Swank worker. A snapshot taken while DSP is
+   running can therefore show an intermediate state (node just removed,
+   controls half set). For a display that is acceptable; the individual
+   accesses are additionally wrapped in ignore-errors so that a node
+   vanishing behind our back does not topple the whole snapshot."
   (let ((pkg (find-package :incudine)))
     (cond
       ((null pkg)
-       (list :unavailable "Incudine ist nicht geladen." nil))
+       (list :unavailable "Incudine is not loaded." nil))
       ((member "DOGRAPH" (%node-accessor-report) :test #'string-equal)
        (list :unavailable
-             "Diese Incudine-Version kennt kein dograph — Node-Baum nicht lesbar."
+             "This Incudine version does not know dograph — node tree not readable."
              nil))
       (t
        (handler-case
            (let* ((missing (%node-accessor-report))
-                  ;; *package* festnageln: der String wird zur Laufzeit
-                  ;; gelesen, und ohne diese Bindung entscheidet das Paket
-                  ;; des Aufrufers, wohin unqualifizierte Symbole zeigen.
+                  ;; Pin *package* down: the string is read at runtime,
+                  ;; and without this binding the caller's package decides
+                  ;; where unqualified symbols point.
                   (nodes (let ((*read-eval* nil)
                                (*package* (find-package :clamps-bridge-rpc)))
                            (eval (read-from-string *node-snapshot-source*)))))
              (list :ok
                    (if missing
-                       (format nil "Nicht verfügbar in dieser Incudine-Version: ~{~A~^, ~}"
+                       (format nil "Not available in this Incudine version: ~{~A~^, ~}"
                                missing)
                        "")
                    nodes))
@@ -1885,7 +2212,7 @@ Abfragen pro Sekunde nicht."
 
 
 ;;; ---------------------------------------------------------------------
-;;; Image-Browser für VS Code
+;;; Image browsers for VS Code
 ;;; ---------------------------------------------------------------------
 (defun %down (x) (let ((*print-case* :downcase)) (princ-to-string x)))
 
@@ -1940,36 +2267,37 @@ Abfragen pro Sekunde nicht."
                                       :icon "debug-thread"
                                       :inspect (format nil "(find ~S (bordeaux-threads:all-threads) :key #'bordeaux-threads:thread-name :test #'equal)"
                                                        (and name (fboundp name) (funcall name th))))))
-            (list :error "Bordeaux-Threads ist nicht verfügbar." nil)))
+            (list :error "Bordeaux-Threads is not available." nil)))
     (error (e) (list :error (format nil "~A" e) nil))))
 
 
 ;;; ---------------------------------------------------------------------
-;;; SLY/SLIME-Werkzeuge: isolierte Ergänzungen für v72
+;;; SLY/SLIME tools: isolated additions for v72
 ;;; ---------------------------------------------------------------------
 
 
 (defun %tool-entry (label &key description detail file line character inspect offset)
   (list :label label :description (or description "") :detail (or detail "")
         :file file
-        ;; line bewusst NICHT auf 1 vorbelegen. Der Client bevorzugt eine
-        ;; vorhandene Zeile vor dem Offset; eine erfundene 1 hat den
-        ;; Offset daneben nutzlos gemacht und jeden Treffer an den
-        ;; Dateianfang geschickt — genau der Fehler, der behoben sein
-        ;; sollte. NIL heißt: "keine Zeile bekannt, nimm den Offset".
+        ;; Deliberately do NOT default line to 1. The client prefers an
+        ;; existing line over the offset; an invented 1 rendered the
+        ;; offset next to it useless and sent every hit to the start of
+        ;; the file — exactly the bug that was supposed to be fixed. NIL
+        ;; means: "no line known, take the offset".
         :line line :character (or character 0)
-        ;; Offset MIT durchreichen: SBCL liefert in Quellorten fast immer
-        ;; (:position N) statt (:line N), und N ist ein Zeichen-Offset.
-        ;; Ohne dieses Feld landet jeder Sprung auf Zeile 1 — derselbe
-        ;; Fehler, der im Debugger schon einmal behoben wurde. Umgerechnet
-        ;; wird auf der TS-Seite, die die Datei ohnehin öffnet.
+        ;; Pass the offset through AS WELL: in source locations SBCL
+        ;; almost always supplies (:position N) instead of (:line N), and
+        ;; N is a character offset. Without this field every jump lands on
+        ;; line 1 — the same bug that was already fixed once in the
+        ;; debugger. The conversion happens on the TS side, which opens
+        ;; the file anyway.
         :offset offset
         :inspect inspect))
 
 (defun %location-file-line (location)
-  "Liefert (values file line character offset) aus einem Swank-Quellort.
-line/character sind nur gesetzt, wenn das Backend sie ausdrücklich
-liefert; sonst steht der Zeichen-Offset in offset."
+  "Returns (values file line character offset) from a Swank source
+location. line/character are set only when the backend supplies them
+explicitly; otherwise the character offset is in offset."
   (let ((file nil) (line nil) (character nil) (offset nil))
     (labels ((walk (x)
                (when (consp x)
@@ -1979,7 +2307,7 @@ liefert; sonst steht der Zeichen-Offset in offset."
                           (when (numberp (third x)) (setf character (third x))))
                    (:position (when (numberp (second x)) (setf offset (second x))))
                    (:offset
-                    ;; (:offset START DELTA) — beides addiert ergibt die Stelle.
+                    ;; (:offset START DELTA) — the two added give the place.
                     (when (numberp (second x))
                       (setf offset (+ (second x) (if (numberp (third x)) (third x) 0))))))
                  (dolist (e x) (walk e)))))
@@ -1987,17 +2315,17 @@ liefert; sonst steht der Zeichen-Offset in offset."
     (values file line character offset)))
 
 (defun %swank-symbol (name package-designator)
-  "FIND-SYMBOL, aber NIL statt Fehler, wenn es das Paket nicht gibt.
-Ein Image ohne geladenes Swank soll die vorgesehene Meldung bekommen
-und keinen Paket-Typfehler."
+  "FIND-SYMBOL, but NIL instead of an error when the package does not
+exist. An image without Swank loaded should get the intended message and
+not a package type error."
   (let ((pkg (find-package package-designator)))
     (and pkg (find-symbol name pkg))))
 
 (defun %xref-type (kind)
   (cdr (assoc (string-downcase kind)
-              ;; "definitions" absichtlich NICHT dabei: swank:xref kennt
-              ;; den Typ nicht (Definitionen laufen ueber
-              ;; find-definitions-for-emacs) und signalisiert stattdessen.
+              ;; "definitions" deliberately NOT included: swank:xref does
+              ;; not know the type (definitions go through
+              ;; find-definitions-for-emacs) and signals instead.
               '(("callers" . :calls)
                 ("callees" . :calls-who)
                 ("references" . :references)
@@ -2007,13 +2335,13 @@ und keinen Paket-Typfehler."
               :test #'string=)))
 
 (defun %xref-inspect-expr (name pkg)
-  "Ausdruck, mit dem der Client den XREF-Treffer inspizieren kann.
+  "An expression with which the client can inspect the XREF hit.
 
-NAME ist meist ein String (\"cl-user::bar\"), bei manchen Backends auch
-ein Symbol oder ein Setf-Name (setf foo). Nur einfache Symbole ergeben
-etwas Inspizierbares; alles andere liefert NIL, damit der Client ehrlich
-'keine Quelldatei verfügbar' meldet statt auf einen kaputten Ausdruck
-zu springen."
+NAME is usually a string (\"cl-user::bar\"), with some backends also a
+symbol or a setf name (setf foo). Only simple symbols yield something
+inspectable; everything else returns NIL so that the client honestly
+reports 'no source file available' instead of jumping to a broken
+expression."
   (handler-case
       (let ((sym (cond ((symbolp name) name)
                        ((stringp name) (resolve-symbol name pkg))
@@ -2022,7 +2350,7 @@ zu springen."
     (error () nil)))
 
 (defun %definition-xref-entries (symbol-string package-name)
-  "Wandelt FIND-DEFINITIONS-FOR-REPL in dasselbe Tool-Entry-Format wie XREF um."
+  "Converts FIND-DEFINITIONS-FOR-REPL into the same tool-entry format as XREF."
   (let ((result (find-definitions-for-repl symbol-string package-name))
         (out nil))
     (unless (and (consp result) (eq (first result) :ok))
@@ -2031,21 +2359,21 @@ zu springen."
       (destructuring-bind (file line character label) entry
         (push (%tool-entry label
                            :description "definition"
-                           :detail (if file file "Quelldatei nicht verfügbar")
+                           :detail (if file file "source file not available")
                            :file file
-                           ;; find-definitions-for-repl liefert bereits
-                           ;; nullbasierte LSP-Zeilen; ToolEntry erwartet
-                           ;; dagegen eine einsbasierte Zeile.
+                           ;; find-definitions-for-repl already supplies
+                           ;; zero-based LSP lines; ToolEntry, by
+                           ;; contrast, expects a one-based line.
                            :line (and file (1+ line))
                            :character character)
               out)))
     (list :ok (nreverse out))))
 
 (defun xref-for-repl (symbol-string package-name kind)
-  "Vollständige SLIME-XREF-Abfrage einschließlich Definitionen.
+  "A complete SLIME XREF query including definitions.
 
-KIND ist einer von definitions, callers, callees, references, bindings,
-setters oder macroexpands. Die Rückgabe ist (:ok TOOL-ENTRIES) bzw.
+KIND is one of definitions, callers, callees, references, bindings,
+setters or macroexpands. The return value is (:ok TOOL-ENTRIES) or
 (:error TEXT)."
   (handler-case
       (when (string-equal kind "definitions")
@@ -2055,51 +2383,52 @@ setters oder macroexpands. Die Rückgabe ist (:ok TOOL-ENTRIES) bzw.
   (handler-case
       (let* ((pkg (or (find-package (string-upcase package-name))
                       (find-package :common-lisp-user)))
-             ;; resolve-symbol bindet *PACKAGE* an dieses Argument. SBCL
-             ;; deklariert *PACKAGE* als Typ PACKAGE, ein String löst dort
-             ;; einen Typfehler aus, den resolve-symbol still zu NIL
-             ;; verschluckt. Ergebnis war: jede XREF-Art außer
-             ;; "definitions" meldete "Symbol nicht gefunden", swank:xref
-             ;; wurde nie aufgerufen. Deshalb hier ein Paket-OBJEKT, wie
-             ;; an allen anderen Aufrufstellen auch.
+             ;; resolve-symbol binds *PACKAGE* to this argument. SBCL
+             ;; declares *PACKAGE* to be of type PACKAGE, so a string
+             ;; raises a type error there, which resolve-symbol silently
+             ;; swallows into NIL. The result was: every XREF kind except
+             ;; "definitions" reported "symbol not found" and swank:xref
+             ;; was never called. Hence a package OBJECT here, as at every
+             ;; other call site.
              (sym (resolve-symbol symbol-string pkg))
              (type (%xref-type kind))
-             ;; find-symbol signalisiert, wenn das Paket fehlt — dann käme
-             ;; ein Typfehler statt der vorgesehenen Meldung heraus.
+             ;; find-symbol signals when the package is missing — that
+             ;; would produce a type error instead of the intended
+             ;; message.
              (fn (or (%swank-symbol "XREF" :swank)
                      (%swank-symbol "XREF" :swank/backend))))
         (unless sym
           (return-from xref-for-repl
-            (list :error (format nil "Symbol ~A wurde im Paket ~A nicht gefunden."
+            (list :error (format nil "Symbol ~A was not found in package ~A."
                                  symbol-string package-name))))
         (unless type
           (return-from xref-for-repl
-            (list :error (format nil "Unbekannte XREF-Art: ~A" kind))))
+            (list :error (format nil "Unknown XREF kind: ~A" kind))))
         (unless (and fn (fboundp fn))
           (return-from xref-for-repl
-            (list :error "XREF wird von diesem Swank/Image nicht angeboten.")))
+            (list :error "XREF is not offered by this Swank/image.")))
         (let ((raw (funcall fn type (%package-qualified sym))) (out nil))
           (dolist (entry raw)
             (let* ((name (if (consp entry) (first entry) entry))
                    (loc (and (consp entry) (second entry))))
               (multiple-value-bind (file line character offset) (%location-file-line loc)
-                ;; Swank kann logische Pathnames oder nicht existierende
-                ;; Build-Pfade liefern. Dieselbe Auflösung wie M-. nutzen.
+                ;; Swank can supply logical pathnames or build paths that
+                ;; do not exist. Use the same resolution as M-. does.
                 (let ((resolved (and file (%resolve-source-file file))))
                   (push (%tool-entry (princ-to-string name)
                                      :description (string-downcase (symbol-name type))
                                      :detail (princ-to-string loc)
                                      :file resolved :line line :character character
                                      :offset offset
-                                     ;; swank:xref schickt den Namen durch
-                                     ;; xref>elisp, es kommt also ein
-                                     ;; STRING an — die alte symbolp-Probe
-                                     ;; war immer falsch und der
-                                     ;; Inspect-Rückfallweg damit tot.
+                                     ;; swank:xref sends the name through
+                                     ;; xref>elisp, so a STRING arrives —
+                                     ;; the old symbolp test was always
+                                     ;; false and the inspect fallback was
+                                     ;; therefore dead.
                                      :inspect (%xref-inspect-expr name pkg))
                         out)))))
-          ;; Doppelte Treffer derselben Quelle entfernt Swank nicht immer,
-          ;; besonders bei generischen Funktionen. Stabil deduplizieren.
+          ;; Swank does not always remove duplicate hits from the same
+          ;; source, especially for generic functions. Deduplicate stably.
           (let ((seen (make-hash-table :test #'equal)) (dedup nil))
             (dolist (entry (nreverse out))
               (let ((key (list (getf entry :label) (getf entry :file)
@@ -2125,40 +2454,41 @@ setters oder macroexpands. Die Rückgabe ist (:ok TOOL-ENTRIES) bzw.
     (error (e) (list :error (princ-to-string e)))))
 
 (defun break-on-signals-for-repl (condition-names)
-  "Setzt *BREAK-ON-SIGNALS*. Der Wert ist ein TYPSPEZIFIZIERER, keine Liste.
+  "Sets *BREAK-ON-SIGNALS*. The value is a TYPE SPECIFIER, not a list.
 
-Wichtig, weil SIGNAL diese Variable bei JEDER signalisierten Condition
-gegen TYPEP prüft: eine Liste (WARNING TYPE-ERROR) wird als zusammen-
-gesetzter Typspezifizierer mit Kopf WARNING gelesen, der ungültig ist.
-TYPEP signalisiert dann selbst — bei jedem Signal, also auch beim
-Aufräumen des dadurch entstehenden Fehlers. Das Image ist danach nicht
-mehr benutzbar. Mehrere Typen müssen als (OR a b) zusammengefasst werden.
+This matters because SIGNAL tests this variable with TYPEP on EVERY
+signalled condition: a list (WARNING TYPE-ERROR) is read as a compound
+type specifier with head WARNING, which is invalid. TYPEP then signals
+itself — on every signal, and therefore also while cleaning up the error
+that causes. The image is unusable afterwards. Several types have to be
+combined as (OR a b).
 
-Zielvariable ist CL:*BREAK-ON-SIGNALS* aus dem Standard; nur falls das
-Image eine eigene Swank-Variante mitbringt, wird die bevorzugt."
+The target variable is CL:*BREAK-ON-SIGNALS* from the standard; only if
+the image brings its own Swank variant is that preferred."
   (handler-case
       (let ((var (or (let ((s (find-symbol "*BREAK-ON-SIGNALS*" :swank)))
                        (and s (boundp s) s))
                      (find-symbol "*BREAK-ON-SIGNALS*" :common-lisp))))
         (unless var
           (return-from break-on-signals-for-repl
-            (list :error "*BREAK-ON-SIGNALS* ist in diesem Image nicht verfügbar.")))
+            (list :error "*BREAK-ON-SIGNALS* is not available in this image.")))
         (let ((types (loop for name in condition-names
                            for sym = (or (ignore-errors (resolve-symbol name "COMMON-LISP-USER"))
                                          (find-symbol (string-upcase name) :common-lisp))
                            when sym collect sym)))
-          ;; Jeden Typ einzeln prüfen, BEVOR er scharf gestellt wird —
-          ;; ein Tippfehler darf nicht dazu führen, dass erst der nächste
-          ;; SIGNAL das Image lahmlegt.
+          ;; Check each type individually BEFORE it is armed — a typo
+          ;; must not lead to the next SIGNAL being the thing that
+          ;; paralyses the image.
           (dolist (type types)
             (unless (ignore-errors (progn (typep nil type) t))
               (return-from break-on-signals-for-repl
-                (list :error (format nil "~A ist kein gültiger Condition-Typ." type)))))
+                (list :error (format nil "~A is not a valid condition type." type)))))
           (let ((spec (cond ((null types) nil)
                             ((null (cdr types)) (first types))
                             (t (cons 'or types)))))
-            ;; setf symbol-value statt set: set ist gestrichen und sagt
-            ;; nichts darüber, welche Bindung getroffen wird.
+            ;; setf symbol-value rather than set: set has been removed
+            ;; from the standard and says nothing about which binding is
+            ;; hit.
             (setf (symbol-value var) spec)
             (list :ok (mapcar #'%package-qualified types)))))
     (error (e) (list :error (princ-to-string e)))))
@@ -2171,18 +2501,17 @@ Image eine eigene Swank-Variante mitbringt, wird die bevorzugt."
 
 
 (defun %rt-breakpoint-note (sym)
-  "Im Echtzeit-Thread nur vermerken, nicht anhalten. Kein Ausgeben:
-Konsolen-I/O aus dem Audio-Callback ist selbst schon eine Frist-
-verletzung. Der Vermerk wird beim nächsten Abruf der Breakpoint-Liste
-sichtbar."
+  "In the realtime thread only record, do not halt. No printing: console
+I/O from the audio callback is itself a deadline violation. The record
+becomes visible at the next retrieval of the breakpoint list."
   (pushnew sym *rt-breakpoint-notes*)
   nil)
 
 (defun %rt-thread-p ()
-  "Läuft der aktuelle Thread als Incudine-Echtzeit-Thread?
+  "Is the current thread running as an Incudine realtime thread?
 
-Kein Fehler, wenn Incudine gar nicht geladen ist — dann gibt es auch
-keinen Echtzeit-Thread."
+Not an error if Incudine is not loaded at all — then there is no
+realtime thread either."
   (handler-case
       (let ((fn (find-symbol "RT-THREAD-P" :incudine))
             (var (find-symbol "*RT-THREAD*" :incudine)))
@@ -2194,8 +2523,8 @@ keinen Echtzeit-Thread."
     (error () nil)))
 
 (defun set-function-breakpoints-for-repl (names package-name)
-  "Setzt Eintritts-Breakpoints für gewöhnliche Funktionen. Bestehende
-Definitionen werden bewahrt und beim Entfernen exakt wiederhergestellt."
+  "Sets entry breakpoints for ordinary functions. Existing definitions are
+preserved and restored exactly when the breakpoint is removed."
   (handler-case
       (progn
         (let ((wanted (mapcar #'string-upcase names)))
@@ -2208,30 +2537,29 @@ Definitionen werden bewahrt und beim Entfernen exakt wiederhergestellt."
               (let* ((sym (resolve-symbol name package-name))
                      (key (string-upcase name)))
                 (cond
-                  ((null sym) (push (list :name name :verified nil :message "Symbol nicht gefunden.") result))
-                  ((macro-function sym) (push (list :name name :verified nil :message "Makros werden nicht gewrappt.") result))
-                  ((not (fboundp sym)) (push (list :name name :verified nil :message "Keine Funktionsdefinition.") result))
-                  ;; Generische Funktionen NICHT ersetzen: fdefinition
-                  ;; würde die ganze GF samt Dispatch durch ein Lambda
-                  ;; tauschen. Ein spätere defmethod auf dasselbe Symbol
-                  ;; trifft dann ins Leere, und die Methoden sind weg.
+                  ((null sym) (push (list :name name :verified nil :message "Symbol not found.") result))
+                  ((macro-function sym) (push (list :name name :verified nil :message "Macros are not wrapped.") result))
+                  ((not (fboundp sym)) (push (list :name name :verified nil :message "No function definition.") result))
+                  ;; Do NOT replace generic functions: fdefinition would
+                  ;; swap the whole GF including dispatch for a lambda. A
+                  ;; later defmethod on the same symbol would then hit
+                  ;; nothing, and the methods would be gone.
                   ((%generic-function-p sym)
                    (push (list :name name :verified nil
-                               :message "Generische Funktion — Dispatch würde verloren gehen. Stattdessen TRACE benutzen.")
+                               :message "A generic function — dispatch would be lost. Use TRACE instead.")
                          result))
                   ((gethash key *clamps-function-breakpoints*)
                    (push (list :name name :verified t :message "Aktiv.") result))
                   (t
                    (let* ((original (fdefinition sym))
                           (wrapper (lambda (&rest args)
-                                     ;; NIEMALS im Echtzeit-Thread in den
-                                     ;; Debugger. Incudines Audio-Callback
-                                     ;; hat eine harte Frist; ein BREAK
-                                     ;; dort blockiert ihn, und mit ihm
-                                     ;; das ganze Image — im besten Fall
-                                     ;; hörbar als Aussetzer, im
-                                     ;; schlechteren als Absturz, den
-                                     ;; hinterher niemand zuordnen kann.
+                                     ;; NEVER enter the debugger in the
+                                     ;; realtime thread. Incudine's audio
+                                     ;; callback has a hard deadline; a
+                                     ;; BREAK there blocks it, and with it
+                                     ;; the whole image — at best audible
+                                     ;; as a dropout, at worst a crash
+                                     ;; nobody can attribute afterwards.
                                      (if (%rt-thread-p)
                                          (%rt-breakpoint-note sym)
                                          (break "Funktions-Breakpoint: ~A~%Argumente: ~S" sym args))

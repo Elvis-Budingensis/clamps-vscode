@@ -1,24 +1,23 @@
 // test/gatecoverage.test.js
 //
-// Prueft, dass jede Testdatei ueberhaupt AUSGEFUEHRT wird.
+// Checks that every test file is EXECUTED at all.
 //
-// Anlass: das ist heute zweimal schiefgegangen, beide Male zufaellig
-// gefunden.
+// The occasion: this went wrong twice in one day, both times found by
+// chance.
 //
-//   - lisp/test-inspect.lisp — der gruendlichste Test im Projekt, 80
-//     Formen ueber 17 Typen, Slot-Setzen, Zirkularitaet, Teile-Cache —
-//     hing in KEINER npm-Kette. Er lief nie.
-//   - test/lispstring.test.js hatte eine Whitelist von 15 Dateinamen. Als
-//     v81 drei Module hinzufuegte, standen die nicht darin, und
-//     advancedTools.ts baute prompt wieder einen Lisp-String mit
-//     JSON.stringify. Gruen durchgelaufen, weil die Datei nie gelesen
-//     wurde.
+//   - lisp/test-inspect.lisp — the most thorough test in the project, 80
+//     forms across 17 types, slot setting, circularity, the parts cache —
+//     hung in NO npm chain. It never ran.
+//   - test/lispstring.test.js had a whitelist of 15 file names. When v81
+//     added three modules, those were not in it, and advancedTools.ts
+//     promptly built a Lisp string with JSON.stringify again. It came
+//     through green, because the file was never read.
 //
-// Beides derselbe Fehler: eine gepflegte Liste, die beim naechsten neuen
-// Code verfaellt. Ein Test, der nicht laeuft, ist schlimmer als kein
-// Test — er erzeugt Vertrauen, das nicht gedeckt ist.
+// Both are the same mistake: a maintained list that decays with the next
+// piece of new code. A test that does not run is worse than no test — it
+// creates confidence that is not backed.
 //
-// Aufruf: node test/gatecoverage.test.js
+// Run: node test/gatecoverage.test.js
 
 const fs = require('fs');
 const path = require('path');
@@ -28,21 +27,21 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'ut
 const scripts = manifest.scripts || {};
 
 let failed = 0;
-const fail = msg => { failed++; console.log(`FEHLER ${msg}`); };
+const fail = msg => { failed++; console.log(`FAILED ${msg}`); };
 
 /**
- * Alle Befehle, die `npm run gates` letztlich ausfuehrt — npm-Skripte
- * rekursiv aufloesen, damit auch Ketten wie
- * "gates -> lisp -> sbcl --script …" erfasst werden.
+ * All the commands `npm run gates` ultimately executes — npm scripts are
+ * resolved recursively, so that chains such as
+ * "gates -> lisp -> sbcl --script …" are covered too.
  */
 function expand(name, seen = new Set()) {
   if (seen.has(name)) return '';
   seen.add(name);
   let text = scripts[name] ?? '';
-  // Sowohl "npm run foo" als auch die Kurzformen "npm test" und
-  // "npm start", die npm ohne "run" akzeptiert. Ohne die Kurzform blieb
-  // "gates -> npm test" unaufgeloest, und das Gate meldete jeden
-  // JS-Test als nicht ausgefuehrt — falscher Alarm statt Fund.
+  // Both "npm run foo" and the short forms "npm test" and "npm start",
+  // which npm accepts without "run". Without the short form,
+  // "gates -> npm test" stayed unresolved and the gate reported every JS
+  // test as not executed — a false alarm instead of a find.
   for (const ref of text.matchAll(/npm (?:run\s+)?([\w:-]+)/g)) {
     if (ref[1] === 'run') continue;
     text += '\n' + expand(ref[1], seen);
@@ -51,83 +50,82 @@ function expand(name, seen = new Set()) {
 }
 
 if (!scripts.gates) {
-  fail('kein npm-Skript "gates" — die Gate-Kette ist der Qualitaetsmassstab');
+  fail('no npm script "gates" — the gate chain is the quality standard');
   console.log(`\n${failed} Test(s) fehlgeschlagen.`);
   process.exit(1);
 }
 const chain = expand('gates');
 
 // ---------------------------------------------------------------------
-// 1. Jede test/*.test.js kommt in der Kette vor
+// 1. Every test/*.test.js appears in the chain
 // ---------------------------------------------------------------------
 const jsTests = fs.readdirSync(path.join(root, 'test'))
   .filter(f => f.endsWith('.test.js')).sort();
 for (const file of jsTests) {
   if (!chain.includes(file)) {
-    fail(`test/${file} laeuft in keiner npm-Kette — der Test existiert, wird aber nie ausgefuehrt`);
+    fail(`test/${file} runs in no npm chain — the test exists but is never executed`);
   }
 }
 
 // ---------------------------------------------------------------------
-// 2. Jede lisp/test-*.lisp und die Prueflaeufe kommen in der Kette vor
+// 2. Every lisp/test-*.lisp and the check runs appear in the chain
 // ---------------------------------------------------------------------
 const lispTests = fs.readdirSync(path.join(root, 'lisp'))
   .filter(f => /^(test-.*|loadcheck|framingtest|swankframing)\.lisp$/.test(f)).sort();
 for (const file of lispTests) {
   if (!chain.includes(file)) {
-    fail(`lisp/${file} laeuft in keiner npm-Kette — der Test existiert, wird aber nie ausgefuehrt`);
+    fail(`lisp/${file} runs in no npm chain — the test exists but is never executed`);
   }
 }
 
 // ---------------------------------------------------------------------
-// 3. Kein Frueh-Ausstieg mitten in einer Testdatei
+// 3. No early exit in the middle of a test file
 // ---------------------------------------------------------------------
-// test-inspect.lisp enthaelt
+// test-inspect.lisp contains
 //     (when (sb-ext:posix-getenv "TEST_EXIT") (sb-ext:exit :code 0))
-// mitten in der Datei. In den Gates ist die Variable nicht gesetzt, also
-// laeuft alles; wer sie aber setzt, ueberspringt still den Rest — und
-// merkt es nicht, weil der Lauf mit Code 0 endet. Ein Ausstieg im
-// LETZTEN Fuenftel ist Abschluss, weiter vorn ist eine Falle.
+// in the middle of the file. In the gates the variable is not set, so
+// everything runs; but whoever sets it silently skips the rest — and does
+// not notice, because the run ends with code 0. An exit in the LAST fifth
+// is a conclusion, further forward it is a trap.
 for (const file of lispTests) {
   const full = path.join(root, 'lisp', file);
   const lines = fs.readFileSync(full, 'utf8').split('\n');
   lines.forEach((line, i) => {
-    if (/\(sb-ext:exit\s+:code\s+0\)/.test(line) && !/FEHLER|failed/.test(line)) {
+    if (/\(sb-ext:exit\s+:code\s+0\)/.test(line) && !/FAILED|failed/.test(line)) {
       const position = (i + 1) / lines.length;
       if (position < 0.8) {
-        fail(`lisp/${file}:${i + 1} steigt bei ${Math.round(position * 100)}% der Datei mit Code 0 aus — alles danach wird still uebersprungen`);
+        fail(`lisp/${file}:${i + 1} exits with code 0 at ${Math.round(position * 100)}% of the file — everything after it is silently skipped`);
       }
     }
   });
 }
 
 // ---------------------------------------------------------------------
-// 4. Keine Datei-Whitelists in Tests
+// 4. No file whitelists in tests
 // ---------------------------------------------------------------------
-// Der lispstring-Waechter hatte 15 Dateinamen eingetragen. Wer src/
-// pruefen will, liest src/ — sonst verfaellt die Liste beim naechsten
-// neuen Modul.
+// The lispstring guard had 15 file names entered in it. Whoever wants to
+// check src/ reads src/ — otherwise the list decays with the next new
+// module.
 for (const file of jsTests) {
   const src = fs.readFileSync(path.join(root, 'test', file), 'utf8');
-  // Ein Array-Literal mit drei oder mehr .ts-Dateinamen darin.
+  // An array literal with three or more .ts file names in it.
   const suspicious = src.match(/\[[^\]]*?(?:'[\w.]+\.ts'[^\]]*?){3,}\]/s);
   if (suspicious) {
-    fail(`test/${file} enthaelt eine Liste von .ts-Dateinamen — src/ direkt lesen, sonst verfaellt sie bei neuem Code`);
+    fail(`test/${file} contains a list of .ts file names — read src/ directly, otherwise it decays with new code`);
   }
 }
 
-// Toter Code hinter process.exit. Wer einen Test unten anhaengt, landet
-// leicht HINTER dem abschliessenden process.exit — die Zusicherungen
-// laufen dann nie, und die Datei meldet trotzdem "ok". Genau das ist beim
-// Panel-Fokus-Test in session.test.js passiert.
+// Dead code behind process.exit. Whoever appends a test at the bottom
+// easily lands BEHIND the closing process.exit — the assertions then never
+// run, and the file still reports "ok". That is exactly what happened with
+// the panel focus test in session.test.js.
 for (const file of jsTests) {
   const src = fs.readFileSync(path.join(root, 'test', file), 'utf8');
-  // Nur ein UNBEDINGTER Ausstieg zaehlt, also einer ohne Einrueckung.
-  // Das uebliche Muster
+  // Only an UNCONDITIONAL exit counts, that is, one without indentation.
+  // The usual pattern
   //   if (failed > 0) { ...; process.exit(1); }
   //   console.log('ok — ...');
-  // ist voellig in Ordnung: die Meldung laeuft ja gerade dann, wenn nicht
-  // ausgestiegen wurde.
+  // is perfectly fine: the message runs precisely when there was no exit.
   const lines = src.split('\n');
   const exitLine = lines.reduce(
     (found, line, i) => (/^process\.exit\(/.test(line) ? i : found), -1
@@ -138,7 +136,7 @@ for (const file of jsTests) {
     .map(line => line.trim())
     .filter(line => line.length > 0 && !line.startsWith('//') && !/^[)}\];]*$/.test(line));
   if (alive.length > 0) {
-    fail(`test/${file}: Code nach dem unbedingten process.exit laeuft nie — z.B. "${alive[0].slice(0, 60)}"`);
+    fail(`test/${file}: code after the unconditional process.exit never runs — e.g. "${alive[0].slice(0, 60)}"`);
   }
 }
 
@@ -147,6 +145,6 @@ if (failed > 0) {
   process.exit(1);
 }
 console.log(
-  `ok — alle Tests laufen: ${jsTests.length} JS, ${lispTests.length} Lisp, ` +
-  'keine Frueh-Ausstiege, keine Datei-Whitelists'
+  `ok — every test runs: ${jsTests.length} JS, ${lispTests.length} Lisp, ` +
+  'no early exits, no file whitelists'
 );

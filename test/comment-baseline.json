@@ -1,0 +1,262 @@
+{
+ "src/debugSession.ts": {
+  "lines": 1811,
+  "comments": 474,
+  "longStrings": 73
+ },
+ "src/disassemble.ts": {
+  "lines": 83,
+  "comments": 9,
+  "longStrings": 2
+ },
+ "src/extension.ts": {
+  "lines": 797,
+  "comments": 125,
+  "longStrings": 17
+ },
+ "src/freqScope.ts": {
+  "lines": 604,
+  "comments": 78,
+  "longStrings": 2
+ },
+ "src/imageBrowsers.ts": {
+  "lines": 72,
+  "comments": 11,
+  "longStrings": 3
+ },
+ "src/imageIndentation.ts": {
+  "lines": 79,
+  "comments": 30,
+  "longStrings": 0
+ },
+ "src/inlineValues.ts": {
+  "lines": 138,
+  "comments": 41,
+  "longStrings": 0
+ },
+ "src/inspector.ts": {
+  "lines": 842,
+  "comments": 126,
+  "longStrings": 93
+ },
+ "src/macroexpand.ts": {
+  "lines": 321,
+  "comments": 74,
+  "longStrings": 25
+ },
+ "src/meterView.ts": {
+  "lines": 197,
+  "comments": 22,
+  "longStrings": 1
+ },
+ "src/nodeBrowser.ts": {
+  "lines": 162,
+  "comments": 14,
+  "longStrings": 4
+ },
+ "src/processManager.ts": {
+  "lines": 376,
+  "comments": 100,
+  "longStrings": 7
+ },
+ "src/replTerminal.ts": {
+  "lines": 695,
+  "comments": 138,
+  "longStrings": 16
+ },
+ "src/rtStatus.ts": {
+  "lines": 137,
+  "comments": 20,
+  "longStrings": 1
+ },
+ "src/slimeTools.ts": {
+  "lines": 110,
+  "comments": 1,
+  "longStrings": 2
+ },
+ "src/stickerPoll.ts": {
+  "lines": 183,
+  "comments": 63,
+  "longStrings": 0
+ },
+ "src/structuralEditing.ts": {
+  "lines": 165,
+  "comments": 22,
+  "longStrings": 1
+ },
+ "src/swank.ts": {
+  "lines": 548,
+  "comments": 130,
+  "longStrings": 23
+ },
+ "src/xrefBrowser.ts": {
+  "lines": 185,
+  "comments": 13,
+  "longStrings": 3
+ },
+ "src/xrefNavigation.ts": {
+  "lines": 69,
+  "comments": 0,
+  "longStrings": 0
+ },
+ "lisp/autodoc.lisp": {
+  "lines": 63,
+  "comments": 1,
+  "longStrings": 1
+ },
+ "lisp/bootstrap.lisp": {
+  "lines": 288,
+  "comments": 102,
+  "longStrings": 11
+ },
+ "lisp/bridge-server.lisp": {
+  "lines": 1601,
+  "comments": 152,
+  "longStrings": 71
+ },
+ "lisp/completion.lisp": {
+  "lines": 454,
+  "comments": 42,
+  "longStrings": 15
+ },
+ "lisp/framingtest.lisp": {
+  "lines": 248,
+  "comments": 45,
+  "longStrings": 18
+ },
+ "lisp/loadcheck.lisp": {
+  "lines": 271,
+  "comments": 72,
+  "longStrings": 8
+ },
+ "lisp/rpc.lisp": {
+  "lines": 2574,
+  "comments": 303,
+  "longStrings": 108
+ },
+ "lisp/swankframing.lisp": {
+  "lines": 217,
+  "comments": 35,
+  "longStrings": 16
+ },
+ "lisp/test-bridge-context.lisp": {
+  "lines": 113,
+  "comments": 22,
+  "longStrings": 7
+ },
+ "lisp/test-completion.lisp": {
+  "lines": 153,
+  "comments": 46,
+  "longStrings": 9
+ },
+ "lisp/test-inspect.lisp": {
+  "lines": 310,
+  "comments": 46,
+  "longStrings": 20
+ },
+ "lisp/test-spectrum.lisp": {
+  "lines": 335,
+  "comments": 89,
+  "longStrings": 9
+ },
+ "lisp/test-sticker-state.lisp": {
+  "lines": 267,
+  "comments": 51,
+  "longStrings": 5
+ },
+ "lisp/test-xref.lisp": {
+  "lines": 195,
+  "comments": 56,
+  "longStrings": 4
+ },
+ "lisp/check.py": {
+  "lines": 224,
+  "comments": 30,
+  "longStrings": 25
+ },
+ "test/commentdensity.js": {
+  "lines": 179,
+  "comments": 57,
+  "longStrings": 0
+ },
+ "test/comments.test.js": {
+  "lines": 169,
+  "comments": 70,
+  "longStrings": 16
+ },
+ "test/debugger.test.js": {
+  "lines": 183,
+  "comments": 38,
+  "longStrings": 2
+ },
+ "test/features.test.js": {
+  "lines": 115,
+  "comments": 32,
+  "longStrings": 1
+ },
+ "test/freqscope.test.js": {
+  "lines": 184,
+  "comments": 57,
+  "longStrings": 13
+ },
+ "test/gatecoverage.test.js": {
+  "lines": 151,
+  "comments": 60,
+  "longStrings": 7
+ },
+ "test/hover.test.js": {
+  "lines": 76,
+  "comments": 17,
+  "longStrings": 2
+ },
+ "test/indentation.test.js": {
+  "lines": 123,
+  "comments": 54,
+  "longStrings": 3
+ },
+ "test/lispstring.test.js": {
+  "lines": 110,
+  "comments": 48,
+  "longStrings": 4
+ },
+ "test/manifest.test.js": {
+  "lines": 135,
+  "comments": 39,
+  "longStrings": 13
+ },
+ "test/paredit.test.js": {
+  "lines": 165,
+  "comments": 43,
+  "longStrings": 7
+ },
+ "test/replcomplete.test.js": {
+  "lines": 186,
+  "comments": 32,
+  "longStrings": 1
+ },
+ "test/session.test.js": {
+  "lines": 108,
+  "comments": 28,
+  "longStrings": 3
+ },
+ "test/stickerpoll.test.js": {
+  "lines": 261,
+  "comments": 48,
+  "longStrings": 3
+ },
+ "test/toplevel.test.js": {
+  "lines": 90,
+  "comments": 33,
+  "longStrings": 2
+ },
+ "test/vscode-stub.js": {
+  "lines": 70,
+  "comments": 12,
+  "longStrings": 0
+ },
+ "test/xref.test.js": {
+  "lines": 176,
+  "comments": 34,
+  "longStrings": 10
+ }
+}

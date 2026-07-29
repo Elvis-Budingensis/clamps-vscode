@@ -1,13 +1,13 @@
 // test/session.test.js
 //
-// Prüft, wann eine laufende CLAMPS-Session weiterbenutzt wird.
+// Checks when a running CLAMPS session is carried on with.
 //
-// Der Anlass: bisher reichte "PID lebt". Weil deactivate() das Image
-// absichtlich am Leben lässt, entwickelte man damit gegen ein Image, in
-// dem noch die alten lisp/*.lisp geladen waren — und der Ausweg war,
-// vor jedem Start von Hand session.json zu löschen.
+// The occasion: up to now "the PID is alive" was enough. Because
+// deactivate() deliberately leaves the image alive, one thereby developed
+// against an image in which the old lisp/*.lisp were still loaded — and
+// the way out was to delete session.json by hand before every start.
 //
-// Aufruf: npx tsc -p ./ && node test/session.test.js
+// Run: npx tsc -p ./ && node test/session.test.js
 
 require('./vscode-stub');
 
@@ -20,7 +20,7 @@ let failed = 0;
 const check = (name, actual, expected) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     failed++;
-    console.log(`FEHLER ${name}\n  erwartet: ${JSON.stringify(expected)}\n  bekommen: ${JSON.stringify(actual)}`);
+    console.log(`FAILED ${name}\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(actual)}`);
   }
 };
 
@@ -33,24 +33,24 @@ const decide = over => ClampsProcessManager.reuseDecision({
 check('alles in Ordnung', decide({}).reuse, true);
 
 // --- frisch starten -------------------------------------------------
-check('keine Session', decide({ info: null }).reuse, false);
+check('no session', decide({ info: null }).reuse, false);
 check('Status starting', decide({ info: { ...ready, status: 'starting' } }).reuse, false);
 check('Status error', decide({ info: { ...ready, status: 'error' } }).reuse, false);
 check('Status stopped', decide({ info: { ...ready, status: 'stopped' } }).reuse, false);
 check('PID tot', decide({ pidAlive: false }).reuse, false);
-check('kein PID', decide({ info: { ...ready, pid: null } }).reuse, false);
-check('kein Port', decide({ info: { ...ready, port: null } }).reuse, false);
+check('no PID', decide({ info: { ...ready, pid: null } }).reuse, false);
+check('no port', decide({ info: { ...ready, port: null } }).reuse, false);
 
-// Lebender PID, aber niemand antwortet: haengendes Image oder die
-// Prozessnummer wurde nach einem Absturz neu vergeben.
-check('Port antwortet nicht', decide({ portAnswers: false }).reuse, false);
-check('Grund genannt', /antwortet nicht/.test(decide({ portAnswers: false }).reason), true);
+// A live PID, but nobody answers: a hung image, or the process number was
+// reassigned after a crash.
+check('the port does not answer', decide({ portAnswers: false }).reuse, false);
+check('the reason is named', /does not answer/.test(decide({ portAnswers: false }).reason), true);
 
-// Der eigentliche Fall.
-check('Quellen geaendert', decide({ fingerprintMatches: false }).reuse, false);
-check('Grund genannt', /Quellen/.test(decide({ fingerprintMatches: false }).reason), true);
+// The actual case.
+check('sources changed', decide({ fingerprintMatches: false }).reuse, false);
+check('the reason is named', /sources/.test(decide({ fingerprintMatches: false }).reason), true);
 
-// --- Fingerprint reagiert auf Änderungen ----------------------------
+// --- The fingerprint reacts to changes --------------------------------
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clamps-fp-'));
   const lispDir = path.join(dir, 'lisp');
@@ -61,27 +61,26 @@ check('Grund genannt', /Quellen/.test(decide({ fingerprintMatches: false }).reas
 
   const m = new ClampsProcessManager(dir, bootstrap);
   const first = m.sourceFingerprint();
-  check('Fingerprint nicht leer', first.length > 0, true);
+  check('the fingerprint is not empty', first.length > 0, true);
   check('Fingerprint stabil', m.sourceFingerprint(), first);
   check('beide Dateien erfasst', /bootstrap\.lisp/.test(first) && /rpc\.lisp/.test(first), true);
 
-  // rpc.lisp ändern: mtime UND Größe wandern.
+  // Change rpc.lisp: mtime AND size move.
   fs.writeFileSync(path.join(lispDir, 'rpc.lisp'), '(defun f () 2) ; geaendert\n');
-  check('Fingerprint aendert sich', m.sourceFingerprint() !== first, true);
+  check('the fingerprint changes', m.sourceFingerprint() !== first, true);
 
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-// --- Panel-Fokus beim Start (v81.17) ---------------------------------
+// --- Panel focus at startup (v81.17) ----------------------------------
 //
-// Beim Start haengt sich der Debugger automatisch an. VS Code oeffnet
-// dabei die Debug-Konsole und schiebt die REPL aus dem Panel — man landete
-// nach jedem Start auf einer Konsole, die man nicht braucht, und musste
-// erst auf "Terminal" klicken. Zwei Dinge muessen deshalb im Quelltext
-// stehen, und beide sind leicht wieder herauszueditieren, ohne dass es
-// auffaellt: die Debug-Konfiguration braucht internalConsoleOptions
-// 'neverOpen', und die REPL muss NACH dem Anhaengen erneut nach vorn
-// geholt werden.
+// At startup the debugger attaches automatically. In doing so VS Code
+// opens the debug console and pushes the REPL out of the panel — after
+// every start one landed on a console one does not need and had to click
+// "Terminal" first. Two things therefore have to be in the source, and
+// both are easy to edit out again without it being noticed: the debug
+// configuration needs internalConsoleOptions 'neverOpen', and the REPL has
+// to be brought to the front again AFTER attaching.
 {
   const fs = require('fs');
   const path = require('path');
@@ -92,17 +91,17 @@ check('Grund genannt', /Quellen/.test(decide({ fingerprintMatches: false }).reas
   const attachCount = (source.match(/request:\s*'attach'/g) || []).length;
   const neverOpenCount = (source.match(/internalConsoleOptions:\s*'neverOpen'/g) || []).length;
   check(
-    'jede Attach-Konfiguration unterdrueckt die Debug-Konsole',
+    'every attach configuration suppresses the debug console',
     neverOpenCount,
     attachCount
   );
 
-  // Die Reihenfolge zaehlt: erst anhaengen, dann die REPL zeigen. Steht
-  // das Zeigen davor, gewinnt die Debug-Ansicht.
-  const attachAt = source.indexOf("name: 'CLAMPS: Debugger anhängen',\n                internalConsoleOptions");
+  // The order matters: attach first, then show the REPL. If the showing
+  // comes before it, the debug view wins.
+  const attachAt = source.indexOf("name: 'CLAMPS: Attach Debugger',\n                internalConsoleOptions");
   const showAfter = source.indexOf('ClampsReplTerminal.show', attachAt);
-  check('REPL wird nach dem Anhaengen erneut gezeigt', showAfter > attachAt, true);
+  check('the REPL is shown again after attaching', showAfter > attachAt, true);
 }
 
-if (failed === 0) console.log('ok — alle Session-Tests bestanden');
+if (failed === 0) console.log('ok — all session tests passed');
 process.exit(failed === 0 ? 0 : 1);

@@ -8,11 +8,11 @@ interface DisassembleResult {
 }
 
 /**
- * Ermittelt das Lisp-Symbol an der Cursor-Position. Anders als ein
- * normales Wort dürfen Lisp-Symbole Sonderzeichen (Minus, Plus, Stern,
- * Slash, Vergleichszeichen, und weitere) sowie Paket-Trenner (Doppel-
- * punkt) enthalten. getWordRangeAtPosition mit passender Regex greift
- * das sauber ab.
+ * Determines the Lisp symbol at the cursor position. Unlike an ordinary
+ * word, Lisp symbols may contain special characters (minus, plus, star,
+ * slash, comparison signs and others) as well as package separators
+ * (colon). getWordRangeAtPosition with a suitable regex picks that up
+ * cleanly.
  */
 export function symbolAt(
   document: vscode.TextDocument,
@@ -40,7 +40,7 @@ export async function disassembleCommand(
   const symbol = symbolAt(editor.document, editor.selection.active);
   if (!symbol) {
     vscode.window.showWarningMessage(
-      'CLAMPS: Kein Symbol am Cursor gefunden.'
+      'CLAMPS: No symbol found at the cursor.'
     );
     return;
   }
@@ -48,7 +48,7 @@ export async function disassembleCommand(
   const client = getClient();
   if (!client || client.state !== State.Running) {
     vscode.window.showErrorMessage(
-      'CLAMPS ist nicht verbunden. Führe „CLAMPS: Start“ aus.'
+      'CLAMPS is not connected. Run "CLAMPS: Start".'
     );
     return;
   }
@@ -61,12 +61,12 @@ export async function disassembleCommand(
       { symbol, package: pkg }
     );
 
-    const body = `;; disassemble: ${symbol}  (Paket ${pkg})\n\n${result.output}\n`;
+    const body = `;; disassemble: ${symbol}  (package ${pkg})\n\n${result.output}\n`;
 
     const doc = await vscode.workspace.openTextDocument({
       content: body,
-      // Kein 'lisp' — der Assembler-Output ist kein Lisp; plaintext
-      // vermeidet unpassende Syntaxfärbung.
+      // Not 'lisp' — the assembler output is not Lisp; plaintext
+      // avoids inappropriate syntax colouring.
       language: 'plaintext',
     });
     await vscode.window.showTextDocument(doc, {
@@ -76,7 +76,7 @@ export async function disassembleCommand(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    outputChannel.appendLine(`Disassemble-Fehler: ${message}`);
+    outputChannel.appendLine(`Disassemble error: ${message}`);
     vscode.window.showErrorMessage(`CLAMPS Disassemble: ${message}`);
   }
 }
