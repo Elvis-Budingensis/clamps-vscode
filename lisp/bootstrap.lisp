@@ -120,7 +120,7 @@
                          :detail (format nil "Ladefehler: ~A" e))
     (sb-ext:exit :code 1)))
 
-(log-msg "CLAMPS + Swank geladen")
+(log-msg "CLAMPS + Swank loaded")
 
 ;;; ---------------------------------------------------------------------
 ;;; Slynk shim: catch eval-in-emacs when there is no Emacs connection

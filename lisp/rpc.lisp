@@ -169,7 +169,7 @@
               (list (cons "count" (princ-to-string (hash-table-count obj)))
                     (cons "test" (string-downcase
                                   (princ-to-string (hash-table-test obj)))))
-              (when truncated (list (cons "anzeige" "erste 1000"))))
+              (when truncated (list (cons "showing" "first 1000"))))
              (nreverse parts))))
 
     (string
