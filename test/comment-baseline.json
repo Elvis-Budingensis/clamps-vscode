@@ -10,9 +10,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 797,
+  "lines": 822,
   "comments": 125,
-  "longStrings": 17
+  "longStrings": 18
  },
  "src/freqScope.ts": {
   "lines": 649,
@@ -74,6 +74,11 @@
   "comments": 1,
   "longStrings": 2
  },
+ "src/spectrogramView.ts": {
+  "lines": 608,
+  "comments": 104,
+  "longStrings": 2
+ },
  "src/stickerPoll.ts": {
   "lines": 183,
   "comments": 63,
@@ -110,9 +115,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1601,
+  "lines": 1662,
   "comments": 152,
-  "longStrings": 71
+  "longStrings": 73
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -130,9 +135,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 2613,
-  "comments": 307,
-  "longStrings": 109
+  "lines": 2770,
+  "comments": 339,
+  "longStrings": 114
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -155,9 +160,9 @@
   "longStrings": 22
  },
  "lisp/test-spectrum.lisp": {
-  "lines": 335,
-  "comments": 89,
-  "longStrings": 9
+  "lines": 510,
+  "comments": 140,
+  "longStrings": 13
  },
  "lisp/test-sticker-state.lisp": {
   "lines": 267,
@@ -238,6 +243,11 @@
   "lines": 108,
   "comments": 28,
   "longStrings": 3
+ },
+ "test/spectrogram.test.js": {
+  "lines": 162,
+  "comments": 56,
+  "longStrings": 17
  },
  "test/stickerpoll.test.js": {
   "lines": 261,

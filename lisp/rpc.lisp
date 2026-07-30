@@ -49,7 +49,7 @@
            #:sticker-state-record-for-repl #:sticker-state-record-sample-for-repl
            #:sticker-state-record-rms-for-repl
            #:sticker-samples-since-for-repl #:sticker-keys-for-repl
-           #:sticker-spectrum-for-repl
+           #:sticker-spectrum-for-repl #:sticker-spectrogram-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -1853,6 +1853,152 @@ all frequencies."
         (* f-min (expt (/ f-max f-min) fraction))
         (+ f-min (* fraction (- f-max f-min))))))
 
+(defun %sticker-state-window-samples (state end-sequence n)
+  "The N samples ending at absolute position END-SEQUENCE, oldest first.
+
+The ring holds the samples with absolute indices
+[SEQUENCE - COUNT, SEQUENCE).  END-SEQUENCE is such an absolute index,
+not an offset — that is what makes the spectrogram's frame grid stable:
+frame F always covers the same samples, whoever asks and whenever, so two
+requests cannot return the same column twice or leave a gap between them.
+
+Returns NIL when the window has already fallen out of the ring.  NIL and
+not a zero-filled array: silence and \"too late\" must not look alike."
+  (let* ((sequence (sticker-state-sequence state))
+         (count (sticker-state-count state))
+         (capacity (sticker-state-capacity state))
+         (start (- end-sequence n)))
+    (when (or (< n 1) (zerop capacity)
+              (> end-sequence sequence)
+              (< start (- sequence count)))
+      (return-from %sticker-state-window-samples nil))
+    (let ((double-p (eq (sticker-state-element-type state) 'double-float))
+          (write-index (sticker-state-write-index state))
+          (out (make-array n :element-type 'double-float
+                             :initial-element 0.0d0)))
+      (dotimes (offset n out)
+        (let ((index (mod (- write-index (- sequence (+ start offset))) capacity)))
+          (setf (aref out offset)
+                (if double-p
+                    (aref (sticker-state-samples state) index)
+                    (%finite-sample (svref (sticker-state-values state) index)))))))))
+
+(defun %spectrum-of-samples (samples fft-size window columns mode floor-db
+                             effective-rate)
+  "One analysis frame.  Returns
+  (values COLUMNS-LIST PEAK-FREQ PEAK-DB NONFINITE F-MIN F-MAX LOG-P).
+
+Factored out of sticker-spectrum-for-repl so that the spectrogram uses
+exactly the same computation.  Two copies of a windowed FFT plus column
+reduction would be the most reliable way to end up with a scope and a
+spectrogram that disagree about where a partial sits — and disagree
+invisibly, because both pictures look plausible on their own."
+  (declare (type (simple-array double-float (*)) samples))
+  (let* ((bin-width (/ effective-rate (float fft-size 1.0d0)))
+         (nyquist (* 0.5d0 effective-rate))
+         (half (ash fft-size -1))
+         (w (%fft-window window fft-size))
+         (re (make-array fft-size :element-type 'double-float
+                                  :initial-element 0.0d0))
+         (im (make-array fft-size :element-type 'double-float
+                                  :initial-element 0.0d0))
+         (window-sum 0.0d0)
+         (nonfinite 0))
+    (declare (type double-float window-sum))
+    ;; Windowing.  Non-finite samples become 0 — otherwise a single NaN
+    ;; colours the whole spectrum and the picture shows silence although
+    ;; the DSP is running away.
+    (dotimes (i fft-size)
+      (let ((x (aref samples i)))
+        (unless (and (= x x) (< (abs x) 1.0d38))
+          (incf nonfinite)
+          (setf x 0.0d0))
+        (incf window-sum (aref w i))
+        (setf (aref re i) (* x (aref w i)))))
+    (%fft-forward re im)
+    (let* ((scale (/ 2.0d0 (max 1.0d-12 window-sum)))
+           (db (make-array half :element-type 'double-float
+                                :initial-element floor-db)))
+      (dotimes (k half)
+        (let* ((magnitude (* scale (sqrt (+ (* (aref re k) (aref re k))
+                                            (* (aref im k) (aref im k))))))
+               (value (if (> magnitude 1.0d-12)
+                          (* 20.0d0 (log magnitude 10.0d0))
+                          floor-db)))
+          (setf (aref db k) (%finite-db value floor-db))))
+      ;; Peak: bin 0 is left out, a DC offset is not a tone.  The parabola
+      ;; through the three neighbours in dB gives the frequency between
+      ;; the bins — the same computation with which the ATS analysis
+      ;; places its partials.
+      (let ((best 1) (peak-freq 0.0d0) (peak-db floor-db))
+        (loop for k from 1 below half
+              do (when (> (aref db k) (aref db best)) (setf best k)))
+        (when (> (aref db best) floor-db)
+          (let ((delta 0.0d0))
+            (when (and (> best 0) (< best (1- half)))
+              (let* ((left (aref db (1- best)))
+                     (centre (aref db best))
+                     (right (aref db (1+ best)))
+                     (divisor (- (+ left right) (* 2.0d0 centre))))
+                (unless (zerop divisor)
+                  (setf delta (max -0.5d0
+                                   (min 0.5d0
+                                        (* 0.5d0 (/ (- left right) divisor))))))))
+            (setf peak-freq (* (+ (float best 1.0d0) delta) bin-width)
+                  peak-db (aref db best))))
+        ;; Column reduction.
+        (let* ((log-p (and (string-equal (string mode) "log")
+                           (< bin-width (* 0.5d0 nyquist))))
+               (f-min (if log-p (max 20.0d0 bin-width) 0.0d0))
+               (f-max nyquist)
+               (values* '()))
+          (loop for c from (1- columns) downto 0
+                do (let* ((lo-freq (%spectrum-edge c columns f-min f-max log-p))
+                          (hi-freq (%spectrum-edge (1+ c) columns f-min f-max log-p))
+                          (lo (max (if log-p 1 0)
+                                   (min (1- half) (round lo-freq bin-width))))
+                          (hi (max (1+ lo)
+                                   (min half (round hi-freq bin-width))))
+                          (best-db floor-db))
+                     (loop for k from lo below hi
+                           do (when (> (aref db k) best-db)
+                                (setf best-db (aref db k))))
+                     (push best-db values*)))
+          (values values* (%finite-sample peak-freq) (%finite-db peak-db floor-db)
+                  nonfinite f-min f-max log-p))))))
+
+(defun %spectrum-warnings (rate-known-p decimation effective-rate nonfinite)
+  "The warnings shared by the spectrum and the spectrogram."
+  (let ((warnings '()))
+    (unless rate-known-p
+      (push "Sample rate unknown (Incudine not loaded), axis computed with 48000 Hz"
+            warnings))
+    (when (> decimation 1)
+      (push (format nil "Ring is decimated by ~D: effectively ~,1F Hz, everything above that is folded in"
+                    decimation effective-rate)
+            warnings))
+    (when (> nonfinite 0)
+      (push (format nil "~D non-finite samples counted as 0" nonfinite)
+            warnings))
+    (nreverse warnings)))
+
+(defun %spectrum-preconditions (state key fft-size)
+  "Shared argument checks.  Returns an (:error TEXT) list, or NIL if all is well."
+  (cond
+    ((not (typep state 'sticker-state))
+     (list :error (format nil "No ring registered under ~S." key)))
+    ((not (%power-of-two-p fft-size))
+     (list :error (format nil "FFT length ~A is not a power of two." fft-size)))
+    ((or (< fft-size 64) (> fft-size 16384))
+     (list :error (format nil "FFT length ~A is outside 64..16384." fft-size)))
+    ((< (sticker-state-capacity state) fft-size)
+     (list :error (format nil "Ring ~S holds ~D values, the FFT needs ~D."
+                          key (sticker-state-capacity state) fft-size)))
+    ((< (sticker-state-count state) fft-size)
+     (list :error (format nil "Ring ~S has only ~D of ~D values so far."
+                          key (sticker-state-count state) fft-size)))
+    (t nil)))
+
 (defun sticker-spectrum-for-repl (key &optional (fft-size 1024) (window "hann")
                                             (columns 256) (mode "log")
                                             (floor-db -96.0))
@@ -1871,118 +2017,129 @@ and the columns get wider and wider towards high frequencies.
 
 The scaling is chosen so that a sine of amplitude 1 on a bin centre
 gives 0 dB, independently of window and window length."
-  (let ((state (gethash key *sticker-records*)))
-    (cond
-      ((not (typep state 'sticker-state))
-       (list :error (format nil "No ring registered under ~S." key)))
-      ((not (%power-of-two-p fft-size))
-       (list :error (format nil "FFT length ~A is not a power of two." fft-size)))
-      ((or (< fft-size 64) (> fft-size 16384))
-       (list :error (format nil "FFT length ~A is outside 64..16384." fft-size)))
-      ((< (sticker-state-capacity state) fft-size)
-       (list :error (format nil "Ring ~S holds ~D values, the FFT needs ~D."
-                            key (sticker-state-capacity state) fft-size)))
-      ((< (sticker-state-count state) fft-size)
-       (list :error (format nil "Ring ~S has only ~D of ~D values so far."
-                            key (sticker-state-count state) fft-size)))
-      (t
-       (multiple-value-bind (sample-rate rate-known-p) (%spectrum-sample-rate)
-         (let* ((columns (max 16 (min 1024 (truncate columns))))
-                (floor-db (min -6.0d0 (float floor-db 1.0d0)))
-                (decimation (sticker-state-decimation state))
-                (effective-rate (/ sample-rate (float (max 1 decimation) 1.0d0)))
-                (bin-width (/ effective-rate (float fft-size 1.0d0)))
-                (nyquist (* 0.5d0 effective-rate))
-                (half (ash fft-size -1))
-                (samples (%sticker-state-tail-samples state fft-size))
-                (w (%fft-window window fft-size))
-                (re (make-array fft-size :element-type 'double-float
-                                         :initial-element 0.0d0))
-                (im (make-array fft-size :element-type 'double-float
-                                         :initial-element 0.0d0))
-                (window-sum 0.0d0)
-                (nonfinite 0)
-                (warnings '()))
-           (declare (type double-float window-sum))
-           ;; Windowing.  Non-finite samples become 0 — otherwise a
-           ;; single NaN colours the whole spectrum and the picture shows
-           ;; silence although the DSP is running away.
-           (dotimes (i fft-size)
-             (let ((x (aref samples i)))
-               (unless (and (= x x) (< (abs x) 1.0d38))
-                 (incf nonfinite)
-                 (setf x 0.0d0))
-               (incf window-sum (aref w i))
-               (setf (aref re i) (* x (aref w i)))))
-           (%fft-forward re im)
-           (let* ((scale (/ 2.0d0 (max 1.0d-12 window-sum)))
-                  (db (make-array half :element-type 'double-float
-                                       :initial-element floor-db)))
-             (dotimes (k half)
-               (let* ((magnitude (* scale (sqrt (+ (* (aref re k) (aref re k))
-                                                   (* (aref im k) (aref im k))))))
-                      (value (if (> magnitude 1.0d-12)
-                                 (* 20.0d0 (log magnitude 10.0d0))
-                                 floor-db)))
-                 (setf (aref db k) (%finite-db value floor-db))))
-             ;; Peak: bin 0 is left out, a DC offset is not a tone.  The
-             ;; parabola through the three neighbours in dB gives the
-             ;; frequency between the bins — the same computation with
-             ;; which the ATS analysis places its partials.
-             (let ((best 1) (peak-freq 0.0d0) (peak-db floor-db))
-               (loop for k from 1 below half
-                     do (when (> (aref db k) (aref db best)) (setf best k)))
-               (when (> (aref db best) floor-db)
-                 (let ((delta 0.0d0))
-                   (when (and (> best 0) (< best (1- half)))
-                     (let* ((left (aref db (1- best)))
-                            (centre (aref db best))
-                            (right (aref db (1+ best)))
-                            (divisor (- (+ left right) (* 2.0d0 centre))))
-                       (unless (zerop divisor)
-                         (setf delta (max -0.5d0
-                                          (min 0.5d0
-                                               (* 0.5d0 (/ (- left right) divisor))))))))
-                   (setf peak-freq (* (+ (float best 1.0d0) delta) bin-width)
-                         peak-db (aref db best))))
-               ;; Spaltenreduktion.
-               (let* ((log-p (and (string-equal (string mode) "log")
-                                  (< bin-width (* 0.5d0 nyquist))))
-                      (f-min (if log-p (max 20.0d0 bin-width) 0.0d0))
-                      (f-max nyquist)
-                      (values* '()))
-                 (loop for c from (1- columns) downto 0
-                       do (let* ((lo-freq (%spectrum-edge c columns f-min f-max log-p))
-                                 (hi-freq (%spectrum-edge (1+ c) columns f-min f-max log-p))
-                                 (lo (max (if log-p 1 0)
-                                          (min (1- half) (round lo-freq bin-width))))
-                                 (hi (max (1+ lo)
-                                          (min half (round hi-freq bin-width))))
-                                 (best-db floor-db))
-                            (loop for k from lo below hi
-                                  do (when (> (aref db k) best-db)
-                                       (setf best-db (aref db k))))
-                            (push best-db values*)))
-                 (unless rate-known-p
-                   (push "Sample rate unknown (Incudine not loaded), axis computed with 48000 Hz"
-                         warnings))
-                 (when (> decimation 1)
-                   (push (format nil "Ring is decimated by ~D: effectively ~,1F Hz, everything above that is folded in"
-                                 decimation effective-rate)
-                         warnings))
-                 (when (> nonfinite 0)
-                   (push (format nil "~D non-finite samples counted as 0"
-                                 nonfinite)
-                         warnings))
-                 (list :ok
-                       (list sample-rate effective-rate fft-size
-                             (if log-p "log" "lin")
-                             f-min f-max floor-db
-                             (%finite-sample peak-freq)
-                             (%finite-db peak-db floor-db)
-                             bin-width
-                             (nreverse warnings))
-                       values*))))))))))
+  (let* ((state (gethash key *sticker-records*))
+         (problem (%spectrum-preconditions state key fft-size)))
+    (or problem
+        (multiple-value-bind (sample-rate rate-known-p) (%spectrum-sample-rate)
+          (let* ((columns (max 16 (min 1024 (truncate columns))))
+                 (floor-db (min -6.0d0 (float floor-db 1.0d0)))
+                 (decimation (sticker-state-decimation state))
+                 (effective-rate (/ sample-rate (float (max 1 decimation) 1.0d0)))
+                 (bin-width (/ effective-rate (float fft-size 1.0d0)))
+                 (samples (%sticker-state-tail-samples state fft-size)))
+            (multiple-value-bind (values* peak-freq peak-db nonfinite f-min f-max log-p)
+                (%spectrum-of-samples samples fft-size window columns mode
+                                      floor-db effective-rate)
+              (list :ok
+                    (list sample-rate effective-rate fft-size
+                          (if log-p "log" "lin")
+                          f-min f-max floor-db peak-freq peak-db bin-width
+                          (%spectrum-warnings rate-known-p decimation
+                                              effective-rate nonfinite))
+                    values*)))))))
+
+;;; ---------------------------------------------------------------------
+;;; Spectrogram: several frames per request, on an absolute grid
+;;; ---------------------------------------------------------------------
+;;;
+;;; The obvious implementation would be to call the spectrum once per
+;;; drawn frame.  That gives a spectrogram whose time resolution is the
+;;; POLL INTERVAL: at 50 ms, twenty columns per second, and the picture is
+;;; a slideshow rather than a spectrogram.  Worse, the spacing between
+;;; columns would be however long the round trip happened to take, so the
+;;; time axis would be unlabelled and unlabellable.
+;;;
+;;; So the frames live on an absolute grid instead: frame F covers the
+;;; samples [F*HOP - FFT-SIZE, F*HOP).  The consequences are the point of
+;;; the whole arrangement:
+;;;
+;;;   - The time axis has a unit.  One column is HOP samples, that is
+;;;     HOP/RATE seconds, regardless of network and load.
+;;;   - Frames cannot be duplicated or lost silently.  The caller says
+;;;     which frame index it last received; what is missing follows, and
+;;;     what has fallen out of the ring in the meantime is REPORTED rather
+;;;     than skipped.  A spectrogram with an invisible gap is a lie about
+;;;     time, and the eye cannot detect it.
+;;;   - Time resolution and update rate are decoupled.  At 20 requests a
+;;;     second with 8 frames each and a hop of 256, the axis carries 160
+;;;     columns per second while the wire sees 20 messages.
+
+(defun sticker-spectrogram-for-repl (key &optional (fft-size 1024) (window "hann")
+                                               (columns 256) (mode "log")
+                                               (floor-db -96.0) (since 0)
+                                               (hop 512) (max-frames 16))
+  "Analysis frames of the ring KEY since frame index SINCE.
+
+Returns: (:ok HEADER FRAMES) or (:error TEXT).
+
+HEADER is
+  (SAMPLE-RATE EFFECTIVE-RATE FFT-SIZE MODE F-MIN F-MAX FLOOR-DB
+   BIN-WIDTH HOP FRAME SECONDS-PER-FRAME DROPPED WARNINGS)
+
+FRAME is the index of the NEWEST frame returned; the caller sends it back
+as SINCE next time.  DROPPED counts the frames that fell out of the ring
+between two requests — they are named, not passed over, because a gap in
+a spectrogram is invisible and would misdate everything after it.
+
+FRAMES is a list of frames, oldest first, each a list of COLUMNS decibel
+values.  At SINCE = 0 only the newest MAX-FRAMES are delivered: on
+opening, the present matters and not the minutes before anyone looked."
+  (let* ((state (gethash key *sticker-records*))
+         (problem (%spectrum-preconditions state key fft-size)))
+    (when problem (return-from sticker-spectrogram-for-repl problem))
+    (let ((hop (max 16 (min fft-size (truncate hop)))))
+      (multiple-value-bind (sample-rate rate-known-p) (%spectrum-sample-rate)
+        (let* ((columns (max 16 (min 1024 (truncate columns))))
+               (floor-db (min -6.0d0 (float floor-db 1.0d0)))
+               (max-frames (max 1 (min 64 (truncate max-frames))))
+               (decimation (sticker-state-decimation state))
+               (effective-rate (/ sample-rate (float (max 1 decimation) 1.0d0)))
+               (bin-width (/ effective-rate (float fft-size 1.0d0)))
+               (sequence (sticker-state-sequence state))
+               (count (sticker-state-count state))
+               ;; The newest frame whose window is complete, and the
+               ;; oldest one still inside the ring.
+               (newest (floor sequence hop))
+               (oldest (ceiling (+ (- sequence count) fft-size) hop))
+               (wanted-from (max (1+ (truncate (max 0 since))) oldest))
+               (first-frame (max wanted-from (- newest (1- max-frames))))
+               (dropped (max 0 (- first-frame wanted-from)))
+               (frames '())
+               (nonfinite 0)
+               (delivered since))
+          (loop for f from first-frame to newest
+                do (let ((samples (%sticker-state-window-samples
+                                   state (* f hop) fft-size)))
+                     ;; A window can fall out between the arithmetic above
+                     ;; and reading it: the audio thread keeps writing. Not
+                     ;; an error — count it as dropped and carry on.
+                     (if (null samples)
+                         (incf dropped)
+                         (multiple-value-bind (values* peak-freq peak-db bad)
+                             (%spectrum-of-samples samples fft-size window columns
+                                                   mode floor-db effective-rate)
+                           (declare (ignore peak-freq peak-db))
+                           (incf nonfinite bad)
+                           (push values* frames)
+                           (setf delivered f)))))
+          ;; f-min/f-max/log-p do not depend on the samples, so one probe
+          ;; frame settles the axis even when nothing was delivered.
+          (multiple-value-bind (ignored-values ignored-freq ignored-db ignored-bad
+                                f-min f-max log-p)
+              (%spectrum-of-samples (%sticker-state-tail-samples state fft-size)
+                                    fft-size window columns mode floor-db
+                                    effective-rate)
+            (declare (ignore ignored-values ignored-freq ignored-db ignored-bad))
+            (list :ok
+                  (list sample-rate effective-rate fft-size
+                        (if log-p "log" "lin")
+                        f-min f-max floor-db bin-width hop
+                        delivered
+                        (/ (float hop 1.0d0) effective-rate)
+                        dropped
+                        (%spectrum-warnings rate-known-p decimation
+                                            effective-rate nonfinite))
+                  (nreverse frames))))))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

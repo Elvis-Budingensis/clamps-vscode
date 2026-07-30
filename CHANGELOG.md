@@ -2,6 +2,62 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.0.4] - 2026-07-30
+
+### Added
+
+- **Live spectrogram** (`CLAMPS: Show Spectrogram (frequency over time)`):
+  frequency vertically, time scrolling to the left, level as colour, with a
+  cursor readout in hertz, note name and seconds ago.
+
+  The frames sit on an **absolute grid**: frame F covers the samples
+  `[F*hop - fftSize, F*hop)`. Several arrive per request, the view names the
+  last index it received, and Lisp answers with what is missing. Three things
+  follow, and they are the reason for the arrangement:
+
+  - One column is exactly `hop/rate` seconds, so the time axis has a unit.
+    Asking for one spectrum per drawn frame would make the column spacing
+    whatever the round trip happened to take — unlabelled and unlabellable.
+  - Frames cannot be duplicated or silently lost. What fell out of the ring
+    is counted and shown, because a gap in a spectrogram misdates everything
+    to the right of it and cannot be seen.
+  - Time resolution and update rate are independent: eight frames per request
+    at 20 requests a second is 160 columns of axis per second over 20
+    messages.
+
+  New RPC `sticker-spectrogram-for-repl` and bridge method
+  `clamps/stickerSpectrogram`; setting `clamps.spectrogramIntervalMs`.
+
+- The poll interval follows the frame rate rather than the setting. At a hop
+  of 64 the analysis produces 750 frames a second, so a configured 100 ms
+  cannot be honoured: 75 frames would accrue where the protocol carries 64,
+  and the remaining 11 would be dropped on every request — the view would
+  slide about a second into the past per minute, with nothing in a scrolling
+  picture to say that the right edge is no longer the present. The interval is
+  therefore shortened until the backlog fits; the setting stays an upper
+  bound. Found by the gate, not by looking.
+
+### Changed
+
+- The windowing, transform, peak interpolation and column reduction now live
+  in one place (`%spectrum-of-samples`), used by both the scope and the
+  spectrogram. Two implementations of one computation is the surest way to
+  have the two place a partial in different rows, and to do so invisibly.
+- The spectrogram requires more ring headroom than the scope — at least twice
+  the FFT length — because between two requests the ring has to keep the
+  frames accrued in the meantime. Rings that fall short are marked with the
+  reason in the selector.
+
+### Fixed
+
+- `lisp/test-spectrum.lisp` checked frame indices and counts but never
+  whether a frame's CONTENT belonged to its position, so a mutation that read
+  every window from the newest end of the ring passed. The test signal was a
+  steady sine, so every window looked alike and no content check could tell
+  them apart — a test that runs, passes and checks nothing. The signal now
+  steps in frequency every hop, and each frame's peak says which segment it
+  saw.
+
 ## [1.0.3] - 2026-07-30
 
 ### Fixed

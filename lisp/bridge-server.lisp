@@ -1423,6 +1423,66 @@ not one per sample."
                         "warnings" (vector)
                         "values" (vector))))))))
 
+(defun handle-sticker-spectrogram (id params)
+  "clamps/stickerSpectrogram — several analysis frames per request.
+
+Unlike clamps/stickerSpectrum this IS incremental, and for the opposite
+reason to the sticker samples: not to save bandwidth, but so that the time
+axis has a unit. The frames sit on an absolute grid of HOP samples, the
+caller names the last frame index it received, and what fell out of the
+ring in between is reported rather than skipped. A gap in a spectrogram
+misdates everything after it and cannot be seen."
+  (let ((key (or (gethash "key" params) ""))
+        (fft-size (or (gethash "fftSize" params) 1024))
+        (window (or (gethash "window" params) "hann"))
+        (columns (or (gethash "columns" params) 256))
+        (mode (or (gethash "mode" params) "log"))
+        (floor-db (or (gethash "floorDb" params) -96.0))
+        (since (or (gethash "since" params) 0))
+        (hop (or (gethash "hop" params) 512))
+        (max-frames (or (gethash "maxFrames" params) 16)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:sticker-spectrogram-for-repl ~S ~D ~S ~D ~S ~F ~D ~D ~D)"
+             key (truncate fft-size) window (truncate columns) mode
+             (float floor-db 1.0d0) (truncate since) (truncate hop)
+             (truncate max-frames))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                (= (length value) 3))
+           (destructuring-bind (ok header frames) value
+             (declare (ignore ok))
+             (destructuring-bind (sample-rate effective-rate fft-size mode
+                                  f-min f-max floor-db bin-width hop frame
+                                  seconds-per-frame dropped warnings)
+                 header
+               (send-response id
+                 (make-jobj "available" :true
+                            "error" ""
+                            "sampleRate" sample-rate
+                            "effectiveRate" effective-rate
+                            "fftSize" fft-size
+                            "mode" mode
+                            "fMin" f-min
+                            "fMax" f-max
+                            "floorDb" floor-db
+                            "binWidth" bin-width
+                            "hop" hop
+                            "frame" frame
+                            "secondsPerFrame" seconds-per-frame
+                            "dropped" dropped
+                            "warnings" (coerce warnings 'vector)
+                            "frames" (coerce (mapcar (lambda (f) (coerce f 'vector))
+                                                     frames)
+                                             'vector)))))
+           (send-response id
+             (make-jobj "available" :false
+                        "error" (if (and (consp value) (eq (first value) :error))
+                                    (or (second value) "Spectrogram not available.")
+                                    (format nil "~A" value))
+                        "warnings" (vector)
+                        "frames" (vector))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1522,6 +1582,7 @@ not one per sample."
           ((string= method "clamps/stickerSamples") (handle-sticker-samples id params))
           ((string= method "clamps/stickerKeys") (handle-sticker-keys id params))
           ((string= method "clamps/stickerSpectrum") (handle-sticker-spectrum id params))
+          ((string= method "clamps/stickerSpectrogram") (handle-sticker-spectrogram id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

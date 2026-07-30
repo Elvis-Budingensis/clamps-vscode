@@ -24,6 +24,7 @@ import { ClampsReplTerminal, readState } from './replTerminal';
 import { StickerPoller } from './stickerPoll';
 import { MeterView } from './meterView';
 import { FreqScopeView, SpectrumFrame } from './freqScope';
+import { SpectrogramView, SpectrogramFrames } from './spectrogramView';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -248,6 +249,30 @@ export async function activate(context: vscode.ExtensionContext) {
           return r.entries ?? [];
         },
         configuration.get<number>('freqScopeIntervalMs', 50),
+        configuration.get<number>('freqScopeFftSize', 2048)
+      );
+    }),
+    vscode.commands.registerCommand('clamps.spectrogramShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration('clamps');
+      SpectrogramView.show(
+        async params => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<SpectrogramFrames>('clamps/stickerSpectrogram', params);
+        },
+        async () => {
+          const c = client;
+          if (!c || c.state !== State.Running) return [];
+          const r = await c.sendRequest<{
+            entries?: { key: string; capacity: number; decimation: number; elementType: string }[];
+          }>('clamps/stickerKeys', {});
+          return r.entries ?? [];
+        },
+        configuration.get<number>('spectrogramIntervalMs', 60),
         configuration.get<number>('freqScopeFftSize', 2048)
       );
     }),

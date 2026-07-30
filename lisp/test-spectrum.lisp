@@ -327,8 +327,183 @@
   (unless (some (lambda (w) (search "Sample rate unknown" w)) (warnings-of result))
     (fail "No warning about the guessed sample rate: ~S" (warnings-of result))))
 
+
+;;; ---------------------------------------------------------------------
+;;; 11. Spectrogram: the absolute frame grid
+;;; ---------------------------------------------------------------------
+;;; The assurance that makes a time axis possible at all. Frame F always
+;;; covers the samples [F*HOP - FFT-SIZE, F*HOP), whoever asks and
+;;; whenever — so two consecutive requests can neither return the same
+;;; column twice nor leave a gap. Without it the column spacing would be
+;;; however long the round trip took, and the axis would be unlabellable.
+;;;
+;;; None of this is visible in the picture. A spectrogram with a duplicated
+;;; or missing column looks exactly like one without.
+
+(defun spectro-header (result) (second result))
+(defun spectro-frames (result) (third result))
+(defun spectro-frame-index (result) (nth 9 (spectro-header result)))
+(defun spectro-seconds (result) (nth 10 (spectro-header result)))
+(defun spectro-dropped (result) (nth 11 (spectro-header result)))
+
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8192 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "gram" state)
+  ;; 4096 samples: with hop 512 and a 1024-point window, frames 2..8 are
+  ;; complete and inside the ring.
+  (dotimes (i 4096)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl
+     state (sin (/ (* 2.0d0 (coerce pi 'double-float) 64 i) 1024))))
+
+  ;; First request: the NEWEST frames, not everything since the start.
+  ;; On opening, the present is what matters.
+  (let ((first (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                "gram" 1024 "hann" 64 "log" -96.0 0 512 4)))
+    (unless (eq (first first) :ok)
+      (fail "Spectrogram failed: ~A" (second first)))
+    (check "four frames delivered" (length (spectro-frames first)) 4 0.5)
+    (check "newest frame index" (spectro-frame-index first) 8 0.5)
+    (check "seconds per frame" (spectro-seconds first) (/ 512.0d0 48000.0d0) 1.0d-12)
+    (dolist (frame (spectro-frames first))
+      (unless (= 64 (length frame))
+        (fail "Frame has ~D columns instead of 64" (length frame))))
+
+    ;; Nothing new: no frames, and the index must not move. Otherwise the
+    ;; client would advance past frames it never received.
+    (let ((again (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                  "gram" 1024 "hann" 64 "log" -96.0 8 512 4)))
+      (check "no new frames" (length (spectro-frames again)) 0 0.5)
+      (check "index stays" (spectro-frame-index again) 8 0.5)
+      (check "nothing dropped" (spectro-dropped again) 0 0.5))
+
+    ;; Exactly one hop further: exactly one new frame, and it is frame 9.
+    (dotimes (i 512)
+      (clamps-bridge-rpc:sticker-state-record-sample-for-repl
+       state (sin (/ (* 2.0d0 (coerce pi 'double-float) 64 (+ 4096 i)) 1024))))
+    (let ((next (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                 "gram" 1024 "hann" 64 "log" -96.0 8 512 4)))
+      (check "one hop, one frame" (length (spectro-frames next)) 1 0.5)
+      (check "and it is frame 9" (spectro-frame-index next) 9 0.5)
+      (check "still nothing dropped" (spectro-dropped next) 0 0.5))
+
+    ;; Half a hop further: NO new frame. The grid is absolute, not
+    ;; "whatever has arrived since".
+    (dotimes (i 256)
+      (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 0.0d0))
+    (let ((half (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                 "gram" 1024 "hann" 64 "log" -96.0 9 512 4)))
+      (check "half a hop yields nothing" (length (spectro-frames half)) 0 0.5)
+      (check "index unmoved" (spectro-frame-index half) 9 0.5))))
+
+;;; A frame that fell out of the ring is REPORTED, not passed over. This is
+;;; the one failure the eye cannot catch: without the count, everything
+;;; after the gap is misdated and the picture still looks continuous.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 2048 1)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "small" state)
+  (dotimes (i 2048)
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 0.1d0))
+  (let ((start (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                "small" 1024 "hann" 32 "log" -96.0 0 256 2)))
+    (check "starting index" (spectro-frame-index start) 8 0.5)
+    ;; Overrun the ring completely: every frame between then and now is
+    ;; gone.
+    (dotimes (i 4096)
+      (clamps-bridge-rpc:sticker-state-record-sample-for-repl state 0.2d0))
+    (let ((late (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                 "small" 1024 "hann" 32 "log" -96.0 8 256 2)))
+      (unless (> (spectro-dropped late) 0)
+        (fail "Overrun ring reports ~D dropped frames" (spectro-dropped late)))
+      (unless (> (spectro-frame-index late) 8)
+        (fail "Index did not advance despite new data: ~D"
+              (spectro-frame-index late))))))
+
+;;; The hop is clamped into 16..FFT-SIZE. A hop larger than the window
+;;; would leave holes in the analysis; 0 or a negative one would loop.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(fill-ring "clamp" 4096 (sine-generator 1.0d0 64 1024))
+(dolist (case* (list (list 0 16) (list -5 16) (list 99999 1024) (list 256 256)))
+  (destructuring-bind (given expected) case*
+    (let ((result (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                   "clamp" 1024 "hann" 32 "log" -96.0 0 given 2)))
+      (check (format nil "hop ~D clamped" given)
+             (nth 8 (spectro-header result)) expected 0.5))))
+
+;;; The spectrogram and the scope must agree about the frequency axis: the
+;;; frame ending at the newest sample IS the scope's spectrum. Two separate
+;;; computations of the same thing is exactly how a scope and a
+;;; spectrogram come to place a partial in two different rows.
+(let* ((scope (clamps-bridge-rpc:sticker-spectrum-for-repl
+               "clamp" 1024 "hann" 32 "log" -96.0))
+       (gram (clamps-bridge-rpc:sticker-spectrogram-for-repl
+              "clamp" 1024 "hann" 32 "log" -96.0 0 1024 1))
+       (scope-header (header-of scope))
+       (gram-header (spectro-header gram)))
+  (check "same lower bound" (nth 4 gram-header) (nth 4 scope-header) 1.0d-12)
+  (check "same upper bound" (nth 5 gram-header) (nth 5 scope-header) 1.0d-12)
+  (check "same bin width" (nth 7 gram-header) (nth 9 scope-header) 1.0d-12)
+  (let ((frame (first (spectro-frames gram))))
+    (unless frame (fail "Spectrogram delivered no frame for the comparison"))
+    (when frame
+      (loop for a in frame for b in (values-of scope) for c from 0
+            do (check (format nil "column ~D identical" c) a b 1.0d-9)))))
+
+
+;;; The assurance that actually pins the grid down: frame F has to CONTAIN
+;;; the samples of frame F.
+;;;
+;;; The checks above compare indices and counts, and a first version of
+;;; this file stopped there. It let a mutation through that read every
+;;; window from the newest end of the ring instead of from the absolute
+;;; position — because the test signal was a steady sine, so every window
+;;; looked alike and no content check could tell them apart. That is the
+;;; same class of mistake as a test that never asserts: it runs, it passes,
+;;; it checks nothing.
+;;;
+;;; So the signal now changes with time. Each segment of 512 samples
+;;; carries a different tone; with FFT-SIZE = HOP = 512, frame F covers
+;;; exactly segment F-1, and its peak frequency says which one it saw.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(let ((state (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8192 1))
+      (bins #(8 16 32 64 96 128 160 192)))
+  (clamps-bridge-rpc:register-sticker-state-for-repl "steps" state)
+  (dotimes (segment (length bins))
+    (let ((bin (aref bins segment)))
+      (dotimes (i 512)
+        (clamps-bridge-rpc:sticker-state-record-sample-for-repl
+         state (sin (/ (* 2.0d0 (coerce pi 'double-float) bin i) 512))))))
+  ;; Frames 1..8 exist; frame F saw segment F-1.
+  (let* ((result (clamps-bridge-rpc:sticker-spectrogram-for-repl
+                  "steps" 512 "rect" 256 "lin" -96.0 0 512 8))
+         (frames (spectro-frames result))
+         (bin-width (nth 7 (spectro-header result)))
+         (f-max (nth 5 (spectro-header result)))
+         (columns 256))
+    (check "eight step frames" (length frames) 8 0.5)
+    (loop for frame in frames
+          for segment from 0
+          do (let* ((loudest (position (reduce #'max frame) frame))
+                    (lo (clamps-bridge-rpc::%spectrum-edge
+                         loudest columns 0.0d0 f-max nil))
+                    (hi (clamps-bridge-rpc::%spectrum-edge
+                         (1+ loudest) columns 0.0d0 f-max nil))
+                    (want (* (aref bins segment) bin-width)))
+               ;; The loudest column of frame F+1 must cover the frequency
+               ;; of segment F. If the windows were read from the wrong
+               ;; place, the tones appear in the wrong frames — and the
+               ;; picture still looks like a clean staircase.
+               (unless (and (<= lo want) (>= hi want))
+                 (fail "Frame ~D covers ~,1F..~,1F Hz, segment ~D is at ~,1F Hz"
+                       (1+ segment) lo hi segment want))))))
+
+;;; Error paths are the scope's, because both go through the same checks.
+(let ((result (clamps-bridge-rpc:sticker-spectrogram-for-repl "nope" 1024)))
+  (unless (and (eq (first result) :error) (search "No ring" (second result)))
+    (fail "Unknown ring in the spectrogram reports ~S" result)))
+
 (if (> *failed* 0)
     (progn (format t "~%~D test(s) failed.~%" *failed*)
            (sb-ext:exit :code 1))
     (format t "ok — FFT checked against the DFT, level and frequency true to scale, ~
-column reduction hits the tone, NaN and decimation are visible~%"))
+column reduction hits the tone, NaN and decimation are visible, ~
+spectrogram grid is absolute and gaps are reported~%"))

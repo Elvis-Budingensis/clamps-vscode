@@ -213,3 +213,48 @@ naive DFT, the level accuracy of all three window functions, sub-bin frequency
 interpolation and the column reduction; `node test/freqscope.test.js` checks
 the note names, the peak hold and that the frequency axis is computed
 identically in `rpc.lisp`, in `freqScope.ts` and in the webview twin.
+
+## Live spectrogram (1.0.4)
+
+`CLAMPS: Show Spectrogram (frequency over time)` shows frequency vertically,
+time scrolling to the left and level as colour. Hovering reads off frequency,
+note name and how long ago the column was recorded.
+
+Technically it is the same FFT as the freq scope — literally the same, because
+the windowing, transform, peak interpolation and column reduction live in
+`%spectrum-of-samples`, which both call. What differs is the handling of time,
+and that is the point of the view.
+
+The frames sit on an absolute grid: frame *F* covers the samples
+`[F*hop - fftSize, F*hop)`. Several frames arrive per request; the view names
+the last index it received and Lisp answers with what is missing. So:
+
+- One column is exactly `hop/rate` seconds. Asking for one spectrum per drawn
+  frame instead would make the column spacing whatever the round trip happened
+  to take, and the time axis would carry no unit.
+- Frames cannot be duplicated or silently lost. What fell out of the ring is
+  counted and reported, because a gap misdates everything to the right of it
+  and is invisible in the picture.
+- Time resolution and update rate are independent: eight frames per request at
+  20 requests a second gives 160 columns of axis per second over 20 messages.
+
+The **hop** is the time resolution and the FFT length the frequency
+resolution; the two trade off against each other. A hop of a quarter of the
+window is the usual compromise. Note that the update rate follows from the
+hop: at a hop of 64 the analysis produces 750 frames a second, and the request
+cycle is shortened accordingly, because at most 64 frames fit in one answer.
+
+A spectrogram needs **more ring headroom than the scope** — at least twice the
+FFT length — because between two requests the ring has to keep the frames
+accrued in the meantime:
+
+```lisp
+(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl 8192 1))
+(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)
+```
+
+New gates: the frame grid is checked in `lisp/test-spectrum.lisp` against a
+signal that steps in frequency every hop, so that each frame's peak says which
+segment it saw; `test/spectrogram.test.js` checks the ring requirement, that a
+request covers what accrues, that the colour ramp never darkens as the level
+rises, and that low frequencies are drawn at the bottom.

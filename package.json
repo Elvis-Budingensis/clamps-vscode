@@ -2,7 +2,7 @@
   "name": "clamps-vscode",
   "displayName": "CLAMPS – Audio-aware Lisp IDE",
   "description": "An audio-aware Lisp IDE for CLAMPS and Incudine.",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "elvis-budingensis",
   "engines": {
     "vscode": "^1.85.0"
@@ -313,6 +313,10 @@
       {
         "command": "clamps.freqScopeShow",
         "title": "CLAMPS: Show Spectrum (Freq Scope)"
+      },
+      {
+        "command": "clamps.spectrogramShow",
+        "title": "CLAMPS: Show Spectrogram (frequency over time)"
       }
     ],
     "languages": [
@@ -458,6 +462,12 @@
             8192
           ],
           "description": "Default FFT length of the freq scope. Long means fine frequency resolution and sluggish time resolution: at 48 kHz, 2048 points give 23.4 Hz per bin over a window of 43 ms. The ring must hold at least that many values."
+        },
+        "clamps.spectrogramIntervalMs": {
+          "type": "number",
+          "default": 60,
+          "minimum": 20,
+          "description": "Request interval of the spectrogram in milliseconds. This is NOT the time resolution: the frames sit on an absolute grid of hop samples, and several arrive per request, so the column spacing is hop/rate seconds regardless of this setting. A larger interval means fewer, larger messages, not a coarser picture."
         },
         "clamps.openReplOnStart": {
           "type": "boolean",
@@ -625,7 +635,7 @@
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
     "comments:update": "node test/comments-update.js",
-    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/freqscope.test.js && node test/lispstring.test.js && node test/comments.test.js",
+    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/freqscope.test.js && node test/spectrogram.test.js && node test/lispstring.test.js && node test/comments.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
     "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/test-spectrum.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp",
     "package": "npx @vscode/vsce package",
