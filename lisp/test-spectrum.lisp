@@ -163,6 +163,7 @@
   (check "interpolated peak frequency" (peak-freq-of result) 503.906d0 3.0d0)
   (check "bin width" (bin-width-of result) 23.4375d0 1.0d-9))
 
+
 ;;; Without interpolation the value would sit on a multiple of the bin
 ;;; width.  That is exactly what must NOT come out here.
 (let* ((result (clamps-bridge-rpc:sticker-spectrum-for-repl
@@ -172,6 +173,56 @@
        (rest* (abs (- (/ freq width) (round (/ freq width))))))
   (when (< rest* 0.2d0)
     (fail "Peak frequency ~,3F snaps to the bin grid" freq)))
+
+;;; And the level has to be corrected too, not just the frequency.
+;;;
+;;; This is what a screenshot revealed and no test did: a sine of amplitude
+;;; 0.2 read -14.6 dBFS where -13.98 is right. A tone between two bins
+;;; falls into the flank of the window, so its bin is TOO QUIET — 0.6 dB at
+;;; a third of a bin, up to 1.4 dB at half a bin with Hann. The apex of the
+;;; same parabola that gives the frequency also gives the level.
+;;;
+;;; The existing level checks used a tolerance of 0.2 dB but only for tones
+;;; ON a bin centre, where the error is exactly zero. That is why they never
+;;; fired.
+;;;
+;;; The correction is NOT exact, and the tolerance says so honestly.
+;;; Parabolic interpolation in dB is a known approximation: for Hann it
+;;; overestimates by about 0.3 dB at half a bin, because the window's
+;;; mainlobe is not a parabola. What it buys is a residual of a few tenths
+;;; instead of 1.4 dB, and one that no longer depends on where the tone
+;;; happens to fall. Claiming exactness here would mean a tolerance the
+;;; next window function breaks.
+(dolist (bin (list 21.0d0 21.25d0 21.33d0 21.5d0 21.75d0))
+  (clamps-bridge-rpc:sticker-clear-for-repl)
+  (fill-ring "level" 2048 (sine-generator 0.2d0 bin 2048))
+  (let ((result (clamps-bridge-rpc:sticker-spectrum-for-repl
+                 "level" 2048 "hann" 256 "log" -96.0)))
+    ;; 20*log10(0.2) = -13.979
+    (check (format nil "level at bin ~,2F" bin)
+           (peak-db-of result) -13.979d0 0.4d0)))
+
+;;; And the correction has to be an IMPROVEMENT at half a bin, not just
+;;; within tolerance: the raw bin is 1.4 dB low there, so a version that
+;;; forgot the correction would still pass a loose enough tolerance.
+(clamps-bridge-rpc:sticker-clear-for-repl)
+(fill-ring "half" 2048 (sine-generator 0.2d0 21.5d0 2048))
+(let ((db (peak-db-of (clamps-bridge-rpc:sticker-spectrum-for-repl
+                       "half" 2048 "hann" 256 "log" -96.0))))
+  (unless (> db -14.6d0)
+    (fail "Level at half a bin is ~,3F — that is the uncorrected bin value, ~
+the parabola's apex is not being used" db)))
+
+;;; The correction must not push a full-scale tone above 0 dB: an
+;;; interpolation is not a licence to report more than full scale.
+(dolist (bin (list 64.0d0 64.5d0 64.37d0))
+  (clamps-bridge-rpc:sticker-clear-for-repl)
+  (fill-ring "loud" 2048 (sine-generator 1.0d0 bin 2048))
+  (let ((db (peak-db-of (clamps-bridge-rpc:sticker-spectrum-for-repl
+                         "loud" 2048 "hann" 256 "log" -96.0))))
+    (when (> db 0.0d0)
+      (fail "Full scale at bin ~,2F reports ~,3F dB, above 0" bin db))
+    (check (format nil "full scale at bin ~,2F" bin) db 0.0d0 0.4d0)))
 
 ;;; ---------------------------------------------------------------------
 ;;; 5. Silence

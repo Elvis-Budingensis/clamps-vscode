@@ -75,8 +75,8 @@
   "longStrings": 2
  },
  "src/spectrogramView.ts": {
-  "lines": 608,
-  "comments": 104,
+  "lines": 627,
+  "comments": 116,
   "longStrings": 2
  },
  "src/stickerPoll.ts": {
@@ -135,8 +135,8 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 2770,
-  "comments": 339,
+  "lines": 2785,
+  "comments": 353,
   "longStrings": 114
  },
  "lisp/swankframing.lisp": {
@@ -160,9 +160,9 @@
   "longStrings": 22
  },
  "lisp/test-spectrum.lisp": {
-  "lines": 510,
-  "comments": 140,
-  "longStrings": 13
+  "lines": 561,
+  "comments": 165,
+  "longStrings": 15
  },
  "lisp/test-sticker-state.lisp": {
   "lines": 267,

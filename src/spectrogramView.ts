@@ -178,6 +178,16 @@ export class SpectrogramView {
   private keyTimer: ReturnType<typeof setInterval> | undefined;
   private inFlight = false;
   private effectiveIntervalMs = 60;
+  /**
+   * The rate reported by the image, used for the request arithmetic.
+   *
+   * 44100 as the starting assumption, not 48000: the screenshot from a
+   * real session showed 44100, and a hardcoded 48000 makes the frame
+   * accounting 9 % optimistic — enough to drop a frame per request at a
+   * small hop. It is corrected from the first answer onwards, so the
+   * initial value only matters for the very first cycle.
+   */
+  private rate = 44100;
   private visible = true;
   private lastKeys = '';
 
@@ -223,7 +233,7 @@ export class SpectrogramView {
   private retime(): void {
     if (this.timer !== undefined) clearInterval(this.timer);
     this.effectiveIntervalMs =
-      pollIntervalFor(this.intervalMs, this.settings.hop, 48000);
+      pollIntervalFor(this.intervalMs, this.settings.hop, this.rate);
     this.timer = setInterval(() => void this.tick(), this.effectiveIntervalMs);
   }
 
@@ -348,14 +358,23 @@ export class SpectrogramView {
     this.inFlight = true;
     try {
       const maxFrames =
-        framesPerRequest(this.effectiveIntervalMs, this.settings.hop, 48000);
+        framesPerRequest(this.effectiveIntervalMs, this.settings.hop, this.rate);
       const answer = await this.request({
         ...this.settings,
         since: this.since,
         maxFrames,
       });
       if (!answer) return;
-      if (answer.available) this.since = answer.frame;
+      if (answer.available) {
+        this.since = answer.frame;
+        // Adopt the real rate. Guessing it wrongly makes the frame
+        // accounting optimistic and drops a frame per request — invisibly,
+        // because the picture keeps scrolling.
+        if (answer.effectiveRate > 0 && answer.effectiveRate !== this.rate) {
+          this.rate = answer.effectiveRate;
+          this.retime();
+        }
+      }
       void this.panel.webview.postMessage({ type: 'frames', answer });
     } catch {
       // A failed request does not end the cycle — the session may be

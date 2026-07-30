@@ -1934,7 +1934,7 @@ invisibly, because both pictures look plausible on their own."
         (loop for k from 1 below half
               do (when (> (aref db k) (aref db best)) (setf best k)))
         (when (> (aref db best) floor-db)
-          (let ((delta 0.0d0))
+          (let ((delta 0.0d0) (lift 0.0d0))
             (when (and (> best 0) (< best (1- half)))
               (let* ((left (aref db (1- best)))
                      (centre (aref db best))
@@ -1943,9 +1943,24 @@ invisibly, because both pictures look plausible on their own."
                 (unless (zerop divisor)
                   (setf delta (max -0.5d0
                                    (min 0.5d0
-                                        (* 0.5d0 (/ (- left right) divisor))))))))
+                                        (* 0.5d0 (/ (- left right) divisor)))))
+                  ;; The SAME parabola also gives the level at its apex,
+                  ;; and it has to be used. Up to 1.0.5 only the frequency
+                  ;; was corrected and the level was read off the raw bin
+                  ;; — but a tone between two bins falls into the flank of
+                  ;; the window, so its bin is TOO QUIET: about 0.6 dB at
+                  ;; a third of a bin, up to 1.4 dB at half a bin with
+                  ;; Hann. The readout was therefore systematically low,
+                  ;; and by an amount that depends on where the tone
+                  ;; happens to fall relative to the grid — which is why
+                  ;; it looked like measurement noise rather than a bug.
+                  ;; A sine of amplitude 0.2 read -14.6 dBFS where -13.98
+                  ;; is right.
+                  (setf lift (* -0.25d0 (- left right) delta)))))
             (setf peak-freq (* (+ (float best 1.0d0) delta) bin-width)
-                  peak-db (aref db best))))
+                  ;; Never above 0 dB: the correction is an interpolation,
+                  ;; not a licence to report more than full scale.
+                  peak-db (min 0.0d0 (+ (aref db best) lift)))))
         ;; Column reduction.
         (let* ((log-p (and (string-equal (string mode) "log")
                            (< bin-width (* 0.5d0 nyquist))))

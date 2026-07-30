@@ -2,6 +2,36 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.0.5] - 2026-07-30
+
+### Fixed
+
+- **The freq scope's level readout was systematically too low.** The quadratic
+  interpolation over the neighbouring bins corrected the FREQUENCY but the
+  level was read off the raw bin. A tone that does not fall on a bin centre
+  sits in the flank of the window and its bin is therefore too quiet: about
+  0.6 dB at a third of a bin, up to 1.4 dB at half a bin with Hann. A sine of
+  amplitude 0.2 read −14.6 dBFS where −13.98 is right. The apex of the same
+  parabola gives the level, and it is now used, clamped so that an
+  interpolation cannot report more than full scale.
+
+  The correction is an approximation, not an identity — parabolic
+  interpolation in dB overestimates by roughly 0.3 dB at half a bin, because a
+  window's mainlobe is not a parabola. The gate's tolerance says so rather
+  than pretending otherwise, and additionally checks that the value at half a
+  bin is BETTER than the raw bin, so that a version which drops the correction
+  again cannot pass on a loose tolerance.
+
+  The existing level checks used a 0.2 dB tolerance but only for tones on bin
+  centres, where the error is exactly zero. That is why they never fired, and
+  why this was found in a screenshot rather than by a test.
+
+- **The spectrogram assumed a sample rate of 48000.** The rate is 44100 in a
+  real session, which makes the frame accounting 9 % optimistic — enough to
+  drop a frame per request at a small hop, invisibly, because the picture
+  keeps scrolling. The rate reported by the image is now adopted from the
+  first answer onwards and the cycle re-timed accordingly.
+
 ## [1.0.4] - 2026-07-30
 
 ### Added
