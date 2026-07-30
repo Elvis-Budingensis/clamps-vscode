@@ -1483,6 +1483,59 @@ misdates everything after it and cannot be seen."
                         "warnings" (vector)
                         "frames" (vector))))))))
 
+(defun handle-buffer-outline (id params)
+  "clamps/bufferOutline — waveform outline of a buffer.
+
+The reduction happens in the image, for the same reason as the FFT: an
+eight-minute recording is twenty million samples and a display is eight
+hundred pixels wide. What is transferred is three numbers per drawn
+column — minimum, maximum and RMS — and that is independent of how long
+the buffer is."
+  (let ((expr (or (gethash "expr" params) ""))
+        (pkg (or (gethash "package" params) "COMMON-LISP-USER"))
+        (start (or (gethash "start" params) 0))
+        (end (or (gethash "end" params) -1))
+        (columns (or (gethash "columns" params) 512))
+        (channel (or (gethash "channel" params) 0)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:buffer-outline-for-repl ~S ~S ~D ~D ~D ~D)"
+             expr pkg (truncate start) (truncate end) (truncate columns)
+             (truncate channel))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                (= (length value) 3))
+           (destructuring-bind (ok header columns*) value
+             (declare (ignore ok))
+             (destructuring-bind (frames channels rate duration start end
+                                  column-count channel peak rms clipped warnings)
+                 header
+               (send-response id
+                 (make-jobj "available" :true
+                            "error" ""
+                            "frames" frames
+                            "channels" channels
+                            "sampleRate" rate
+                            "duration" duration
+                            "start" start
+                            "end" end
+                            "columns" column-count
+                            "channel" channel
+                            "peak" peak
+                            "rms" rms
+                            "clipped" clipped
+                            "warnings" (coerce warnings 'vector)
+                            "values" (coerce (mapcar (lambda (c) (coerce c 'vector))
+                                                     columns*)
+                                             'vector)))))
+           (send-response id
+             (make-jobj "available" :false
+                        "error" (if (and (consp value) (eq (first value) :error))
+                                    (or (second value) "Buffer not readable.")
+                                    (format nil "~A" value))
+                        "warnings" (vector)
+                        "values" (vector))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1583,6 +1636,7 @@ misdates everything after it and cannot be seen."
           ((string= method "clamps/stickerKeys") (handle-sticker-keys id params))
           ((string= method "clamps/stickerSpectrum") (handle-sticker-spectrum id params))
           ((string= method "clamps/stickerSpectrogram") (handle-sticker-spectrogram id params))
+          ((string= method "clamps/bufferOutline") (handle-buffer-outline id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

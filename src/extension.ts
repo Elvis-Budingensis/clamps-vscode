@@ -25,6 +25,7 @@ import { StickerPoller } from './stickerPoll';
 import { MeterView } from './meterView';
 import { FreqScopeView, SpectrumFrame } from './freqScope';
 import { SpectrogramView, SpectrogramFrames } from './spectrogramView';
+import { BufferView, BufferOutline } from './bufferView';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -274,6 +275,41 @@ export async function activate(context: vscode.ExtensionContext) {
         },
         configuration.get<number>('spectrogramIntervalMs', 60),
         configuration.get<number>('freqScopeFftSize', 2048)
+      );
+    }),
+    vscode.commands.registerCommand('clamps.bufferShow', async () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      // The selection, the symbol at the cursor, or an explicit question —
+      // the same order as the inspector, so that "look at this" works the
+      // same way everywhere.
+      const editor = vscode.window.activeTextEditor;
+      let expr = '';
+      if (editor && !editor.selection.isEmpty) {
+        expr = editor.document.getText(editor.selection).trim();
+      } else if (editor) {
+        const range = editor.document.getWordRangeAtPosition(
+          editor.selection.active, /[^\s()'"`,;]+/);
+        if (range) expr = editor.document.getText(range);
+      }
+      if (!expr) {
+        expr = (await vscode.window.showInputBox({
+          prompt: 'Buffer to display',
+          placeHolder: '*my-buffer*',
+        }))?.trim() ?? '';
+      }
+      if (!expr) return;
+      const pkg = editor ? packageAt(editor.document, editor.selection.active)
+                         : 'COMMON-LISP-USER';
+      BufferView.show(
+        async params => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<BufferOutline>('clamps/bufferOutline', params);
+        },
+        expr, pkg
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {

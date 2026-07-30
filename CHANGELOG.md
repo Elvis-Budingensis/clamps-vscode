@@ -2,6 +2,54 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.0.6] - 2026-07-30
+
+### Added
+
+- **Buffer waveform viewer** (`CLAMPS: Show Buffer Waveform`): the waveform of
+  an Incudine buffer with zoom, scroll, per-channel display and a cursor
+  readout in time and frames. Peak and RMS over the visible range, and a
+  warning when samples reach full scale.
+
+  The reduction happens in the image (`buffer-outline-for-repl`): three
+  numbers per drawn column, minimum, maximum and RMS. An eight-minute
+  recording is twenty million samples and a canvas is eight hundred pixels
+  wide; whatever were transferred, almost all of it would be discarded at the
+  far end.
+
+  Two decisions look like details and are not:
+
+  - **Minimum AND maximum, not maximum.** The spectrum reduces by maximum,
+    which is right for a partial. A waveform reduced that way loses its lower
+    half, and a symmetric signal comes out as a one-sided envelope — it still
+    looks like a waveform, which is what makes the mistake durable. With both,
+    a DC offset shows as an envelope that does not straddle zero.
+  - **Every sample is examined, none stepped over.** Decimating by reading
+    every Nth sample is the obvious shortcut and it defeats the purpose: a
+    single clipped sample between two steps is invisible, and a click is
+    nothing but that.
+
+  The gate mutates both of these and catches them with 64 and 194 failures
+  respectively, using signals in which a wrong reduction is arithmetically
+  detectable rather than merely ugly.
+
+### Fixed
+
+- **The zoom range crept.** Ten steps in and ten out came back 479 frames away
+  from the start. The cause was not the zoom arithmetic but feeding its
+  rounded result back into the next call: every step lands on a whole frame,
+  the error is tiny, and it accumulates. The view now keeps its range in
+  fractional frames and rounds once, at the moment of the request; nothing
+  rounded ever flows back.
+
+  Two intermediate attempts are worth recording, because both looked like
+  fixes: discrete zoom levels reduced the drift from 479 frames to 3 per
+  cycle, and 3 frames out of 100000 looks exactly like rounding. It was still
+  a bug, and the gate proves it by running the cycle twice with different
+  counts — 3 frames after one cycle and 24 after eight is not rounding, it is
+  creep. A range that creeps sideways is a perfectly good waveform at every
+  single moment; only the sequence is wrong, and no screenshot shows it.
+
 ## [1.0.5] - 2026-07-30
 
 ### Fixed

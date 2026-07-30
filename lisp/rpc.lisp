@@ -50,6 +50,7 @@
            #:sticker-state-record-rms-for-repl
            #:sticker-samples-since-for-repl #:sticker-keys-for-repl
            #:sticker-spectrum-for-repl #:sticker-spectrogram-for-repl
+           #:buffer-outline-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -2155,6 +2156,177 @@ opening, the present matters and not the minutes before anyone looked."
                         (%spectrum-warnings rate-known-p decimation
                                             effective-rate nonfinite))
                   (nreverse frames))))))))
+
+;;; ---------------------------------------------------------------------
+;;; Buffer outline: a waveform reduced to the columns that get drawn
+;;; ---------------------------------------------------------------------
+;;;
+;;; The same argument as for the spectrum, only more so.  An eight-minute
+;;; recording at 44100 Hz is twenty million samples; a display is eight
+;;; hundred pixels wide.  Whatever is transferred, 99.996 % of it would be
+;;; thrown away at the far end.  So the reduction happens here.
+;;;
+;;; But it is NOT the spectrum's reduction, and that is the point of this
+;;; section.  The spectrum takes the maximum per column, because a partial
+;;; is a peak and the loudest bin is the honest answer.  A waveform reduced
+;;; by maximum alone shows only its upper half: everything below zero
+;;; vanishes, and a symmetric signal comes out looking like a
+;;; one-sided envelope — plausible, wrong, and wrong in a way that looks
+;;; like a plausible waveform.
+;;;
+;;; So each column carries THREE numbers: minimum, maximum and RMS.  The
+;;; first two draw the envelope, which is what makes clipping and DC offset
+;;; visible; the RMS drawn on top of it is the perceived body, which is
+;;; what makes a compressed passage distinguishable from a loud one.  Peak
+;;; and RMS in one picture is the difference between "this reaches full
+;;; scale" and "this is loud".
+
+(defun %buffer-access (obj)
+  "How to read OBJ frame by frame.
+
+Returns (values READER FRAMES CHANNELS SAMPLE-RATE NOTE), where READER is
+a function (frame channel) -> double-float, or NIL when OBJ is nothing
+that can be read as audio.
+
+Two kinds are accepted, and the second one is not a convenience: an
+Incudine buffer, and any ordinary Lisp vector of numbers.  The vector path
+is what makes the whole reduction testable against a bare SBCL, without
+Incudine, without an audio device and without a sound file — the same
+reason rpc.lisp as a whole avoids depending on the audio stack.  A
+reduction that can only be checked by looking at a picture is a reduction
+nobody checks."
+  (let ((frames-fn (%rt-sym "BUFFER-FRAMES"))
+        (channels-fn (%rt-sym "BUFFER-CHANNELS"))
+        (rate-fn (%rt-sym "BUFFER-SAMPLE-RATE"))
+        (value-fn (%rt-sym "BUFFER-VALUE")))
+    (when (and frames-fn value-fn)
+      (let ((frames (ignore-errors (funcall frames-fn obj))))
+        (when (and (integerp frames) (plusp frames))
+          (let ((channels (or (and channels-fn
+                                   (ignore-errors (funcall channels-fn obj)))
+                              1))
+                (rate (or (and rate-fn (ignore-errors (funcall rate-fn obj)))
+                          0)))
+            (return-from %buffer-access
+              (values (lambda (frame channel)
+                        ;; buffer-value indexes the flat, interleaved data.
+                        (%finite-sample
+                         (funcall value-fn obj (+ (* frame channels) channel))))
+                      frames (max 1 channels) (float rate 1.0d0) nil)))))))
+  (typecase obj
+    ((and vector (not string))
+     (values (lambda (frame channel)
+               (declare (ignore channel))
+               (%finite-sample (aref obj frame)))
+             (length obj) 1 0.0d0
+             "plain vector: no sample rate, the time axis is in frames"))
+    (t (values nil 0 0 0.0d0 "not a buffer and not a vector of samples"))))
+
+(defun %buffer-columns (reader frames channels channel start end columns)
+  "Reduces the range [START, END) to COLUMNS triples (min max rms).
+
+Every sample of the range is looked at, none is skipped.  Decimating by
+stepping — reading every Nth sample — is the obvious shortcut and it is
+wrong for exactly the case one wants a waveform for: a single clipped
+sample between two steps is invisible, and a click is nothing but that.
+The cost is linear in the range, but it is paid here, where the data
+already is, and once per request rather than per pixel."
+  (let* ((span (max 1 (- end start)))
+         (per-column (/ (float span 1.0d0) (float columns 1.0d0)))
+         (out '()))
+    (loop for c from (1- columns) downto 0
+          do (let* ((from (+ start (floor (* c per-column))))
+                    (to (min end (max (1+ from)
+                                      (+ start (floor (* (1+ c) per-column))))))
+                    (lo 0.0d0) (hi 0.0d0) (sum 0.0d0) (n 0))
+               (declare (type double-float lo hi sum))
+               (loop for i from from below to
+                     do (let ((v (funcall reader i channel)))
+                          (when (zerop n) (setf lo v hi v))
+                          (when (< v lo) (setf lo v))
+                          (when (> v hi) (setf hi v))
+                          (incf sum (* v v))
+                          (incf n)))
+               (push (list lo hi (if (plusp n) (sqrt (/ sum n)) 0.0d0)) out)))
+    out))
+
+(defun buffer-outline-for-repl (expr-string &optional (package-name "COMMON-LISP-USER")
+                                              (start 0) (end -1) (columns 512)
+                                              (channel 0))
+  "Waveform outline of the buffer that EXPR-STRING evaluates to.
+
+Returns (:ok HEADER COLUMNS) or (:error TEXT).
+
+HEADER is
+  (FRAMES CHANNELS SAMPLE-RATE DURATION START END COLUMNS CHANNEL
+   PEAK RMS CLIPPED WARNINGS)
+
+COLUMNS is a list of (MIN MAX RMS) triples, left to right.  END = -1 means
+\"to the end of the buffer\", so that the common case needs no arithmetic
+at the caller.
+
+PEAK and CLIPPED are computed over the requested range, not over the drawn
+columns: a single sample at full scale must be reported even when it is
+one of fifty thousand behind one pixel.  That is the whole reason for
+looking at a waveform.
+
+*read-eval* stays off while reading the expression, as everywhere else
+here: an inspector view must not be a way to run arbitrary code through a
+display refresh."
+  (let ((pkg (or (find-package (string-upcase package-name))
+                 (find-package :common-lisp-user))))
+    (handler-case
+        (let* ((*package* pkg)
+               (*read-eval* nil)
+               (obj (eval (read-from-string expr-string))))
+          (multiple-value-bind (reader frames channels rate note)
+              (%buffer-access obj)
+            (cond
+              ((null reader)
+               (list :error (format nil "~A is ~A." expr-string
+                                    (or note "not readable as audio"))))
+              (t
+               (let* ((columns (max 16 (min 4096 (truncate columns))))
+                      (channel (max 0 (min (1- channels) (truncate channel))))
+                      (start (max 0 (min (1- frames) (truncate start))))
+                      (end (if (minusp end)
+                               frames
+                               (max (1+ start) (min frames (truncate end)))))
+                      ;; More columns than samples would give empty
+                      ;; columns; the display then draws gaps that are not
+                      ;; in the signal.
+                      (columns (min columns (- end start)))
+                      (values* (%buffer-columns reader frames channels channel
+                                                start end columns))
+                      (peak 0.0d0) (sum 0.0d0) (clipped 0))
+                 (declare (type double-float peak sum))
+                 (loop for i from start below end
+                       do (let* ((v (funcall reader i channel))
+                                 (a (abs v)))
+                            (when (> a peak) (setf peak a))
+                            (when (>= a 1.0d0) (incf clipped))
+                            (incf sum (* v v))))
+                 (list :ok
+                       (list frames channels rate
+                             (if (plusp rate) (/ (float frames 1.0d0) rate) 0.0d0)
+                             start end columns channel
+                             peak
+                             (if (> end start)
+                                 (sqrt (/ sum (- end start)))
+                                 0.0d0)
+                             clipped
+                             (let ((warnings '()))
+                               (when note (push note warnings))
+                               (when (zerop rate)
+                                 (push "Sample rate unknown, the axis is in frames"
+                                       warnings))
+                               (when (> clipped 0)
+                                 (push (format nil "~D sample(s) at or above full scale"
+                                               clipped)
+                                       warnings))
+                               (nreverse warnings)))
+                       values*))))))
+      (error (e) (list :error (princ-to-string e))))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

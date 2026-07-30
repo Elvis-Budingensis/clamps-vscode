@@ -258,3 +258,40 @@ signal that steps in frequency every hop, so that each frame's peak says which
 segment it saw; `test/spectrogram.test.js` checks the ring requirement, that a
 request covers what accrues, that the colour ramp never darkens as the level
 rises, and that low frequencies are drawn at the bottom.
+
+## Buffer waveform viewer (1.0.6)
+
+`CLAMPS: Show Buffer Waveform` displays an Incudine buffer. It takes the
+selection, the symbol at the cursor, or asks. Mouse wheel zooms towards the
+pointer, the arrow buttons scroll, and the cursor reads off time and frame
+number.
+
+The reduction happens in the image: three numbers per drawn column — minimum,
+maximum and RMS. An eight-minute recording is twenty million samples and the
+canvas is eight hundred pixels wide.
+
+Two decisions look like details and are not:
+
+- **Minimum and maximum, not maximum.** The spectrum reduces by maximum, which
+  is right for a partial. A waveform reduced that way loses its lower half and
+  a symmetric signal comes out as a one-sided envelope — it still looks like a
+  waveform, which is what makes the mistake durable. With both, a DC offset is
+  visible as an envelope that does not straddle zero.
+- **Every sample is examined.** Reading every Nth sample is the obvious
+  shortcut and it defeats the purpose: a single clipped sample between two
+  steps is invisible, and a click is nothing but that.
+
+The envelope is drawn first and the RMS on top of it. The gap between them is
+the dynamic range: a compressed passage and a loud one have the same envelope
+and different bodies.
+
+Any vector of numbers works too, not only an Incudine buffer — which is what
+makes the reduction testable against a bare SBCL, without Incudine, without an
+audio device and without a sound file. Without a buffer there is no sample
+rate, and the axis then says frames rather than inventing seconds.
+
+Gates: `lisp/test-buffer.lisp` uses signals in which a wrong reduction is
+arithmetically detectable — an asymmetric waveform, a single spike among a
+hundred thousand quiet samples, a DC offset — and catches both shortcuts above
+when they are introduced deliberately. `test/buffer.test.js` covers the zoom,
+whose failures are invisible in any single picture.

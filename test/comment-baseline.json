@@ -1,4 +1,9 @@
 {
+ "src/bufferView.ts": {
+  "lines": 441,
+  "comments": 70,
+  "longStrings": 2
+ },
  "src/debugSession.ts": {
   "lines": 1811,
   "comments": 474,
@@ -10,9 +15,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 822,
-  "comments": 125,
-  "longStrings": 18
+  "lines": 858,
+  "comments": 128,
+  "longStrings": 94
  },
  "src/freqScope.ts": {
   "lines": 649,
@@ -115,9 +120,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1662,
+  "lines": 1716,
   "comments": 152,
-  "longStrings": 73
+  "longStrings": 75
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -135,9 +140,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 2785,
-  "comments": 353,
-  "longStrings": 114
+  "lines": 2957,
+  "comments": 380,
+  "longStrings": 120
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -148,6 +153,11 @@
   "lines": 113,
   "comments": 22,
   "longStrings": 7
+ },
+ "lisp/test-buffer.lisp": {
+  "lines": 224,
+  "comments": 72,
+  "longStrings": 10
  },
  "lisp/test-completion.lisp": {
   "lines": 153,
@@ -178,6 +188,11 @@
   "lines": 224,
   "comments": 30,
   "longStrings": 25
+ },
+ "test/buffer.test.js": {
+  "lines": 166,
+  "comments": 56,
+  "longStrings": 13
  },
  "test/commentdensity.js": {
   "lines": 179,
