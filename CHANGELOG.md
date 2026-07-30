@@ -2,6 +2,49 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.0.3] - 2026-07-30
+
+### Fixed
+
+- **Structs showed no slots in the inspector.** `%struct-slot-names` went
+  through `sb-kernel::layout-info`, which does not exist in SBCL 2.2.9 — it is
+  called `wrapper-info` there. `find-symbol` returned `NIL`, the `funcall`
+  signalled, a `handler-case` swallowed it, and the inspector presented every
+  structure instance as having an empty list of parts. Not an error message:
+  emptiness, which looks exactly like a struct that really has no slots. It
+  worked on the SBCL the code was written against and was silently wrong on
+  the next one. `sb-mop:class-slots` is now the primary path, the internal
+  chain remains as a fallback trying both spellings, and if all of them fail
+  the header carries a warning instead of showing nothing.
+
+- **`lisp/test-inspect.lisp` printed `ERROR` and exited 0.** It was a smoke
+  test: 80 forms, all of them printing, none of them comparing. The struct bug
+  above was visible in its output the whole time and no gate read it — the same
+  blind spot as a stripped comment. `setpart` now takes an expected outcome
+  (four calls legitimately expect a refusal) and the file exits non-zero when
+  one does not match.
+
+- **The freq scope offered a level meter ring and then only complained.** A
+  meter ring is decimated ×441 with a capacity of 256, so it can carry no
+  spectrum — but it is also the ring already lying around in a session, and
+  therefore the one tried first. The scope reported `Ring "meter" holds 256
+  values, the FFT needs 2048` and stopped there; the recipe for a usable ring
+  appeared only when no ring at all was registered. Unusable rings are now
+  marked with the reason in the selector, a usable one is preferred when
+  selecting, and the recipe appears whenever nothing can carry a spectrum.
+  Changing the FFT size re-judges the list, because a ring that suffices for
+  1024 does not for 4096.
+
+### Changed
+
+- The README states plainly that this extension is an independent third-party
+  project, not developed, endorsed or supported by Orm Finnendahl (CLAMPS) or
+  Tito Latini (Incudine), and that problems belong in its own issue tracker
+  rather than with those projects.
+- Remaining German developer output in the Lisp gates translated (`forms
+  read`, `type-specific rendering`, `setting slots`, `edge cases` and the
+  German test identifiers).
+
 ## [1.0.2] - 2026-07-29
 
 ### Added

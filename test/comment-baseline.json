@@ -15,9 +15,9 @@
   "longStrings": 17
  },
  "src/freqScope.ts": {
-  "lines": 604,
-  "comments": 78,
-  "longStrings": 2
+  "lines": 649,
+  "comments": 98,
+  "longStrings": 3
  },
  "src/imageBrowsers.ts": {
   "lines": 72,
@@ -130,9 +130,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 2574,
-  "comments": 303,
-  "longStrings": 108
+  "lines": 2613,
+  "comments": 307,
+  "longStrings": 109
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -150,9 +150,9 @@
   "longStrings": 9
  },
  "lisp/test-inspect.lisp": {
-  "lines": 310,
-  "comments": 46,
-  "longStrings": 20
+  "lines": 339,
+  "comments": 48,
+  "longStrings": 22
  },
  "lisp/test-spectrum.lisp": {
   "lines": 335,
@@ -195,9 +195,9 @@
   "longStrings": 1
  },
  "test/freqscope.test.js": {
-  "lines": 184,
-  "comments": 57,
-  "longStrings": 13
+  "lines": 227,
+  "comments": 67,
+  "longStrings": 19
  },
  "test/gatecoverage.test.js": {
   "lines": 151,

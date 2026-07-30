@@ -6,6 +6,16 @@
 
 CLAMPS for VS Code integrates Common Lisp development, interactive evaluation and audio/DSP workflows into one editor. It is designed especially for work with [CLAMPS](https://codeberg.org/ormf/clamps) and [Incudine](https://github.com/titola/incudine).
 
+> **Independent, unaffiliated, unsupported.**
+> This extension is an independent third-party project. It is **not** developed,
+> endorsed or supported by Orm Finnendahl, the author of CLAMPS, nor by
+> Tito Latini, the author of Incudine. Neither of them is involved in it, and
+> neither should be asked for help with it. CLAMPS itself is designed for
+> Emacs with Sly; this extension takes a different route and is maintained
+> separately. Please report problems with the extension in its own
+> [issue tracker](https://github.com/Elvis-Budingensis/clamps-vscode/issues) —
+> not to the CLAMPS or Incudine projects.
+
 ## Highlights
 
 - Start, stop and restart an SBCL/CLAMPS session from VS Code
@@ -14,18 +24,19 @@ CLAMPS for VS Code integrates Common Lisp development, interactive evaluation an
 - Debugger integration with conditions, restarts and variable inspection
 - XREF navigation for definitions, callers, callees, references and bindings
 - Structural editing and parenthesis tools
-- Incudine node browser, DSP status and real-time level monitoring
+- Incudine node browser, DSP status, real-time level monitoring and a
+  frequency scope (real-time FFT spectrum)
 - Browsers for packages, classes, threads and traced functions
 
 ## Related projects
 
 ### CLAMPS
 
-[CLAMPS](https://codeberg.org/ormf/clamps) by Orm Finendahl is the primary environment targeted by this extension. Install and configure CLAMPS before using CLAMPS-specific commands and views.
+[CLAMPS](https://codeberg.org/ormf/clamps) by Orm Finnendahl is the primary environment targeted by this extension. Install and configure CLAMPS before using CLAMPS-specific commands and views. CLAMPS is an independent project with its own goals and its own Emacs/Sly workflow; this extension is not part of it.
 
 ### Incudine
 
-[Incudine](https://github.com/titola/incudine) is a music and DSP programming environment for Common Lisp by Tito Latini. This extension provides dedicated Incudine node, status and real-time audio tooling.
+[Incudine](https://github.com/titola/incudine) is a music and DSP programming environment for Common Lisp by Tito Latini. This extension provides dedicated Incudine node, status and real-time audio tooling. Incudine is likewise an independent project and is not involved in this extension.
 
 ## Requirements
 

@@ -161,16 +161,59 @@ if (start < 0 || end < 0 || end <= start) {
 }
 
 // ---------------------------------------------------------------------
-// 6. The hint for the empty case names an undecimated ring
+// 6. The recipe appears whenever no ring can carry a spectrum
 // ---------------------------------------------------------------------
-// A decimated ring is useless for a spectrum; if there is a decimation
-// factor in the instructions, the user builds exactly the wrong ring and
-// then sees folded-in partials taken to be real.
-if (!html.includes('make-sticker-sample-state-for-repl 4096 1')) {
-  fail('The hint in the empty freq scope shows no undecimated ring');
+// Not only when the list is empty. The common case is a session that
+// already holds a level meter ring — decimation 441, capacity 256: there
+// IS a ring, it simply cannot do this, and a bare error message leaves
+// the user without a next step. That was the state shipped in 1.0.2.
+if (!/anyUsable/.test(html)) {
+  fail('The webview does not distinguish "no ring" from "no usable ring" — '
+     + 'a level meter ring then yields a bare error with no recipe');
+}
+if (!html.includes('No registered ring can carry a spectrum.')) {
+  fail('There is no recipe for the case of a registered but unusable ring');
+}
+// The recipe must not contain a decimation factor: a decimated ring folds
+// high frequencies down where they look like real partials, so an
+// instruction that produces one is worse than no instruction.
+if (!html.includes('make-sticker-sample-state-for-repl')) {
+  fail('The recipe does not name the ring constructor');
+}
+if (!html.includes("' 1))")) {
+  fail('The recipe does not pass decimation 1 — it would produce an '
+     + 'aliased ring that looks like it works');
 }
 if (!html.includes('sticker-state-record-sample-for-repl')) {
-  fail('The hint does not name the allocation-free recorder');
+  fail('The recipe does not name the allocation-free recorder');
+}
+if (!/UNDECIMATED/.test(html)) {
+  fail('The recipe does not stress that the ring must be undecimated');
+}
+
+// The classification itself, which is what decides all of the above.
+{
+  const unusable = (ring, fft) => FreqScopeView.unusableBecause(ring, fft);
+  const sample = { capacity: 4096, decimation: 1, elementType: 'double-float' };
+  equal('a proper scope ring is usable', unusable(sample, 2048), undefined);
+  // Exactly the ring from the field report: the level meter's.
+  equal('a level meter ring is rejected as decimated',
+        unusable({ capacity: 256, decimation: 441, elementType: 'double-float' }, 2048),
+        'decimated \u00d7441');
+  equal('too small is reported with both numbers',
+        unusable({ ...sample, capacity: 512 }, 2048), 'holds 512, needs 2048');
+  equal('a boxed ring is rejected',
+        unusable({ ...sample, elementType: 't' }, 2048), 'not a sample ring');
+  // Decimation is checked before capacity: a decimated ring stays wrong
+  // however large it is, so that is the reason worth showing.
+  equal('decimation outranks capacity',
+        unusable({ capacity: 8, decimation: 4, elementType: 'double-float' }, 2048),
+        'decimated \u00d74');
+  // The same ring changes verdict with the FFT size, which is why
+  // changing the size has to re-judge the list.
+  equal('usable at 2048', unusable({ ...sample, capacity: 2048 }, 2048), undefined);
+  equal('unusable at 4096', unusable({ ...sample, capacity: 2048 }, 4096),
+        'holds 2048, needs 4096');
 }
 
 if (failed > 0) {

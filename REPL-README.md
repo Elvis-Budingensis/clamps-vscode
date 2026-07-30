@@ -181,8 +181,17 @@ A ring for the scope has to be undecimated and hold at least the FFT length:
 and unconditionally in the `dsp!` body:
 
 ```lisp
-(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* sig)
+(dsp! simple (freq amp)
+  (with-samples ((in (sine freq amp 0)))
+    (clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)
+    (out in in)))
 ```
+
+A level meter ring will **not** do. Those are created with a decimation of
+441 and a capacity of 256, which fails on both counts — too small for the FFT,
+and decimated. Since a meter ring is what a session usually already holds, it
+is also the one most likely to be tried first; the selector therefore marks
+unusable rings with the reason.
 
 Three situations are named rather than silently accepted, because a spectrum
 always looks plausible:

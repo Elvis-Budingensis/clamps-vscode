@@ -64,13 +64,13 @@
       (:crash (format t "  ABSTURZ ~A~%" (second r)) nil)
       (t      (format t "  FAILED  ~A~%" (second r)) nil))))
 
-(format t "~&~%===== typspezifisches Rendering =====~%")
+(format t "~&~%===== type-specific rendering =====~%")
 
-(show "HASH-TABLE"  "*ht*")
-(show "CLOS-OBJEKT" "(make-instance 'foo)")
+(show "HASH TABLE"   "*ht*")
+(show "CLOS OBJECT" "(make-instance 'foo)")
 (show "STRUCT"      "(make-bar :a 1 :b 2)")
-(show "LISTE"       "(list 1 2 3)")
-(show "VEKTOR"      "#(1 2 3)")
+(show "LIST"         "(list 1 2 3)")
+(show "VECTOR"       "#(1 2 3)")
 (show "ARRAY 2D"    "(make-array '(2 3) :initial-element 0)")
 (show "STRING"      "\"hallo\"")
 (show "INTEGER"     "255")
@@ -79,20 +79,20 @@
 (show "COMPLEX"     "#c(1 2)")
 (show "CHARACTER"   "#\\a")
 (show "SYMBOL"      "'car")
-(show "FUNKTION"    "#'car")
+(show "FUNCTION"     "#'car")
 (show "PATHNAME"    "#p\"/tmp/x.txt\"")
 (show "PACKAGE"     "*package*")
 (show "NIL"         "nil")
 
-(format t "~&~%===== Objekt-Tabelle =====~%")
+(format t "~&~%===== object table =====~%")
 
 ;; The core point of the change: navigation must not recompute the
 ;; object. A counter in the constructor makes that visible.
 (defparameter *ctr* 0)
-(defclass zaehler () ((n :initform (incf *ctr*)) (inner :initform (list 1 2))))
+(defclass counter () ((n :initform (incf *ctr*)) (inner :initform (list 1 2))))
 
 (let* ((vorher *ctr*)
-       (id (show "SEITENEFFEKT" "(make-instance 'zaehler)")))
+       (id (show "SIDE EFFECT" "(make-instance 'counter)")))
   (format t "~&  *ctr* after the first inspection: ~A (was ~A)~%" *ctr* vorher)
   ;; Navigate into slot 1 (inner) — this must create NO new instance.
   (let ((r (%rpc "inspect-part-for-repl" id 1)))
@@ -103,57 +103,79 @@
 
 ;; Hash keys that cannot be printed readably: previously unnavigable.
 (let ((h (make-hash-table :test 'eq)))
-  (setf (gethash (make-instance 'zaehler) h) :wert-dahinter)
+  (setf (gethash (make-instance 'counter) h) :value-behind)
   (let* ((id (%inspect-register-test h))
          (r (%rpc "inspect-part-for-repl" id 0)))
-    (format t "~&CLOS-SCHLUESSEL  -> ~A print=~A~%" (first r) (fourth r))))
+    (format t "~&CLOS KEY         -> ~A print=~A~%" (first r) (fourth r))))
 
 ;; An unbound slot must not be enterable.
 (let* ((id (%inspect-register-test (make-instance 'foo)))
        (r (%rpc "inspect-part-for-repl" id 1)))
-  (format t "~&UNBOUND betreten -> ~A ~A~%" (first r) (second r)))
+  (format t "~&ENTER UNBOUND    -> ~A ~A~%" (first r) (second r)))
 
 ;; Freigabe
 (%rpc "inspect-release-for-repl")
 (format t "~&AFTER RELEASE    -> ~A~%"
         (second (%rpc "inspect-id-for-repl" 1)))
 
-(format t "~&~%===== Slots setzen =====~%")
+(format t "~&~%===== setting slots =====~%")
 
-(defun setpart (label obj index value &optional (pkg "COMMON-LISP-USER"))
+(defvar *setpart-failures* 0)
+
+(defun setpart (label obj index value &optional (pkg "COMMON-LISP-USER")
+                                        (expect :ok))
+  "Sets a part and CHECKS the outcome against EXPECT.
+
+EXPECT is :ok or :error.  Until 1.0.3 this function only printed the
+outcome and returned it; nothing compared it against anything.  The file
+therefore ran to the end and exited 0 even when a line said ERROR — and
+one did: on SBCL 2.2.9 under Linux the struct case reported \"Part no
+longer exists\" while it succeeded on macOS.  The gate chain reported
+success in both cases, which is the same blind spot as a stripped
+comment: the output was there, nobody read it.
+
+Four of the calls below expect :error — a read-only part, a syntax error,
+a type error.  So the expectation has to be stated per call; a blanket
+\"no ERROR anywhere\" would have to ignore exactly the cases that check
+the refusals."
   (let* ((id (%inspect-register-test obj))
          (r (handler-case (%rpc "inspect-set-part-for-repl" id index value pkg)
-              (error (e) (list :crash (princ-to-string e))))))
+              (error (e) (list :crash (princ-to-string e)))))
+         (got (if (eq (first r) :ok) :ok :error)))
     (format t "~&~20A ~A" label (first r))
     (if (eq (first r) :ok)
         (format t "   -> ~A~%" (third r))
         (format t "   ~A~%" (second r)))
+    (unless (eq got expect)
+      (incf *setpart-failures*)
+      (format t "~&  FAILED ~A: expected ~A, got ~A~@[ (~A)~]~%"
+              label expect got (and (not (eq got :ok)) (second r))))
     r))
 
 ;; CLOS-Slot
 (let ((o (make-instance 'foo)))
-  (setpart "CLOS-Slot" o 0 "99")
+  (setpart "CLOS slot" o 0 "99")
   (format t "  x is now: ~A~%" (slot-value o 'x)))
 
 ;; Bind an unbound slot — setting has to manage that too
 (let ((o (make-instance 'foo)))
-  (setpart "unbound binden" o 1 ":jetzt-da")
-  (format t "  y gebunden: ~A wert=~A~%"
+  (setpart "bind an unbound slot" o 1 ":now-here")
+  (format t "  y bound: ~A value=~A~%"
           (slot-boundp o 'y) (and (slot-boundp o 'y) (slot-value o 'y))))
 
 ;; Struct
 (let ((b (make-bar :a 1 :b 2)))
-  (setpart "Struct-Slot" b 0 "\"neu\"")
+  (setpart "struct slot" b 0 "\"new\"")
   (format t "  a is now: ~S~%" (bar-a b)))
 
 ;; Vektor
 (let ((v (vector 1 2 3)))
-  (setpart "Vektor" v 1 "(list :x)")
+  (setpart "vector" v 1 "(list :x)")
   (format t "  v = ~S~%" v))
 
 ;; A list — the setter has to hit the right cell
 (let ((l (list :a :b :c)))
-  (setpart "Liste Index 1" l 1 ":geaendert")
+  (setpart "list index 1" l 1 ":changed")
   (format t "  l = ~S~%" l))
 
 ;; A hash table — the setter has to hit the right key
@@ -163,20 +185,21 @@
   (format t "  k1=~A k2=~A~%" (gethash "k1" h) (gethash "k2" h)))
 
 ;; Symbol value
-(defparameter *sollgeaendert* :alt)
-(setpart "symbol-value" '*sollgeaendert* 0 ":neu")
-(format t "  *sollgeaendert* = ~A~%" *sollgeaendert*)
+(defparameter *should-change* :old)
+(setpart "symbol-value" '*should-change* 0 ":fresh")
+(format t "  *should-change* = ~A~%" *should-change*)
 
 ;; Parts that are not writable have to refuse cleanly
-(setpart "Komplexzahl (ro)" #c(1 2) 0 "5")
-(setpart "symbol-function (ro)" 'car 0 "#'cdr")
+(setpart "complex number (ro)" #c(1 2) 0 "5" "COMMON-LISP-USER" :error)
+(setpart "symbol-function (ro)" 'car 0 "#'cdr" "COMMON-LISP-USER" :error)
 
 ;; Faulty input must not blow through
-(setpart "Syntaxfehler" (vector 1 2) 0 "(((")
-(setpart "Typfehler" (make-array 2 :element-type 'double-float
-                                   :initial-element 0d0) 0 ":not-a-float")
+(setpart "syntax error" (vector 1 2) 0 "(((" "COMMON-LISP-USER" :error)
+(setpart "type error" (make-array 2 :element-type 'double-float
+                                   :initial-element 0d0) 0 ":not-a-float"
+         "COMMON-LISP-USER" :error)
 
-(format t "~&~%===== Teile-Cache =====~%")
+(format t "~&~%===== parts cache =====~%")
 
 ;; Make it measurable: count %preview. Without the cache every click
 ;; recomputes all the previews.
@@ -190,23 +213,23 @@
     ;; 20 navigations, which should use the cache
     (dotimes (k 20) (%rpc "inspect-part-for-repl" id k))
     (let ((t2 (get-internal-real-time)))
-      (format t "~&VEKTOR 2000   beschreiben: ~,1F ms   20x navigieren: ~,1F ms~%"
+      (format t "~&VECTOR 2000   describe: ~,1F ms   navigate 20x: ~,1F ms~%"
               (/ (- t1 t0) (/ internal-time-units-per-second 1000.0))
               (/ (- t2 t1) (/ internal-time-units-per-second 1000.0)))
       (format t "  ~:[SLOW: the cache is not taking effect~;ok: navigation is markedly cheaper~]~%"
               (< (- t2 t1) (* 3 (max 1 (- t1 t0))))))))
 
 ;; Refresh has to discard the cache, otherwise it shows stale values.
-(let* ((v (vector :alt))
+(let* ((v (vector :old))
        (id (%inspect-register-test v)))
   (%rpc "inspect-id-for-repl" id)
-  (setf (aref v 0) :neu)
+  (setf (aref v 0) :fresh)
   (let* ((r (%rpc "inspect-id-for-repl" id))
          (p (first (fifth r))))
     (format t "~&REFRESH       preview after a change: ~A ~:[FAILED: stale~;ok~]~%"
-            (third p) (search "NEU" (string-upcase (third p))))))
+            (third p) (search "FRESH" (string-upcase (third p))))))
 
-(format t "~&~%===== Kanten =====~%")
+(format t "~&~%===== edge cases =====~%")
 
 ;; Previously dolist ran here forever.
 (let ((l (list 1 2 3)))
@@ -219,15 +242,15 @@
        (p (car (last (third d)))))
   ;; Only the first three fields: the fourth is the setter, and a printed
   ;; #<FUNCTION ...> says nothing here.
-  (format t "~&DOTTED        kind=~A letzter=(~S ~S ~S)~%"
+  (format t "~&DOTTED        kind=~A last=(~S ~S ~S)~%"
           (first d) (first p) (second p) (third p)))
 
 (let* ((d (%rpc "%inspect-describe" (make-instance 'foo)))
        (p (find "y" (third d) :key #'first :test #'string=)))
-  (format t "~&UNBOUND-SLOT  label=~S wert=~A preview=~S setzbar=~:[nein~;ja~]~%"
+  (format t "~&UNBOUND-SLOT  label=~S value=~A preview=~S writable=~:[no~;yes~]~%"
           (first p) (second p) (third p) (fourth p)))
 
-(format t "~&~%===== Completion =====~%")
+(format t "~&~%===== completion =====~%")
 
 (defun cshow (label prefix pkg)
   (let ((r (handler-case (%rpc "completions-for-repl" prefix pkg)
@@ -245,18 +268,24 @@
                                (subseq doc 0 (min 40 (length doc))))))))
         (format t "~&~A  ABSTURZ ~A~%" label (second r)))))
 
-(cshow "CL-Funktion"     "mapc"        "COMMON-LISP-USER")
-(cshow "Makro"           "with-op"     "COMMON-LISP-USER")
-(cshow "qualifiziert"    "cl:list-"    "COMMON-LISP-USER")
+(cshow "CL function"     "mapc"        "COMMON-LISP-USER")
+(cshow "macro"           "with-op"     "COMMON-LISP-USER")
+(cshow "qualified"       "cl:list-"    "COMMON-LISP-USER")
 (cshow "intern (::)"     "sb-kernel::%fun" "COMMON-LISP-USER")
 (cshow "Keyword"         ":dir"        "COMMON-LISP-USER")
-(cshow "unbekanntes Pkt" "gibtsnicht:x" "COMMON-LISP-USER")
-(cshow "leer"            ""            "COMMON-LISP-USER")
+(cshow "unknown package" "nosuchpkg:x" "COMMON-LISP-USER")
+(cshow "empty prefix"    ""            "COMMON-LISP-USER")
 
 (format t "~&~%===== SBCL internals (may return NIL, but must not blow up) =====~%")
 (format t "~&%fn-name        ~S~%" (%rpc "%fn-name" #'car))
 (format t "~&%fn-lambda-list ~S~%" (%rpc "%fn-lambda-list" #'car))
-(format t "~&~%fertig.~%")
+(when (> *setpart-failures* 0)
+  ;; The whole point of 1.0.3: a printed ERROR now ends the run. Before
+  ;; this the file exited 0 and the gate chain said "ok".
+  (format t "~&~%~D setpart check(s) failed.~%" *setpart-failures*)
+  (sb-ext:exit :code 1))
+
+(format t "~&~%done.~%")
 
 (when (sb-ext:posix-getenv "TEST_EXIT")
   (sb-ext:exit :code 0))
@@ -270,7 +299,7 @@
   (assert (= pid (clamps-bridge-rpc::%presentation-register obj))))
 (format t "ok — presentations survive the inspector release and keep their ID.~%")
 
-(format t "~&Presentation-Typ-Etiketten …~%")
+(format t "~&Presentation type labels …~%")
 ;; A regression: the labels came from type-of and were therefore exact
 ;; type specifiers rather than names for numbers and sequences. The REPL
 ;; line then read "[#4 (integer 0 4611686018427387903)] ,inspect 4".
@@ -306,4 +335,4 @@
   (unless (eq (first bad) :error)
     (format t "~&FAILED the error branch reports ~S~%" (first bad))
     (sb-ext:exit :code 1)))
-(format t "ok — Presentation-Etiketten lesbar, Stelligkeit in beiden Zweigen gleich.~%")
+(format t "ok — presentation labels readable, arity equal in both branches.~%")

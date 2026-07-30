@@ -218,7 +218,13 @@ export class FreqScopeView {
         if (typeof value === 'string') this.settings.key = value;
         break;
       case 'fftSize':
-        if (typeof value === 'number') this.settings.fftSize = value;
+        if (typeof value === 'number') {
+          this.settings.fftSize = value;
+          // A ring that was big enough for 1024 is not for 4096, so the
+          // list has to be judged again. Clearing lastKeys forces it.
+          this.lastKeys = '';
+          void this.refreshKeys();
+        }
         break;
       case 'window':
         if (typeof value === 'string') this.settings.window = value;
@@ -241,12 +247,33 @@ export class FreqScopeView {
   }
 
   /**
+   * Why a ring cannot carry a spectrum, or undefined if it can.
+   *
+   * A decimated ring is the trap worth naming: without a pre-filter,
+   * decimation folds everything above half the effective rate back down,
+   * where it stands like a genuine partial. That cannot be undone, so it
+   * must be visible rather than silently accepted. And a level meter ring
+   * — decimation 441, capacity 256 — is exactly what is already lying
+   * around in a session, so it is also the ring somebody will try first.
+   */
+  private static unusableBecause(
+    ring: { capacity: number; decimation: number; elementType: string },
+    fftSize: number
+  ): string | undefined {
+    if (ring.elementType !== 'double-float') return 'not a sample ring';
+    if (ring.decimation > 1) return `decimated \u00d7${ring.decimation}`;
+    if (ring.capacity < fftSize) return `holds ${ring.capacity}, needs ${fftSize}`;
+    return undefined;
+  }
+
+  /**
    * Refresh the ring list.
    *
-   * A decimated ring stays in the list but is marked: without a
-   * pre-filter, decimation folds everything above half the effective
-   * rate back down, where it stands like a genuine partial. That cannot
-   * be undone, so it must be visible rather than silently accepted.
+   * Unusable rings stay in the list, marked with the reason. Hiding them
+   * would be worse: the ring is there, the user registered it, and an
+   * empty list would say "nothing found" where the truth is "found, but
+   * it cannot do this". The reason belongs next to the name, because it
+   * also says what to change.
    */
   private async refreshKeys(): Promise<void> {
     let rings: Awaited<ReturnType<RingLister>>;
@@ -255,20 +282,27 @@ export class FreqScopeView {
     } catch {
       return;
     }
-    const usable = rings.filter(r => r.elementType === 'double-float');
-    const serialised = JSON.stringify(usable);
+    const classified = rings.map(r => ({
+      ...r,
+      unusable: FreqScopeView.unusableBecause(r, this.settings.fftSize),
+    }));
+    const serialised = JSON.stringify(classified);
     if (serialised === this.lastKeys) return;
     this.lastKeys = serialised;
 
-    if (!usable.some(r => r.key === this.settings.key)) {
-      // An undecimated ring is preferred: only that one carries a spectrum.
-      const preferred = usable.find(r => r.decimation === 1) ?? usable[0];
-      this.settings.key = preferred?.key ?? '';
+    const usable = classified.filter(r => r.unusable === undefined);
+    if (!classified.some(r => r.key === this.settings.key && !r.unusable)) {
+      // A usable ring is preferred over one that only exists. Falling
+      // back to any ring at all is deliberate: the resulting error names
+      // the reason, which is more useful than an empty selector.
+      this.settings.key = (usable[0] ?? classified[0])?.key ?? '';
     }
     void this.panel.webview.postMessage({
       type: 'rings',
-      rings: usable,
+      rings: classified,
       selected: this.settings.key,
+      anyUsable: usable.length > 0,
+      fftSize: this.settings.fftSize,
     });
   }
 
@@ -556,18 +590,29 @@ window.addEventListener('message', event => {
     const select = document.getElementById('key');
     const options = message.rings.map(r =>
       '<option value="' + r.key + '"' + (r.key === message.selected ? ' selected' : '') +
-      '>' + r.key + (r.decimation > 1 ? ' (decimated \\u00D7' + r.decimation + ')' : '') +
+      '>' + r.key + (r.unusable ? ' \\u2014 ' + r.unusable : '') +
       '</option>').join('');
     select.innerHTML = options;
     settings.key = message.selected;
-    document.getElementById('empty').innerHTML = message.rings.length === 0
-      ? 'No ring registered. A spectrum needs an ' +
-        'undecimated ring holding at least the FFT length:<br>' +
-        '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl 4096 1))</code><br>' +
+    // The recipe is shown whenever no ring can carry a spectrum — not
+    // only when the list is empty. The common case is a session that
+    // already has a level meter ring (decimation 441, capacity 256):
+    // there IS a ring, it just cannot do this, and a bare error message
+    // leaves the user without a next step.
+    document.getElementById('empty').innerHTML = message.anyUsable
+      ? ''
+      : (message.rings.length === 0
+          ? 'No ring registered. '
+          : 'No registered ring can carry a spectrum. ') +
+        'The freq scope needs an UNDECIMATED ring holding at least ' +
+        message.fftSize + ' values \\u2014 a level meter ring will not do, ' +
+        'because decimation folds high frequencies down where they look ' +
+        'like real partials:<br>' +
+        '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl ' +
+        Math.max(4096, message.fftSize) + ' 1))</code><br>' +
         '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)</code><br>' +
         'and unconditionally in the dsp! body:<br>' +
-        '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* sig)</code>'
-      : '';
+        '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)</code>';
     return;
   }
   if (message.type !== 'frame') return;

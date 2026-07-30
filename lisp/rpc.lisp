@@ -61,13 +61,48 @@
     (error () nil)))
 
 (defun %struct-slot-names (obj)
-  (handler-case
-      (mapcar (lambda (dsd)
-                (funcall (find-symbol "DSD-NAME" :sb-kernel) dsd))
-              (funcall (find-symbol "DD-SLOTS" :sb-kernel)
-                       (funcall (find-symbol "LAYOUT-INFO" :sb-kernel)
-                                (funcall (find-symbol "%INSTANCE-LAYOUT" :sb-kernel) obj))))
-    (error () nil)))
+  "Slot names of a structure instance.  (values NAMES NOTE).
+
+The MOP first, SBCL internals only as a fallback.  Until 1.0.3 it was
+the other way round and the chain went
+%INSTANCE-LAYOUT -> LAYOUT-INFO -> DD-SLOTS -> DSD-NAME, wrapped in a
+handler-case that returned NIL.  LAYOUT-INFO does not exist in SBCL
+2.2.9 — it is called WRAPPER-INFO there — so find-symbol returned NIL,
+funcall signalled, the handler swallowed it, and the inspector showed
+every struct as having NO SLOTS.  Not an error message: an empty list of
+parts, which looks exactly like a struct that really has no slots.  It
+worked on the SBCL the code was written against and was wrong on the
+next one, and nothing said so.
+
+sb-mop:class-slots works for structure-class in SBCL and does not depend
+on the internal naming.  The internal chain stays as a fallback, now
+trying both spellings; and when everything fails, NOTE says so, so that
+the display can report it instead of showing emptiness."
+  (let ((mop (ignore-errors
+               (let ((slots (funcall (find-symbol "CLASS-SLOTS" :sb-mop)
+                                     (class-of obj))))
+                 (mapcar (lambda (sd)
+                           (funcall (find-symbol "SLOT-DEFINITION-NAME" :sb-mop)
+                                    sd))
+                         slots)))))
+    (when mop (return-from %struct-slot-names (values mop nil))))
+  ;; Fallback: the internal layout chain. LAYOUT-INFO up to about SBCL
+  ;; 2.1, WRAPPER-INFO after it — try both rather than assume one.
+  (dolist (info '("LAYOUT-INFO" "WRAPPER-INFO"))
+    (dolist (layout '("%INSTANCE-LAYOUT" "%INSTANCE-WRAPPER"))
+      (let ((names (ignore-errors
+                     (let ((info-fn (find-symbol info :sb-kernel))
+                           (layout-fn (find-symbol layout :sb-kernel))
+                           (slots-fn (find-symbol "DD-SLOTS" :sb-kernel))
+                           (name-fn (find-symbol "DSD-NAME" :sb-kernel)))
+                       (when (and info-fn layout-fn slots-fn name-fn)
+                         (mapcar (lambda (dsd) (funcall name-fn dsd))
+                                 (funcall slots-fn
+                                          (funcall info-fn
+                                                   (funcall layout-fn obj)))))))))
+        (when names (return-from %struct-slot-names (values names nil))))))
+  (values nil (format nil "slot names not readable in SBCL ~A"
+                      (lisp-implementation-version))))
 
 (defun %package-qualified (sym)
   "Symbol name with package, so that slot-value finds it in the right package."
@@ -221,11 +256,15 @@
                                      (setf (slot-value obj sl) new))))))))
 
     (structure-object
-     (let ((slots (%struct-slot-names obj)))
+     (multiple-value-bind (slots note) (%struct-slot-names obj)
        (list "struct"
-             (list (cons "type" (let ((*print-case* :downcase))
-                                  (princ-to-string (type-of obj))))
-                   (cons "slots" (princ-to-string (length slots))))
+             (append
+              (list (cons "type" (let ((*print-case* :downcase))
+                                   (princ-to-string (type-of obj))))
+                    (cons "slots" (princ-to-string (length slots))))
+              ;; A struct with no readable slots must say why. Without
+              ;; this it is indistinguishable from a struct that has none.
+              (when note (list (cons "warning" note))))
              (loop for slot in slots
                    collect (let ((sl slot))
                              (handler-case

@@ -180,7 +180,7 @@ otherwise every correct clause reports an error."
               (format nil "~A Form~D~@[ ~A~]"
                       (file-namestring path) i
                       (and (consp form) (symbolp (second form)) (second form)))))
-    (format t "~&  ~A: ~D Formen gelesen.~%" (file-namestring path) (length forms))))
+    (format t "~&  ~A: ~D forms read.~%" (file-namestring path) (length forms))))
 
 ;;; --- Stufe 3: Laden --------------------------------------------------
 
@@ -220,7 +220,7 @@ otherwise every correct clause reports an error."
     (handler-bind
         ((style-warning (lambda (c)
                           (incf styles)
-                          (format t "~&  Stilwarnung: ~A~%" c)
+                          (format t "~&  Style warning: ~A~%" c)
                           (muffle-warning c)))
          ;; A WARNING without STYLE- is serious: an undefined variable, a
          ;; type error, a contradictory declaration. This is exactly where
@@ -231,7 +231,7 @@ otherwise every correct clause reports an error."
       (handler-case (load path)
         (error (e) (problem "~A cannot be loaded: ~A"
                             (file-namestring path) e))))
-    (format t "~&  ~A geladen, ~D Stilwarnung(en).~%" (file-namestring path) styles)))
+    (format t "~&  ~A loaded, ~D style warning(s).~%" (file-namestring path) styles)))
 
 ;;; --- Hauptteil -------------------------------------------------------
 

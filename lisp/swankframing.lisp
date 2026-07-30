@@ -164,7 +164,7 @@ this, with the stream out of step it was not the check that failed but
              (and (consp m1) (first m1)) :return)
       (check "reading: the second message is intact (stream in step)"
              (and (consp m2) (first m2)) :return)
-      (check "Lesen: Umlaute korrekt dekodiert"
+      (check "reading: umlauts decoded correctly"
              (and (consp m2) (search "°C" (format nil "~S" m2)) t)
              t)
       (check "reading: the second message is not :unreadable"
@@ -207,8 +207,8 @@ this, with the stream out of step it was not the check that failed but
   (with-open-file (in path :element-type '(unsigned-byte 8))
     (let ((m1 (safe-read in))
           (m2 (safe-read in)))
-      (check "Round-Trip: erste Nachricht" (req-id m1) 7)
-      (check "Round-Trip: zweite Nachricht" (req-id m2) 8))))
+      (check "round trip: the first message" (req-id m1) 7)
+      (check "round trip: the second message" (req-id m2) 8))))
 
 (if (> *failed* 0)
     (progn (format t "~&~D Test(s) fehlgeschlagen.~%" *failed*)
