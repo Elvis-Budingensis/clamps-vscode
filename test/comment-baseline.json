@@ -140,9 +140,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 2957,
-  "comments": 380,
-  "longStrings": 120
+  "lines": 3030,
+  "comments": 385,
+  "longStrings": 125
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -155,9 +155,9 @@
   "longStrings": 7
  },
  "lisp/test-buffer.lisp": {
-  "lines": 224,
-  "comments": 72,
-  "longStrings": 10
+  "lines": 271,
+  "comments": 90,
+  "longStrings": 14
  },
  "lisp/test-completion.lisp": {
   "lines": 153,
@@ -165,9 +165,9 @@
   "longStrings": 9
  },
  "lisp/test-inspect.lisp": {
-  "lines": 339,
-  "comments": 48,
-  "longStrings": 22
+  "lines": 376,
+  "comments": 63,
+  "longStrings": 25
  },
  "lisp/test-spectrum.lisp": {
   "lines": 561,

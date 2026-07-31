@@ -121,6 +121,7 @@
 (format t "~&~%===== setting slots =====~%")
 
 (defvar *setpart-failures* 0)
+(defvar *repl-cap-probe* nil)
 
 (defun setpart (label obj index value &optional (pkg "COMMON-LISP-USER")
                                         (expect :ok))
@@ -284,6 +285,42 @@ the refusals."
   ;; this the file exited 0 and the gate chain said "ok".
   (format t "~&~%~D setpart check(s) failed.~%" *setpart-failures*)
   (sb-ext:exit :code 1))
+
+
+;;; ---------------------------------------------------------------------
+;;; The REPL caps what it prints
+;;; ---------------------------------------------------------------------
+;;; Found in the field: (defparameter *buf* (make-array 100000 ...)) returns
+;;; the array, and the REPL printed it in full — some 800 kilobytes through
+;;; the bridge, into the terminal, and past the scrollback, so that the
+;;; input which caused it was gone. A REPL that punishes you for making a
+;;; buffer is a REPL you stop using for buffers.
+;;;
+;;; The cap must sit around the PRINTING of the result and not around the
+;;; evaluation: code that prints for itself is the user's own output and
+;;; must not be truncated behind their back. Both halves are checked here,
+;;; because getting the first right and the second wrong looks identical
+;;; until somebody's loop output goes missing.
+(let* ((big (make-array 100000 :element-type 'double-float
+                               :initial-element 0.01d0))
+       (result (clamps-bridge-rpc:eval-for-repl
+                "cl-user::*repl-cap-probe*" "CL-USER"))
+       (ignore (setf cl-user::*repl-cap-probe* big))
+       (text (second (clamps-bridge-rpc:eval-for-repl
+                      "cl-user::*repl-cap-probe*" "CL-USER"))))
+  (declare (ignore result ignore))
+  (when (> (length text) 20000)
+    (format t "~&FAILED the REPL printed ~D characters for a 100000-element ~
+array — the cap is not taking effect~%" (length text)))
+  (unless (search "..." text)
+    (format t "~&FAILED the truncation is not marked with \"...\" — the ~
+output would look complete~%")))
+
+;;; And the user's own output stays whole.
+(let ((text (second (clamps-bridge-rpc:eval-for-repl
+                     "(dotimes (i 40) (format t \"~D \" i))" "CL-USER"))))
+  (unless (search "39" text)
+    (format t "~&FAILED the user's own printing was truncated: ~S~%" text)))
 
 (format t "~&~%done.~%")
 

@@ -2,6 +2,52 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.0.8] - 2026-07-30
+
+### Fixed
+
+- **The buffer viewer looked in the wrong package.** The REPL carries its own
+  current package; a file's package comes from its last `(in-package ...)`
+  form, and a scratch file usually has none, so it falls back to
+  `COMMON-LISP-USER`. Define a buffer at a `CLAMPS>` prompt, put the cursor on
+  its name in that file, and the viewer reported "the variable *buf* is
+  unbound" — truthfully, about a different symbol of the same name. Both sides
+  were right and there was no way forward.
+
+  An unqualified symbol that is unbound in the file's package is now looked
+  for in the others, and the display states where it was found rather than
+  taking it silently: two variables of the same name in two packages is a
+  normal situation, and which one is on screen must not be a guess.
+
+  The search happens only for a BARE name and only after the lookup in the
+  named package has failed. A qualified name means what it says. That
+  distinction has to be made on the source text, not on the form read from it
+  — `cl-user::*x*` reads as an ordinary symbol, and by then there is nothing
+  left to tell that a package was named. The gate caught exactly that.
+
+## [1.0.7] - 2026-07-30
+
+### Fixed
+
+- **The REPL printed return values without a limit.** Evaluating
+  `(defparameter *buf* (make-array 100000 :element-type 'double-float ...))`
+  returns the array, and the REPL printed all hundred thousand elements —
+  some 800 kilobytes through the bridge, into the terminal, and past the
+  scrollback, so that the input which caused it had scrolled away. A REPL
+  that punishes you for making a buffer is a REPL you stop using for
+  buffers. Return values are now printed with `*print-length*` 500 and
+  `*print-level*` 8.
+
+  The cap sits around the PRINTING of the result, not around the
+  evaluation: code that prints for itself — a `format` in a loop, a trace,
+  a `describe` — is the user's own output and must not be truncated behind
+  their back. Common Lisp marks the cut with `...`, so nothing goes missing
+  silently.
+
+  The inspector had capped its previews since the beginning (`*print-length*`
+  6 for slot previews, 100 for the printed form). The REPL did not, and the
+  difference went unnoticed because nobody had returned a large array to it.
+
 ## [1.0.6] - 2026-07-30
 
 ### Added

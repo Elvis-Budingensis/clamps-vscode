@@ -184,6 +184,53 @@ only the reduction."
           (fail "Range ~D..~D fails instead of clamping: ~A" from to (second r)))))))
 
 ;;; ---------------------------------------------------------------------
+;;; 7. The package of the file is not the package of the REPL
+;;; ---------------------------------------------------------------------
+;;; Found in the field, and it is the kind of failure where everybody is
+;;; right and nobody can proceed: the REPL sat at a CLAMPS> prompt, so
+;;; (defparameter *buf* ...) made clamps::*buf*. The display took its
+;;; package from the file, which had no (in-package ...) form and therefore
+;;; fell back to COMMON-LISP-USER, and reported "*buf* is unbound" — truly,
+;;; about a different symbol of the same name.
+;;;
+;;; A bare symbol that is unbound in the named package is now looked for in
+;;; the others, and where it was found is stated rather than assumed.
+(defpackage #:buffer-test-elsewhere (:use #:cl))
+(let ((sym (intern "*OTHER-PROBE*" '#:buffer-test-elsewhere)))
+  (proclaim (list 'special sym))
+  (setf (symbol-value sym)
+        (let ((v (make-array 200 :element-type 'double-float
+                                 :initial-element 0.5d0)))
+          (setf (aref v 10) 1.0d0)
+          v))
+  (let ((r (clamps-bridge-rpc:buffer-outline-for-repl
+            "*other-probe*" "COMMON-LISP-USER" 0 -1 16)))
+    (unless (eq (first r) :ok)
+      (fail "A symbol from another package is not found: ~A" (second r)))
+    (when (eq (first r) :ok)
+      (check "the values come from the other package" (peak-of r) 1.0d0 1.0d-9)
+      ;; And it SAYS so. Silently reaching into another package would be
+      ;; worse than the error: two variables of the same name in two
+      ;; packages are a normal situation, and which one is on screen must
+      ;; not be a guess.
+      (unless (some (lambda (w) (search "BUFFER-TEST-ELSEWHERE" w))
+                    (warnings-of r))
+        (fail "The display does not say which package it took: ~S"
+              (warnings-of r))))))
+
+;;; A name that exists nowhere still fails, and says so.
+(let ((r (clamps-bridge-rpc:buffer-outline-for-repl
+          "*definitely-nowhere*" "COMMON-LISP-USER")))
+  (unless (eq (first r) :error)
+    (fail "An unknown name yields ~S instead of an error" r)))
+
+;;; A QUALIFIED name is not searched for elsewhere: it says what it means.
+(let ((r (clamps-bridge-rpc:buffer-outline-for-repl
+          "cl-user::*other-probe*" "COMMON-LISP-USER")))
+  (unless (eq (first r) :error)
+    (fail "A qualified name was resolved in another package: ~S" r)))
+
+;;; ---------------------------------------------------------------------
 ;;; 6. Things that are not buffers
 ;;; ---------------------------------------------------------------------
 (dolist (case* (list (list "42" "not a buffer")

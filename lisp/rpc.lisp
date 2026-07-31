@@ -2250,6 +2250,55 @@ already is, and once per request rather than per pixel."
                (push (list lo hi (if (plusp n) (sqrt (/ sum n)) 0.0d0)) out)))
     out))
 
+(defun %display-eval (expr-string pkg)
+  "Evaluates EXPR-STRING in PKG for a display.  (values OBJECT NOTE).
+
+If the expression is a bare symbol that is unbound in PKG, all packages
+are searched for a bound symbol of that name, and the one found is used —
+with NOTE saying where it came from.
+
+This is not convenience, it is the difference between a view that works
+and one that is right but useless.  The REPL carries its own current
+package; a file's package comes from its last (in-package ...) form, and a
+scratch file usually has none, so it falls back to COMMON-LISP-USER.  Put
+a buffer in *buf* at a CLAMPS> prompt, put the cursor on *buf* in that
+file, and the display honestly reports \"unbound\" about a different
+symbol of the same name.  Both sides are correct and the user is stuck.
+
+Searching is only done for a BARE SYMBOL, and only after the lookup in the
+named package has failed.  A qualified name means what it says, and an
+expression with side effects must not be evaluated twice in two packages."
+  (let ((form (let ((*package* pkg) (*read-eval* nil))
+                (read-from-string expr-string))))
+    (handler-case (values (let ((*package* pkg) (*read-eval* nil)) (eval form))
+                          nil)
+      (unbound-variable (e)
+        ;; The test is on the TEXT, not on the form: reading
+        ;; "cl-user::*x*" yields a symbol like any other, and by then
+        ;; there is no telling whether a package was named. A colon in
+        ;; the source means the user said where to look, and that is
+        ;; where we look.
+        (if (or (not (symbolp form)) (find #\: expr-string))
+            (error e)
+            (let ((name (symbol-name form))
+                  (found '()))
+              (dolist (other (list-all-packages))
+                (multiple-value-bind (sym status) (find-symbol name other)
+                  (declare (ignore status))
+                  (when (and sym (boundp sym)
+                             (not (member sym found))
+                             (not (eq (symbol-package sym) pkg)))
+                    (push sym found))))
+              (if (null found)
+                  (error e)
+                  (let ((sym (first found)))
+                    (values (symbol-value sym)
+                            (format nil "~A is not bound in ~A; using ~A::~A~@[ (~A)~]"
+                                    name (package-name pkg)
+                                    (package-name (symbol-package sym))
+                                    (symbol-name sym)
+                                    "the file has no in-package form"))))))))))
+
 (defun buffer-outline-for-repl (expr-string &optional (package-name "COMMON-LISP-USER")
                                               (start 0) (end -1) (columns 512)
                                               (channel 0))
@@ -2276,9 +2325,7 @@ display refresh."
   (let ((pkg (or (find-package (string-upcase package-name))
                  (find-package :common-lisp-user))))
     (handler-case
-        (let* ((*package* pkg)
-               (*read-eval* nil)
-               (obj (eval (read-from-string expr-string))))
+        (multiple-value-bind (obj package-note) (%display-eval expr-string pkg)
           (multiple-value-bind (reader frames channels rate note)
               (%buffer-access obj)
             (cond
@@ -2316,6 +2363,7 @@ display refresh."
                                  0.0d0)
                              clipped
                              (let ((warnings '()))
+                               (when package-note (push package-note warnings))
                                (when note (push note warnings))
                                (when (zerop rate)
                                  (push "Sample rate unknown, the axis is in frames"
@@ -2353,6 +2401,31 @@ display refresh."
   (clrhash *sticker-records*)
   (list :ok))
 
+(defparameter *repl-print-length* 500
+  "Elements per level that a REPL return value may show.")
+
+(defparameter *repl-print-level* 8
+  "Nesting depth that a REPL return value may show.")
+
+(defun %repl-print (value)
+  "Printed form of a REPL return value, bounded.
+
+The bound is not cosmetic.  Evaluating (defparameter *buf* (make-array
+100000 ...)) returns the array, and the REPL printed it in full: some 800
+kilobytes through the bridge, into the terminal, and past the scrollback,
+so that the input that caused it was gone.  A REPL that punishes you for
+making a buffer is a REPL you stop using for buffers.
+
+The binding is deliberately around the PRINTING of the result and not
+around the evaluation.  Code that prints for itself — a (format t ...) in
+a loop, a trace, a describe — is the user's own output and must not be
+truncated behind their back.  Only the value the REPL adds is capped, and
+Common Lisp marks the cut with \"...\", so nothing is silently missing."
+  (let ((*print-length* *repl-print-length*)
+        (*print-level* *repl-print-level*)
+        (*print-circle* t))
+    (prin1-to-string value)))
+
 (defun eval-for-repl-debuggable (code-string package-name)
   "Like eval-for-repl, but WITHOUT handler-case.
 
@@ -2384,12 +2457,12 @@ display refresh."
             (let ((results (multiple-value-list (eval form))))
               (setf values-strings
                     (append values-strings
-                            (mapcar #'prin1-to-string results)))
+                            (mapcar #'%repl-print results)))
               (setf presentations
                     (append presentations
                             (mapcar (lambda (v)
                                       (list (%presentation-register v)
-                                            (prin1-to-string v)
+                                            (%repl-print v)
                                             (%presentation-type-label v)))
                                     results)))))))
       (let* ((printed (get-output-stream-string out))
@@ -2440,12 +2513,12 @@ display refresh."
                 (let ((results (multiple-value-list (eval form))))
                   (setf values-strings
                         (append values-strings
-                                (mapcar (lambda (v) (prin1-to-string v)) results)))
+                                (mapcar #'%repl-print results)))
                   (setf presentations
                         (append presentations
                                 (mapcar (lambda (v)
                                           (list (%presentation-register v)
-                                                (prin1-to-string v)
+                                                (%repl-print v)
                                                 (%presentation-type-label v)))
                                         results)))))))
           (let* ((printed (get-output-stream-string out))
