@@ -337,6 +337,14 @@ export async function activate(context: vscode.ExtensionContext) {
           if (!c || c.state !== State.Running) return undefined;
           return c.sendRequest<AtsOutline>('clamps/atsOutline', params);
         },
+        async (action, file) => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<{ ok: boolean; message: string }>(
+            action === 'play' ? 'clamps/atsPlay' : 'clamps/atsStop',
+            action === 'play' ? { path: file, amplitude: 1.0 } : {}
+          );
+        },
         path
       );
     }),

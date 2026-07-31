@@ -315,6 +315,155 @@
     (when (some (lambda (w) (search "header says" w)) (warnings-of r))
       (fail "A consistent file is flagged all the same: ~S" (warnings-of r)))))
 
+;;; ---------------------------------------------------------------------
+;;; 8. Playback without Incudine says what it looked for
+;;; ---------------------------------------------------------------------
+;;; The resynthesis is NOT implemented in this extension — it belongs to
+;;; ats-cuda and Incudine, which do it in the audio thread with their own
+;;; oscillator banks. A second implementation inside an editor would be a
+;;; worse one, and worse in a way nobody would notice until a piece sounded
+;;; subtly different from the analysis it came from.
+;;;
+;;; So all that is testable here is the part that runs without an audio
+;;; stack: the file check, and the message when nothing is there. That
+;;; message is the whole point of this test. The names differ between
+;;; ats-cuda versions and CLAMPS's own wrappers, so "not available" without
+;;; a list of what was searched for would leave the user with nothing to
+;;; act on — and this gate runs precisely in the environment where nothing
+;;; is available, so it always exercises that path.
+(let ((data (list (loop repeat 10 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  (let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
+    (unless (eq (first r) :error)
+      (fail "Playback without Incudine reports ~S" (first r)))
+    (when (eq (first r) :error)
+      (dolist (needle '("ATS-LOAD" "ATS-CUDA" "Packages present"))
+        (unless (search needle (second r))
+          (fail "The message does not mention ~A: ~A" needle (second r)))))))
+
+;;; Every attempt is named, and the failure is attributed to the function
+;;; that actually signalled.
+;;;
+;;; This is the correction of a real misdiagnosis. The first version called
+;;; ATS-LOAD with one argument, where it takes a path AND a symbol to bind
+;;; the sound to; the resulting "invalid number of arguments: 1" was caught
+;;; by an outer handler and reported as "SIN-NOI-SYNTH failed" — pointing
+;;; at the wrong function entirely. Half an hour could be lost to that
+;;; message, because it named a function that was fine.
+;;;
+;;; A stand-in whose loader and synthesis both refuse in known ways: the
+;;; report must contain BOTH names, so that neither can be blamed for the
+;;; other's error.
+(defpackage #:ats-play-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(in-package #:ats-play-probe)
+(defun ats-load (path symbol)
+  (declare (ignore path symbol))
+  (error "loader refuses on purpose"))
+(defun sin-noi-synth (&rest args)
+  (declare (ignore args))
+  (error "synthesis refuses on purpose"))
+(in-package :cl-user)
+
+(let ((clamps-bridge-rpc::*ats-packages* '(:ats-play-probe))
+      (data (list (loop repeat 10 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  (let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
+    (unless (eq (first r) :error)
+      (fail "A refusing loader is reported as success: ~S" r))
+    (when (eq (first r) :error)
+      ;; The loader failed, so the loader is what is named — and the
+      ;; synthesis, which never ran, must NOT be blamed.
+      (unless (search "Loading failed" (second r))
+        (fail "A loader failure is not reported as one: ~A" (second r)))
+      (unless (search "ATS-LOAD" (second r))
+        (fail "The loader is not named: ~A" (second r)))
+      (unless (search "loader refuses on purpose" (second r))
+        (fail "The loader's own error is swallowed: ~A" (second r)))
+      (when (search "SIN-NOI-SYNTH" (second r))
+        (fail "The synthesis is blamed for the loader's failure: ~A"
+              (second r))))))
+
+;;; And when the loader works but the synthesis does not, every argument
+;;; list that was tried appears — the conventions differ between versions,
+;;; so which ones were attempted is the useful part of the message.
+(defpackage #:ats-synth-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(in-package #:ats-synth-probe)
+(defun ats-load (path symbol)
+  (declare (ignore path))
+  (setf (symbol-value symbol) :a-sound)
+  symbol)
+(defun sin-noi-synth (&rest args)
+  (declare (ignore args))
+  (error "synthesis refuses on purpose"))
+(in-package :cl-user)
+
+(let ((clamps-bridge-rpc::*ats-packages* '(:ats-synth-probe))
+      (data (list (loop repeat 10 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  (let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
+    (when (eq (first r) :error)
+      (unless (search "Synthesis failed" (second r))
+        (fail "A synthesis failure is not reported as one: ~A" (second r)))
+      (dolist (needle '("start sound :amp-scale" "start sound" "sound"))
+        (unless (search needle (second r))
+          (fail "The attempt ~S is not named: ~A" needle (second r)))))))
+
+;;; A loader that works and a synthesis that works: the message says which
+;;; convention succeeded, so that a working setup can be reproduced.
+(defpackage #:ats-ok-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(in-package #:ats-ok-probe)
+(defun ats-load (path symbol)
+  (declare (ignore path))
+  (setf (symbol-value symbol) :a-sound)
+  symbol)
+(defun sin-noi-synth (start sound &key amp-scale)
+  (declare (ignore sound amp-scale))
+  (unless (floatp start) (error "start time must be a float"))
+  :playing)
+(in-package :cl-user)
+
+(let ((clamps-bridge-rpc::*ats-packages* '(:ats-ok-probe))
+      (data (list (loop repeat 10 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  (let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
+    (unless (eq (first r) :ok)
+      (fail "A working setup is reported as a failure: ~S" r))
+    (when (eq (first r) :ok)
+      (unless (search "amp-scale" (second r))
+        (fail "The successful convention is not named: ~A" (second r)))
+      ;; The start time must be a float. sin-noi-synth schedules on it, and
+      ;; an integer 0 is not the same thing there — the probe above rejects
+      ;; an integer, so this passing at all is the check.
+      (unless (search "SIN-NOI-SYNTH" (second r))
+        (fail "The function used is not named: ~A" (second r))))))
+
+;;; A file that is not ATS is refused BEFORE the search for the synthesis:
+;;; otherwise the user gets a message about missing packages when the real
+;;; problem is the file they picked.
+(with-open-file (out *tmp* :direction :output :element-type '(unsigned-byte 8)
+                           :if-exists :supersede)
+  (write-sequence (make-array 100 :element-type '(unsigned-byte 8)
+                                  :initial-element 65)
+                  out))
+(let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
+  (unless (and (eq (first r) :error) (search "magic" (second r)))
+    (fail "A foreign file reports ~S instead of naming the file" r)))
+(let ((r (clamps-bridge-rpc:ats-play-for-repl "/definitely/not/here.ats")))
+  (unless (and (eq (first r) :error) (search "cannot be read" (second r)))
+    (fail "A missing file reports ~S" r)))
+
+;;; Stopping without Incudine likewise says so instead of pretending.
+(let ((r (clamps-bridge-rpc:ats-stop-for-repl)))
+  (unless (and (eq (first r) :error) (search "Incudine" (second r)))
+    (fail "Stopping without Incudine reports ~S" r)))
+
+;;; The candidate list prefers the variant that plays the noise too: the
+;;; purely sinusoidal ones leave out exactly the part an ATS analysis
+;;; separated out with some effort.
+(unless (string= (first clamps-bridge-rpc::*ats-synth-names*) "SIN-NOI-SYNTH")
+  (fail "The first synthesis candidate is ~A, not the one with noise"
+        (first clamps-bridge-rpc::*ats-synth-names*)))
+
 (ignore-errors (delete-file *tmp*))
 
 (if (> *failed* 0)

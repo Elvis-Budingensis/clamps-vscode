@@ -59,6 +59,10 @@ export type AtsRequest = (params: {
   floorDb: number;
 }) => Promise<AtsOutline | undefined>;
 
+/** Playback goes through the image, never through the extension. */
+export type AtsPlayer = (action: 'play' | 'stop', path: string)
+  => Promise<{ ok: boolean; message: string } | undefined>;
+
 /**
  * The upper edges of the 25 critical bands, in hertz.
  *
@@ -129,6 +133,7 @@ export class AtsView {
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly request: AtsRequest,
+    private readonly player: AtsPlayer,
     path: string
   ) {
     this.path = path;
@@ -138,7 +143,7 @@ export class AtsView {
     void this.refresh();
   }
 
-  static show(request: AtsRequest, path: string): AtsView {
+  static show(request: AtsRequest, player: AtsPlayer, path: string): AtsView {
     if (this.instance) {
       this.instance.panel.reveal(vscode.ViewColumn.Beside, true);
       this.instance.path = path;
@@ -152,7 +157,7 @@ export class AtsView {
       { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true }
     );
-    this.instance = new AtsView(panel, request, path);
+    this.instance = new AtsView(panel, request, player, path);
     return this.instance;
   }
 
@@ -167,6 +172,32 @@ export class AtsView {
       void this.refresh();
     } else if (message.type === 'refresh') {
       void this.refresh();
+    } else if (message.type === 'play' || message.type === 'stop') {
+      void this.transport(message.type);
+    }
+  }
+
+  /**
+   * Start or stop playback, and report the answer in the panel.
+   *
+   * The message is shown whether it succeeded or not. On failure it names
+   * the functions that were searched for, which is the only thing that
+   * helps: the resynthesis lives in ats-cuda or in CLAMPS's own wrappers
+   * and its name differs between versions, so "not available" alone would
+   * leave nothing to act on.
+   */
+  private async transport(action: 'play' | 'stop'): Promise<void> {
+    try {
+      const answer = await this.player(action, this.path);
+      void this.panel.webview.postMessage({
+        type: 'transport',
+        ok: answer?.ok ?? false,
+        message: answer?.message ?? 'No answer from the image.',
+      });
+    } catch (e) {
+      void this.panel.webview.postMessage({
+        type: 'transport', ok: false, message: String(e),
+      });
     }
   }
 
@@ -201,6 +232,12 @@ export class AtsView {
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
          margin-bottom: 6px; }
   code { background: var(--vscode-textCodeBlock-background); padding: 1px 5px; }
+  button { background: var(--vscode-button-secondaryBackground);
+           color: var(--vscode-button-secondaryForeground);
+           border: none; padding: 2px 8px; cursor: pointer; font-size: 12px; }
+  button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  .transport { margin-top: 4px; font-size: 11px; }
+  .transport.bad { color: var(--vscode-charts-red); }
   select { background: var(--vscode-dropdown-background);
            color: var(--vscode-dropdown-foreground);
            border: 1px solid var(--vscode-dropdown-border); font-size: 12px; }
@@ -222,11 +259,14 @@ export class AtsView {
     <option value="log">log</option><option value="lin">linear</option>
   </select></label>
   <label class="dim"><input type="checkbox" id="noise" checked> Residual noise</label>
+  <button id="play">\u25B6 Play</button>
+  <button id="stop">\u25A0 Stop</button>
 </div>
 <canvas id="ats"></canvas>
 <div class="readout" id="readout"></div>
 <div class="dim" id="info"></div>
 <div class="warn" id="warn"></div>
+<div class="transport" id="transport"></div>
 <script>
 const vscode = acquireVsCodeApi();
 const canvas = document.getElementById('ats');
@@ -274,6 +314,8 @@ document.getElementById('maxPartials').onchange = e =>
   vscode.postMessage({ type: 'partials', maxPartials: Number(e.target.value) });
 document.getElementById('axis').onchange = e => { axis = e.target.value; draw(); };
 document.getElementById('noise').onchange = e => { showNoise = e.target.checked; draw(); };
+document.getElementById('play').onclick = () => vscode.postMessage({ type: 'play' });
+document.getElementById('stop').onclick = () => vscode.postMessage({ type: 'stop' });
 
 canvas.addEventListener('mousemove', e => {
   const r = canvas.getBoundingClientRect();
@@ -436,6 +478,12 @@ window.addEventListener('message', event => {
   const message = event.data;
   if (message.type === 'path') {
     document.getElementById('path').textContent = message.path;
+    return;
+  }
+  if (message.type === 'transport') {
+    const host = document.getElementById('transport');
+    host.textContent = message.message;
+    host.className = 'transport' + (message.ok ? ' dim' : ' bad');
     return;
   }
   if (message.type !== 'outline') return;

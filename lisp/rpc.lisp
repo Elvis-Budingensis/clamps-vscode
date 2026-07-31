@@ -51,6 +51,7 @@
            #:sticker-samples-since-for-repl #:sticker-keys-for-repl
            #:sticker-spectrum-for-repl #:sticker-spectrogram-for-repl
            #:buffer-outline-for-repl #:ats-outline-for-repl
+           #:ats-play-for-repl #:ats-stop-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -2668,6 +2669,191 @@ thousand would misrepresent the analysis."
                               (nreverse warnings))
                         (nreverse result)
                         noise))))))))))
+
+;;; ---------------------------------------------------------------------
+;;; Playing an ATS analysis
+;;; ---------------------------------------------------------------------
+;;;
+;;; The resynthesis itself is NOT implemented here, and that is deliberate.
+;;; Turning partials back into sound is Incudine's and ats-cuda's job; they
+;;; do it in the audio thread, with their own oscillator banks and their
+;;; own noise model. A second implementation inside an editor extension
+;;; would be a worse one, and worse in a way nobody would notice until a
+;;; piece sounded subtly different from the analysis it came from.
+;;;
+;;; So this looks for what the image already has. The names differ between
+;;; versions and between ats-cuda and CLAMPS's own wrappers, hence the
+;;; candidate list rather than one hard-wired symbol — and hence the error
+;;; message that names every candidate it tried. An editor that says "not
+;;; available" without saying what it looked for leaves the user with
+;;; nothing to act on.
+
+(defparameter *ats-packages*
+  '(:ats-cuda :ats :clamps :incudine :cl-user)
+  "Packages searched for the ATS loading and synthesis functions.")
+
+(defparameter *ats-load-names* '("ATS-LOAD" "LOAD-ATS" "ATS-READ")
+  "Candidate names for reading an ATS file into an object.")
+
+(defparameter *ats-synth-names*
+  '("SIN-NOI-SYNTH" "ATS-PLAY" "ATS-SYNTH" "SIN-SYNTH")
+  "Candidate names for the resynthesis, in order of preference.
+
+SIN-NOI-SYNTH first because it plays partials AND residual noise; the
+purely sinusoidal variants leave out precisely the part an ATS analysis
+separated out with some effort.")
+
+(defun %ats-sym (names)
+  "The first fbound symbol from NAMES in any of *ats-packages*.
+Returns (values SYMBOL PACKAGE-NAME NAME) or NIL."
+  (dolist (name names nil)
+    (dolist (pkg-name *ats-packages*)
+      (let ((pkg (find-package pkg-name)))
+        (when pkg
+          (let ((sym (find-symbol name pkg)))
+            (when (and sym (fboundp sym))
+              (return-from %ats-sym
+                (values sym (package-name pkg) name)))))))))
+
+(defun %ats-missing-report (what names)
+  "Says what was searched for, so that the answer is actionable."
+  (format nil "No ~A function found. Searched for ~{~A~^, ~} in ~{~A~^, ~}. ~
+Packages present: ~{~A~^, ~}."
+          what names
+          (mapcar #'string *ats-packages*)
+          (or (remove nil (mapcar (lambda (p)
+                                    (let ((found (find-package p)))
+                                      (and found (package-name found))))
+                                  *ats-packages*))
+              (list "none of them"))))
+
+(defvar *ats-playing* nil
+  "The symbol the last loaded analysis was bound to.")
+
+(defvar *ats-play-counter* 0
+  "Serial number for the binding symbols, so that two files do not collide.")
+
+(defun %ats-try (label thunk failures)
+  "Runs THUNK, or records why it could not be run.
+
+Returns (values RESULT SUCCEEDED-P FAILURES). The point is the recording:
+the argument lists of these functions differ between ats-cuda versions, so
+several have to be tried — and when they all fail, the user needs to see
+each attempt with its own error. The first version reported only the last
+one, and it blamed the synthesis for an error the LOADER had signalled."
+  (handler-case (values (funcall thunk) t failures)
+    (error (e)
+      (values nil nil (cons (format nil "~A: ~A" label e) failures)))))
+
+(defun ats-play-for-repl (path &optional (amplitude 1.0))
+  "Loads the ATS file at PATH and hands it to the image's resynthesis.
+
+Returns (:ok TEXT) or (:error TEXT).
+
+The call conventions come from ats-cuda as it actually is, read off a
+working session:
+
+  (ats-load \"/tmp/cl.ats\" 'cl-new)
+  (sin-noi-synth 0.0 cl-new :amp-scale 0.2)
+
+Two things about that were guessed wrongly the first time round. ATS-LOAD
+takes the path AND a symbol to bind the loaded sound to — it returns the
+symbol, not the sound. And the start time is a FLOAT: sin-noi-synth
+schedules on it, and an integer 0 is not the same thing there.
+
+Both are still tried in several forms rather than assumed, because this is
+the one part of the extension that cannot be checked by a gate: there is
+no Incudine in the environment it is written in. What a gate can check —
+and does — is that every failure names what was attempted."
+  (let ((bytes (%ats-read-file path)))
+    (when (null bytes)
+      (return-from ats-play-for-repl
+        (list :error (format nil "~A cannot be read." path))))
+    (when (null (%ats-read-header bytes))
+      (return-from ats-play-for-repl
+        (list :error (format nil "~A is not an ATS file (magic number missing)."
+                             path)))))
+  (multiple-value-bind (loader loader-package loader-name)
+      (%ats-sym *ats-load-names*)
+    (when (null loader)
+      (return-from ats-play-for-repl
+        (list :error (%ats-missing-report "ATS loading" *ats-load-names*))))
+    (multiple-value-bind (synth synth-package synth-name)
+        (%ats-sym *ats-synth-names*)
+      (when (null synth)
+        (return-from ats-play-for-repl
+          (list :error (%ats-missing-report "ATS synthesis" *ats-synth-names*))))
+      (let* ((failures '())
+             (binding (intern (format nil "*ATS-PLAY-~D*"
+                                      (incf *ats-play-counter*))
+                              :cl-user))
+             (sound nil)
+             (loaded nil))
+        ;; Loading. The two-argument form first, because that is the one
+        ;; observed in a real session; the single-argument form after it,
+        ;; in case another implementation returns the sound directly.
+        (multiple-value-bind (result ok rest)
+            (%ats-try (format nil "~A::~A path symbol" loader-package loader-name)
+                      (lambda ()
+                        (funcall loader path binding)
+                        (if (boundp binding) (symbol-value binding) binding))
+                      failures)
+          (setf failures rest)
+          (when ok (setf sound result loaded t)))
+        (unless loaded
+          (multiple-value-bind (result ok rest)
+              (%ats-try (format nil "~A::~A path" loader-package loader-name)
+                        (lambda () (funcall loader path))
+                        failures)
+            (setf failures rest)
+            (when ok (setf sound result loaded t))))
+        (unless loaded
+          (return-from ats-play-for-repl
+            (list :error (format nil "Loading failed. Attempts: ~{~A~^; ~}"
+                                 (reverse failures)))))
+        (setf *ats-playing* binding)
+        ;; Synthesis. The start time is a float in every attempt.
+        (let ((amp (float amplitude 1.0)))
+          (dolist (attempt
+                   (list (cons "start sound :amp-scale"
+                               (lambda () (funcall synth 0.0 sound :amp-scale amp)))
+                         (cons "start sound"
+                               (lambda () (funcall synth 0.0 sound)))
+                         (cons "sound :amp-scale"
+                               (lambda () (funcall synth sound :amp-scale amp)))
+                         (cons "sound"
+                               (lambda () (funcall synth sound)))))
+            (multiple-value-bind (result ok rest)
+                (%ats-try (format nil "~A::~A ~A" synth-package synth-name
+                                  (car attempt))
+                          (cdr attempt) failures)
+              (declare (ignore result))
+              (setf failures rest)
+              (when ok
+                (return-from ats-play-for-repl
+                  (list :ok (format nil "Playing ~A via ~A::~A (~A), loaded with ~A::~A into cl-user::~A."
+                                    (file-namestring path)
+                                    synth-package synth-name (car attempt)
+                                    loader-package loader-name
+                                    (symbol-name binding))))))))
+        (list :error (format nil "Synthesis failed. Attempts: ~{~A~^; ~}"
+                             (reverse failures)))))))
+
+(defun ats-stop-for-repl ()
+  "Stops the playback by freeing the root group, as (free 0) does.
+
+Not a dedicated stop function: none of the candidate synthesis functions
+reliably has one, and freeing the root group is what CLAMPS's own examples
+do. That it stops OTHER nodes too is stated rather than hidden — a button
+that silently kills a running piece would be worse than no button."
+  (let ((free (%rt-sym "FREE")))
+    (if (null free)
+        (list :error "Incudine is not loaded; nothing to stop.")
+        (handler-case
+            (progn (funcall free 0)
+                   (setf *ats-playing* nil)
+                   (list :ok "Freed node 0 — this stops ALL running nodes, not only the ATS playback."))
+          (error (e) (list :error (format nil "free failed: ~A" e)))))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

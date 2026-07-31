@@ -2,6 +2,81 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.2.1] - 2026-07-30
+
+### Fixed
+
+- **ATS playback called ats-cuda wrongly, and then blamed the wrong
+  function for it.** Read off a working session:
+
+      (ats-load "/tmp/cl.ats" 'cl-new)
+      (sin-noi-synth 0.0 cl-new :amp-scale 0.2)
+
+  Two things had been guessed wrongly. `ats-load` takes the path AND a
+  symbol to bind the loaded sound to, and returns the symbol rather than the
+  sound; it was being called with the path alone. And the start time is a
+  FLOAT — `sin-noi-synth` schedules on it, so an integer 0 is not the same
+  thing.
+
+  Worse than either was the report. The loader's `invalid number of
+  arguments: 1` was caught by an outer handler and shown as
+  `ATS-CUDA::SIN-NOI-SYNTH failed`, pointing at a function that was
+  perfectly fine. Half an hour can be lost to a message that names the wrong
+  thing. Each attempt is now recorded with its own error, and a loader
+  failure is reported as one.
+
+  Several conventions are still tried in turn, since they differ between
+  ats-cuda versions, and the message names the one that worked so that a
+  working setup can be reproduced.
+
+- New gate coverage for exactly this. Stand-in packages provide an
+  `ats-load` and a `sin-noi-synth` that fail in known ways, so the report can
+  be checked without Incudine: a refusing loader must be named as the loader
+  and must NOT blame the synthesis; a refusing synthesis must list every
+  argument list attempted; and a working stand-in rejects an integer start
+  time, so the float is checked by the test passing at all. Reintroducing
+  either fault fails the gate with 6 and 1 failures respectively.
+
+## [1.2.0] - 2026-07-30
+
+### Added
+
+- **Play and Stop in the ATS browser.** The analysis on screen can be handed
+  to the image's resynthesis and heard.
+
+  The extension does NOT synthesise. Turning partials back into sound is
+  Incudine's and ats-cuda's job; they do it in the audio thread with their
+  own oscillator banks and their own noise model. A second implementation
+  inside an editor extension would be a worse one, and worse in a way nobody
+  would notice until a piece sounded subtly different from the analysis it
+  came from.
+
+  So the functions are looked up at runtime, across `ats-cuda`, `ats`,
+  `clamps`, `incudine` and `cl-user`, with several candidate names each,
+  because they differ between versions. `sin-noi-synth` is preferred over the
+  purely sinusoidal variants: those leave out precisely the residual noise an
+  ATS analysis separated out with some effort. Several argument lists are
+  tried in turn rather than one being assumed, since a wrong arity would
+  otherwise surface as "invalid number of arguments" with no hint of which
+  function was meant.
+
+  When nothing is found, the message names every candidate that was searched
+  for and every package that exists — "not available" on its own would leave
+  nothing to act on. A file that is not an ATS file is refused before that
+  search, so the user is told about the file they picked rather than about
+  missing packages.
+
+  Stop frees node 0, which is what CLAMPS's own examples do. That this stops
+  ALL running nodes and not only the playback is stated in the message rather
+  than hidden: a button that silently kills a running piece would be worse
+  than no button.
+
+**Untested against real audio.** There is no Incudine and no audio device in
+the environment this was written in, so what is verified is the file
+handling, the discovery and every failure path — the gate runs precisely
+where nothing is available, so it always exercises them. Whether the
+resynthesis itself sounds right can only be judged at your machine.
+
 ## [1.1.3] - 2026-07-30
 
 ### Added

@@ -1600,6 +1600,41 @@ twenty million doubles and the display has a few hundred columns."
                         "partials" (vector)
                         "noise" (vector))))))))
 
+(defun handle-ats-play (id params)
+  "clamps/atsPlay — hands an ATS file to the image's resynthesis.
+
+The extension does not synthesise; it finds what the image already has.
+See ats-play-for-repl for why."
+  (let ((path (or (gethash "path" params) ""))
+        (amplitude (or (gethash "amplitude" params) 1.0)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:ats-play-for-repl ~S ~F)"
+             path (float amplitude 1.0d0))
+     :callback
+     (lambda (status value)
+       (send-response id
+         (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+             (make-jobj "ok" :true "message" (or (second value) ""))
+             (make-jobj "ok" :false
+                        "message" (if (consp value)
+                                      (or (second value) "Playback failed.")
+                                      (format nil "~A" value)))))))))
+
+(defun handle-ats-stop (id params)
+  "clamps/atsStop — stops the playback."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:ats-stop-for-repl)"
+   :callback
+   (lambda (status value)
+     (send-response id
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+           (make-jobj "ok" :true "message" (or (second value) ""))
+           (make-jobj "ok" :false
+                      "message" (if (consp value)
+                                    (or (second value) "Stopping failed.")
+                                    (format nil "~A" value))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1702,6 +1737,8 @@ twenty million doubles and the display has a few hundred columns."
           ((string= method "clamps/stickerSpectrogram") (handle-sticker-spectrogram id params))
           ((string= method "clamps/bufferOutline") (handle-buffer-outline id params))
           ((string= method "clamps/atsOutline") (handle-ats-outline id params))
+          ((string= method "clamps/atsPlay") (handle-ats-play id params))
+          ((string= method "clamps/atsStop") (handle-ats-stop id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))
