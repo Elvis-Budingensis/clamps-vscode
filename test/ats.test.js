@@ -143,6 +143,55 @@ if (!/if \(drawing\) \{ context\.stroke\(\); drawing = false; \}/.test(html)) {
      + 'bridged with a straight line that looks like a partial');
 }
 
+
+// ---------------------------------------------------------------------
+// 6. Noise bands outside the axis are skipped, not squashed
+// ---------------------------------------------------------------------
+// yOf clamps to the visible range, so a band lying above the file's
+// highest frequency lands on the top edge, gets inflated to the minimum
+// height of one pixel, and stacks its opacity there. Found in a real
+// picture: a bright bar along the top of every analysis, made of bands the
+// file says nothing about. The Bark scale reaches 20 kHz and most analyses
+// do not, so this is the normal case rather than an edge one.
+if (!/if \(low >= fMax\(\)\) continue;/.test(html)) {
+  fail('bands above the axis are not skipped — they pile up on the top edge');
+}
+// And the noise must stay quieter than the partials: it is context for
+// them, not a second subject. At the original 0.35 it washed them out, and
+// a view whose purpose is to follow ONE partial could not show one.
+{
+  const alpha = html.match(/globalAlpha = ([0-9.]+) \* t \* t;/);
+  if (!alpha) {
+    fail('the noise opacity is no longer findable — the check runs into the void');
+  } else if (Number(alpha[1]) > 0.25) {
+    fail(`the noise is drawn at ${alpha[1]} opacity and covers the partials`);
+  }
+}
+
+// The Bark table itself: 25 bands, strictly rising, and the standard edges.
+{
+  const { BARK_EDGES, barkBand } = require('../out/atsView.js');
+  equal('25 critical bands', BARK_EDGES.length, 25);
+  let previous = 0;
+  for (const edge of BARK_EDGES) {
+    if (!(edge > previous)) fail(`the Bark edges do not rise: ${edge} after ${previous}`);
+    previous = edge;
+  }
+  // Near-linear below 500 Hz, logarithmic above — that difference is the
+  // whole reason for the table rather than a computed spacing.
+  equal('the first band ends at 100 Hz', BARK_EDGES[0], 100);
+  equal('the fifth at 510 Hz', BARK_EDGES[4], 510);
+  equal('the last at 20 kHz', BARK_EDGES[24], 20000);
+  equal('band 0 starts at 0', barkBand(0).low, 0);
+  equal('band 1 starts at 100', barkBand(1).low, 100);
+  // An index out of range is clamped rather than yielding undefined, which
+  // would become NaN in the drawing and take the band with it.
+  const beyond = barkBand(99);
+  if (!Number.isFinite(beyond.low) || !Number.isFinite(beyond.high)) {
+    fail(`barkBand(99) yields ${JSON.stringify(beyond)}`);
+  }
+}
+
 if (failed > 0) {
   console.log(`\n${failed} failure(s).`);
   process.exit(1);

@@ -1,8 +1,8 @@
 {
  "src/atsView.ts": {
-  "lines": 456,
-  "comments": 66,
-  "longStrings": 37
+  "lines": 468,
+  "comments": 75,
+  "longStrings": 22
  },
  "src/bufferView.ts": {
   "lines": 441,
@@ -200,9 +200,9 @@
   "longStrings": 25
  },
  "test/ats.test.js": {
-  "lines": 154,
-  "comments": 54,
-  "longStrings": 14
+  "lines": 203,
+  "comments": 71,
+  "longStrings": 19
  },
  "test/buffer.test.js": {
   "lines": 166,

@@ -339,6 +339,7 @@ function draw() {
   // from a partial, and the picture should not suggest otherwise.
   if (showNoise && outline.noise && outline.noise.length) {
     const bands = outline.noise.length;
+    context.fillStyle = style('--vscode-charts-purple') || '#a06cd5';
     for (let b = 0; b < bands; b++) {
       const values = outline.noise[b];
       // The real Bark edges, not a logarithmic guess: the scale is
@@ -346,15 +347,26 @@ function draw() {
       // guessed spacing draws the noise beside the partials it belongs to.
       const low = b === 0 ? 0 : BARK[b - 1];
       const high = BARK[b];
-      const y0 = yOf(high), y1 = yOf(low);
+      // A band that lies entirely above the axis is SKIPPED, not squashed
+      // against the top edge. yOf clamps, so without this every band from
+      // the file's highest frequency up to 20 kHz collapsed onto the same
+      // line, was inflated to a minimum height of one pixel, and stacked
+      // its opacity there — a bright bar along the top of every picture,
+      // made of bands the file says nothing about.
+      if (low >= fMax()) continue;
+      const y0 = yOf(Math.min(high, fMax()));
+      const y1 = yOf(Math.max(low, fMin()));
+      const height = y1 - y0;
+      if (height <= 0) continue;
       for (let c = 0; c < n; c++) {
         const level = values[c];
         if (level <= -96) continue;
         const t = Math.max(0, Math.min(1, (level + 96) / 96));
-        context.globalAlpha = 0.35 * t;
-        context.fillStyle = style('--vscode-charts-purple') || '#a06cd5';
-        context.fillRect(c * columnWidth, y0, Math.max(1, columnWidth),
-                         Math.max(1, y1 - y0));
+        // Dimmer than before. The noise is context for the partials, not a
+        // second subject: at 0.35 it washed them out, and the view that
+        // exists to follow one partial could not show one.
+        context.globalAlpha = 0.18 * t * t;
+        context.fillRect(c * columnWidth, y0, Math.max(1, columnWidth), height);
       }
     }
     context.globalAlpha = 1;

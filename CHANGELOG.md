@@ -2,6 +2,29 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.1.2] - 2026-07-30
+
+### Fixed
+
+- **Residual noise bands above the file's highest frequency piled up on the
+  top edge.** The y mapping clamps to the visible range, so every Bark band
+  between an analysis's highest partial and the 20 kHz the scale reaches
+  collapsed onto the same line, was inflated to a minimum height of one
+  pixel, and stacked its opacity there — a bright bar along the top of every
+  picture, made of bands the file says nothing about. Since most analyses
+  stop well below 20 kHz, this was the normal case rather than an edge one.
+  Bands lying outside the axis are now skipped, and bands crossing its edge
+  are clipped rather than clamped.
+
+- **The noise covered the partials.** Drawn at 0.35 opacity it washed them
+  out, and a view whose whole purpose is to follow ONE partial could not show
+  one. It is now dimmer and scaled quadratically with level, so that it reads
+  as context rather than as a second subject.
+
+Both were visible only in a picture of a real analysis; no gate would have
+found either, because both produce a perfectly plausible image. They are now
+guarded, and both guards were checked by reintroducing the faults.
+
 ## [1.1.1] - 2026-07-30
 
 ### Changed
