@@ -2,6 +2,25 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.1.3] - 2026-07-30
+
+### Added
+
+- **The spectrogram now has a labelled frequency axis**, and time marks
+  counted back in seconds from the right edge, which is the present. It
+  shipped without either: a bright line at some height says nothing until one
+  can tell which frequency that height is, so the picture was an image rather
+  than an instrument. The freq scope and the ATS browser have had labelled
+  axes from the beginning, which is exactly why the omission was invisible
+  from inside — it took a screenshot of a tone whose frequency could not be
+  read off the image of it.
+
+  The axis sits on a canvas of its own. The spectrogram scrolls itself with
+  `drawImage`, so grid lines drawn onto it would scroll away with the picture
+  and leave a trail of old axes marching leftwards. The labels carry a dark
+  backing, because white text on a bright spectrogram is unreadable precisely
+  where the interesting parts are.
+
 ## [1.1.2] - 2026-07-30
 
 ### Fixed

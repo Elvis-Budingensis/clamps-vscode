@@ -85,8 +85,8 @@
   "longStrings": 2
  },
  "src/spectrogramView.ts": {
-  "lines": 627,
-  "comments": 116,
+  "lines": 696,
+  "comments": 133,
   "longStrings": 2
  },
  "src/stickerPoll.ts": {
@@ -275,9 +275,9 @@
   "longStrings": 3
  },
  "test/spectrogram.test.js": {
-  "lines": 162,
-  "comments": 56,
-  "longStrings": 17
+  "lines": 192,
+  "comments": 70,
+  "longStrings": 21
  },
  "test/stickerpoll.test.js": {
   "lines": 261,

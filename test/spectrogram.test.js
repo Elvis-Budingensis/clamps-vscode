@@ -151,6 +151,36 @@ if (!/dropped/.test(html)) {
   fail('The webview does not report dropped frames — an invisible gap in time');
 }
 
+
+// ---------------------------------------------------------------------
+// 5. The frequency axis is drawn, and on a canvas of its own
+// ---------------------------------------------------------------------
+// A spectrogram without a labelled axis is a picture, not an instrument: a
+// bright line at some height says nothing until one can tell which
+// frequency that height is. This shipped without one, and it took a
+// screenshot of a tone whose frequency could not be read off the image to
+// notice — the freq scope and the ATS browser had labelled axes from the
+// beginning, so the omission was invisible from inside.
+if (!/drawAxis/.test(html)) {
+  fail('the spectrogram draws no frequency axis — the picture cannot be read');
+}
+// On a SEPARATE canvas. The spectrogram scrolls itself with drawImage, so
+// grid lines drawn onto it would scroll away with the picture and leave a
+// trail of old axes marching leftwards.
+if (!/axisCanvas/.test(html) || !/id="axis"/.test(html)) {
+  fail('the axis is not on a canvas of its own — it would scroll away with '
+     + 'the picture and leave a trail');
+}
+if (!/axisContext\.clearRect/.test(html)) {
+  fail('the axis overlay is not cleared before redrawing — the labels would '
+     + 'accumulate');
+}
+// The labels need a backing: white on a bright spectrogram is unreadable
+// exactly where the interesting parts are.
+if (!/fillRect\(2 \* ratio/.test(html)) {
+  fail('the axis labels have no backing and vanish over bright passages');
+}
+
 if (failed > 0) {
   console.log(`\n${failed} failure(s).`);
   process.exit(1);

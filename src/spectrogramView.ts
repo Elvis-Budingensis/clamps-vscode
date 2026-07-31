@@ -406,8 +406,11 @@ export class SpectrogramView {
            color: var(--vscode-dropdown-foreground);
            border: 1px solid var(--vscode-dropdown-border);
            font-size: 12px; padding: 1px 3px; }
-  canvas { width: 100%; height: 340px; display: block;
-           background: var(--vscode-input-background); border-radius: 3px; }
+  #host { position: relative; height: 340px; }
+  #host canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+                 display: block; border-radius: 3px; }
+  #gram { background: var(--vscode-input-background); }
+  #axis { pointer-events: none; }
   .readout { margin-top: 5px; font-family: var(--vscode-editor-font-family, monospace);
              font-variant-numeric: tabular-nums; }
   .dim { opacity: .65; }
@@ -439,7 +442,7 @@ export class SpectrogramView {
     <option value="-96">96 dB</option><option value="-120">120 dB</option>
   </select></label>
 </div>
-<canvas id="gram"></canvas>
+<div id="host"><canvas id="gram"></canvas><canvas id="axis"></canvas></div>
 <div class="readout" id="readout"></div>
 <div class="warn" id="warn"></div>
 <div class="empty" id="empty"></div>
@@ -447,6 +450,11 @@ export class SpectrogramView {
 const vscode = acquireVsCodeApi();
 const canvas = document.getElementById('gram');
 const context = canvas.getContext('2d');
+// The axis lives on a canvas of its own. The spectrogram is scrolled with
+// drawImage, so grid lines drawn onto it would scroll away with the
+// picture and leave a trail of old axes marching leftwards.
+const axisCanvas = document.getElementById('axis');
+const axisContext = axisCanvas.getContext('2d');
 let settings = ${JSON.stringify(settings)};
 let header = null;
 let cursor = null;
@@ -508,6 +516,8 @@ function resize() {
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || 600;
   const height = canvas.clientHeight || 340;
+  axisCanvas.width = Math.round(width * ratio);
+  axisCanvas.height = Math.round(height * ratio);
   // Preserve what is already drawn across a resize: redrawing is
   // impossible, the history only exists on this canvas.
   const keep = canvas.width > 0
@@ -515,6 +525,7 @@ function resize() {
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
   if (keep) context.putImageData(keep, 0, 0);
+  drawAxis();
   // The canvas height decides how many frequency bands are worth having.
   vscode.postMessage({ type: 'set', field: 'columns',
                        value: Math.round(height * ratio) });
@@ -527,6 +538,63 @@ canvas.addEventListener('mousemove', e => {
   readout();
 });
 canvas.addEventListener('mouseleave', () => { cursor = null; readout(); });
+
+/**
+ * Frequency grid and labels, on the overlay.
+ *
+ * Without it the picture is not readable: a bright line at some height
+ * says nothing until one can tell which frequency that height is. The
+ * freq scope and the ATS browser have had labelled axes from the start;
+ * the spectrogram went without, and nobody noticed until a screenshot
+ * showed a tone whose frequency could not be read off the image of it.
+ */
+function drawAxis() {
+  const w = axisCanvas.width, h = axisCanvas.height;
+  axisContext.clearRect(0, 0, w, h);
+  if (!header) return;
+  const ratio = window.devicePixelRatio || 1;
+  axisContext.font = (10 * ratio) + 'px sans-serif';
+  axisContext.textBaseline = 'bottom';
+  const marks = header.mode === 'log'
+    ? [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+    : [2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000];
+  for (const f of marks) {
+    if (f < header.fMin || f > header.fMax) continue;
+    const y = h - frequencyFraction(f, header.fMin, header.fMax, header.mode) * h;
+    axisContext.strokeStyle = '#ffffff';
+    axisContext.globalAlpha = .18;
+    axisContext.beginPath();
+    axisContext.moveTo(0, y + .5); axisContext.lineTo(w, y + .5); axisContext.stroke();
+    // The label carries a dark backing: over a bright spectrogram, white
+    // text on nothing is unreadable exactly where the interesting parts
+    // are.
+    const text = f >= 1000 ? (f / 1000) + 'k' : String(f);
+    const width = axisContext.measureText(text).width;
+    axisContext.globalAlpha = .55;
+    axisContext.fillStyle = '#000000';
+    axisContext.fillRect(2 * ratio, y - 12 * ratio, width + 6 * ratio, 12 * ratio);
+    axisContext.globalAlpha = .95;
+    axisContext.fillStyle = '#ffffff';
+    axisContext.fillText(text, 5 * ratio, y - 2 * ratio);
+  }
+  // Time marks every second, counted back from the right edge, which is
+  // the present.
+  const perColumn = header.secondsPerFrame || 0;
+  if (perColumn > 0) {
+    for (let seconds = 1; seconds * (1 / perColumn) < w; seconds++) {
+      const x = w - seconds * (1 / perColumn);
+      if (x < 0) break;
+      axisContext.strokeStyle = '#ffffff';
+      axisContext.globalAlpha = .12;
+      axisContext.beginPath();
+      axisContext.moveTo(x + .5, 0); axisContext.lineTo(x + .5, h); axisContext.stroke();
+      axisContext.globalAlpha = .6;
+      axisContext.fillStyle = '#ffffff';
+      axisContext.fillText('-' + seconds + 's', x + 3 * ratio, h - 3 * ratio);
+    }
+  }
+  axisContext.globalAlpha = 1;
+}
 
 /** Scroll left by N pixel columns and draw the new ones on the right. */
 function append(frames, floorDb) {
@@ -616,6 +684,7 @@ window.addEventListener('message', event => {
   }
   document.getElementById('warn').innerHTML = notes.join('<br>');
   append(answer.frames || [], answer.floorDb);
+  drawAxis();
   readout();
 });
 
