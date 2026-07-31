@@ -60,6 +60,29 @@ export type AtsRequest = (params: {
 }) => Promise<AtsOutline | undefined>;
 
 /**
+ * The upper edges of the 25 critical bands, in hertz.
+ *
+ * The standard Bark scale, which is what ATS uses for its residual noise.
+ * Written out rather than approximated: an earlier version spaced the
+ * bands logarithmically between 20 Hz and the maximum frequency, which is
+ * close enough to look right and wrong everywhere in particular. The Bark
+ * scale is near-linear below 500 Hz and only then turns logarithmic, so a
+ * purely logarithmic guess squeezes the low bands and stretches the high
+ * ones — and the noise would then be drawn beside the partials it belongs
+ * to.
+ */
+export const BARK_EDGES = [
+  100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000,
+  2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 9500, 12000, 15500, 20000,
+];
+
+/** Lower and upper edge of critical band INDEX, in hertz. */
+export function barkBand(index: number): { low: number; high: number } {
+  const i = Math.max(0, Math.min(BARK_EDGES.length - 1, Math.round(index)));
+  return { low: i === 0 ? 0 : BARK_EDGES[i - 1], high: BARK_EDGES[i] };
+}
+
+/**
  * Describes an ATS type in words.
  *
  * The numbers 1 to 4 say nothing to anyone who has not just read the
@@ -213,6 +236,7 @@ let axis = 'log';
 let showNoise = true;
 let cursor = null;
 let selected = -1;
+const BARK = [100,200,300,400,510,630,770,920,1080,1270,1480,1720,2000,2320,2700,3150,3700,4400,5300,6400,7700,9500,12000,15500,20000];
 
 const style = n =>
   getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -317,9 +341,11 @@ function draw() {
     const bands = outline.noise.length;
     for (let b = 0; b < bands; b++) {
       const values = outline.noise[b];
-      // The 25 critical bands, roughly Bark-spaced.
-      const low = 20 * Math.pow(fMax() / 20, b / bands);
-      const high = 20 * Math.pow(fMax() / 20, (b + 1) / bands);
+      // The real Bark edges, not a logarithmic guess: the scale is
+      // near-linear below 500 Hz and only then turns logarithmic, so a
+      // guessed spacing draws the noise beside the partials it belongs to.
+      const low = b === 0 ? 0 : BARK[b - 1];
+      const high = BARK[b];
       const y0 = yOf(high), y1 = yOf(low);
       for (let c = 0; c < n; c++) {
         const level = values[c];

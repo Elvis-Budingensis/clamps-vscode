@@ -1,7 +1,7 @@
 {
  "src/atsView.ts": {
-  "lines": 430,
-  "comments": 51,
+  "lines": 456,
+  "comments": 66,
   "longStrings": 37
  },
  "src/bufferView.ts": {
@@ -145,9 +145,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 3289,
-  "comments": 418,
-  "longStrings": 137
+  "lines": 3323,
+  "comments": 434,
+  "longStrings": 139
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -155,9 +155,9 @@
   "longStrings": 16
  },
  "lisp/test-ats.lisp": {
-  "lines": 269,
-  "comments": 74,
-  "longStrings": 6
+  "lines": 325,
+  "comments": 100,
+  "longStrings": 9
  },
  "lisp/test-bridge-context.lisp": {
   "lines": 113,

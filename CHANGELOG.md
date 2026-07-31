@@ -2,6 +2,45 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.1.1] - 2026-07-30
+
+### Changed
+
+- **Verified against a real ATS analysis** (a clarinet, type 4, 18 partials,
+  253 frames). The assumed layout proved exact: 1 + 18x3 + 25 = 80 doubles
+  per frame, times 253 frames plus 10 header doubles = 162000 bytes, the
+  file's length to the byte. The contents are independently coherent as well
+  — the partials are harmonics 1 to 18 of 261.5 Hz, and the even ones are an
+  order of magnitude weaker than the odd ones, which is the signature of a
+  cylindrical bore closed at one end. A misread layout could not produce
+  that.
+
+- **Residual noise now uses the real Bark edges** instead of a logarithmic
+  approximation. The previous spacing ran logarithmically from 20 Hz to the
+  maximum frequency, which is close enough to look right and wrong everywhere
+  in particular: the Bark scale is near-linear below 500 Hz and only then
+  turns logarithmic, so the low bands were squeezed and the high ones
+  stretched, and the noise was drawn beside the partials it belongs to.
+
+- **The header is cross-checked against the frames.** `max-amplitude` and
+  `max-frequency` are stated in the header and also follow from the frames,
+  so the two must agree; where they do not, the display says so rather than
+  choosing one. In the clarinet file they agree exactly — 0.19513 is the peak
+  of partial 6, 4712.83 the mean frequency of partial 17.
+
+  The limits of the check are recorded next to it as plainly as its use:
+  swapping amplitude and frequency is caught, a frame offset wrong by one is
+  not, because in a sustained sound the maximum barely moves between
+  neighbouring frames. It is a cross-check, not a proof, and a comment
+  claiming otherwise would be the same false confidence it exists to prevent.
+
+### Fixed
+
+- The ATS gate's own file writer filled `max-amplitude` and `max-frequency`
+  with round numbers, so every file it produced contradicted its own header.
+  The new cross-check complained about all of them — the test was wrong and
+  the check was right. The writer now computes both from the data it writes.
+
 ## [1.1.0] - 2026-07-30
 
 ### Added

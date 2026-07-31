@@ -69,7 +69,18 @@
       (flet ((emit (x) (write-sequence (double-bytes x big-endian-p) out)))
         (emit 123.0d0) (emit sample-rate) (emit frame-size) (emit window-size)
         (emit (float partials 1.0d0)) (emit (float frames 1.0d0))
-        (emit 1.0d0) (emit 20000.0d0) (emit duration) (emit (float type 1.0d0))
+        ;; max-amplitude and max-frequency are COMPUTED, not filled in with
+        ;; a round number. The first version wrote 1.0 and 20000.0 flat, so
+        ;; every file it produced contradicted its own header — and the
+        ;; reader's cross-check dutifully complained about all of them. The
+        ;; test was wrong, the check was right.
+        (emit (reduce #'max (mapcar (lambda (p) (reduce #'max (mapcar #'first p)))
+                                    partials-data)
+                      :initial-value 0.0d0))
+        (emit (reduce #'max (mapcar (lambda (p) (reduce #'max (mapcar #'second p)))
+                                    partials-data)
+                      :initial-value 0.0d0))
+        (emit duration) (emit (float type 1.0d0))
         (dotimes (f frames)
           (emit (* duration (/ f (max 1 frames))))
           (dotimes (p partials)
@@ -258,6 +269,51 @@
         (fail "Partials are not in index order: ~S" indices))
       (unless (= (first (car (last (partials-of r)))) 59)
         (fail "The loudest partial (59) is missing: ~S" indices)))))
+
+;;; ---------------------------------------------------------------------
+;;; 7. Header and frames are cross-checked
+;;; ---------------------------------------------------------------------
+;;; max-amplitude and max-frequency stand in the header AND follow from the
+;;; frames, so the two must agree. Where they do not, either the file is
+;;; inconsistent or — far more likely — the reader is walking the frames
+;;; wrongly. Verified against a real clarinet analysis: the header's
+;;; 0.19513 and 4712.83 are exactly the peak of partial 6 and the mean
+;;; frequency of partial 17.
+;;;
+;;; The limits of the check are stated as plainly as its use: swapping
+;;; amplitude and frequency is caught, a frame offset wrong by one is not,
+;;; because in a sustained sound the maximum barely moves between
+;;; neighbouring frames. It is a cross-check, not a proof.
+(let ((data (list (loop repeat 20 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  ;; Written with a header claiming a maximum amplitude of 1.0 while the
+  ;; frames hold 0.5.
+  (let ((bytes (with-open-file (in *tmp* :element-type '(unsigned-byte 8))
+                 (let ((b (make-array (file-length in)
+                                      :element-type '(unsigned-byte 8))))
+                   (read-sequence b in) b))))
+    ;; Header field 6 is max-amplitude; overwrite it with 1.0.
+    (replace bytes (double-bytes 1.0d0 nil) :start1 48)
+    (with-open-file (out *tmp* :direction :output :element-type '(unsigned-byte 8)
+                               :if-exists :supersede)
+      (write-sequence bytes out)))
+  (let ((r (clamps-bridge-rpc:ats-outline-for-repl (namestring *tmp*) 4 128)))
+    (unless (eq (first r) :ok)
+      (fail "A disagreeing header is refused outright: ~A" (second r)))
+    (when (eq (first r) :ok)
+      ;; Shown, not refused: the frames are readable, only the header lies.
+      ;; Refusing would withhold a picture that is correct.
+      (unless (some (lambda (w) (search "max amplitude" w)) (warnings-of r))
+        (fail "The disagreement between header and frames is not stated: ~S"
+              (warnings-of r))))))
+
+;;; And a consistent file draws no such warning — otherwise the message
+;;; would stand next to every analysis and mean nothing.
+(let ((data (list (loop repeat 20 collect (list 0.5d0 440.0d0)))))
+  (write-ats *tmp* :type 1 :partials-data data)
+  (let ((r (clamps-bridge-rpc:ats-outline-for-repl (namestring *tmp*) 4 128)))
+    (when (some (lambda (w) (search "header says" w)) (warnings-of r))
+      (fail "A consistent file is flagged all the same: ~S" (warnings-of r)))))
 
 (ignore-errors (delete-file *tmp*))
 

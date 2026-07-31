@@ -2568,6 +2568,40 @@ thousand would misrepresent the analysis."
                   (push (format nil "~D of ~D partials shown, the quietest ~D omitted"
                                 (length shown) partials (- partials (length shown)))
                         warnings))
+                ;; Cross-check the header against the body.
+                ;;
+                ;; max-amplitude and max-frequency are stated in the header
+                ;; AND derivable from the frames, so the two must agree. If
+                ;; they do not, either the file is inconsistent or — far
+                ;; more likely — this reader is walking the frames wrongly
+                ;; and the numbers it computes come from the wrong offsets.
+                ;; What it catches, tried against a real analysis: the
+                ;; two fields swapped, a stride wrong within the frame, an
+                ;; amplitude read from a frequency slot. What it does NOT
+                ;; catch, equally tried: a frame offset wrong by one. In a
+                ;; sustained sound the maximum barely moves between
+                ;; neighbouring frames, so the check stays silent — it is a
+                ;; cross-check, not a proof, and claiming otherwise here
+                ;; would be the same kind of false confidence it is meant
+                ;; to prevent.
+                (let ((peak-amp 0.0d0) (peak-freq 0.0d0))
+                  (declare (type double-float peak-amp peak-freq))
+                  (dotimes (p partials)
+                    (when (> (aref peaks p) peak-amp) (setf peak-amp (aref peaks p))))
+                  (dolist (entry result)
+                    (when (> (third entry) peak-freq) (setf peak-freq (third entry))))
+                  (let ((stated-amp (getf header :max-amplitude))
+                        (stated-freq (getf header :max-frequency)))
+                    (when (and (> stated-amp 0.0d0)
+                               (> (abs (- peak-amp stated-amp)) (* 0.02d0 stated-amp)))
+                      (push (format nil "header says max amplitude ~,5F, the frames give ~,5F"
+                                    stated-amp peak-amp)
+                            warnings))
+                    (when (and (> stated-freq 0.0d0) (> peak-freq 0.0d0)
+                               (> (abs (- peak-freq stated-freq)) (* 0.05d0 stated-freq)))
+                      (push (format nil "header says max frequency ~,1F Hz, the frames give ~,1F Hz"
+                                    stated-freq peak-freq)
+                            warnings))))
                 (dolist (p shown)
                   (let ((freqs '()) (amps '()) (sum 0.0d0) (n 0))
                     (declare (type double-float sum))
