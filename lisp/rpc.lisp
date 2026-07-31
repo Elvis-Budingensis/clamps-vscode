@@ -50,7 +50,7 @@
            #:sticker-state-record-rms-for-repl
            #:sticker-samples-since-for-repl #:sticker-keys-for-repl
            #:sticker-spectrum-for-repl #:sticker-spectrogram-for-repl
-           #:buffer-outline-for-repl
+           #:buffer-outline-for-repl #:ats-outline-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -2375,6 +2375,265 @@ display refresh."
                                (nreverse warnings)))
                        values*))))))
       (error (e) (list :error (princ-to-string e))))))
+
+;;; ---------------------------------------------------------------------
+;;; ATS files: partials over time
+;;; ---------------------------------------------------------------------
+;;;
+;;; ATS (Analysis-Transformation-Synthesis, Juan Pampin) stores what a
+;;; spectrogram only shows: not a grid of bins, but tracked partials —
+;;; each with its own frequency and amplitude trajectory — plus residual
+;;; noise in critical bands.  A spectrogram makes you infer the partials;
+;;; an ATS file already knows them, and the display can therefore let you
+;;; pick one out and follow it.
+;;;
+;;; The file is a header of ten double-floats followed by frames.  The
+;;; first of them is the magic number 123.0, which exists to reveal the
+;;; byte order: read it little-endian, and if it is not 123.0, the file
+;;; was written big-endian.
+;;;
+;;; What is read here is the format as documented by ATS; I have taken
+;;; care to make the reader say when reality disagrees rather than
+;;; interpret whatever it finds.  Hence %ats-expected-size below: the
+;;; header determines exactly how long the file must be, and if it is not
+;;; that long, something about the assumed layout is wrong.  Reporting
+;;; that is worth more than a picture of misread doubles, which would look
+;;; like a perfectly good analysis of a different sound.
+
+(defparameter *ats-magic* 123.0d0
+  "First double of an ATS file, present to reveal the byte order.")
+
+(defparameter *ats-noise-bands* 25
+  "Critical bands of residual noise in ATS types 3 and 4.")
+
+(defun %ieee-double (bits)
+  "The double-float for 64 raw IEEE-754 BITS.
+
+Written out rather than taken from an SBCL internal: this runs on bytes
+read from a file, and the one thing it must not do is depend on a
+representation that changes between implementations. Infinities and NaN
+become 0 — a display has no use for them, and a NaN in a frequency would
+propagate into the axis."
+  (let* ((sign (if (logbitp 63 bits) -1 1))
+         (exponent (ldb (byte 11 52) bits))
+         (mantissa (ldb (byte 52 0) bits)))
+    (cond ((= exponent 2047) 0.0d0)
+          ((zerop exponent) (* sign (scale-float (float mantissa 1.0d0) -1074)))
+          (t (* sign (scale-float (float (logior mantissa (ash 1 52)) 1.0d0)
+                                  (- exponent 1075)))))))
+
+(defun %ats-double (bytes offset big-endian-p)
+  "The double at byte OFFSET of BYTES."
+  (let ((bits 0))
+    (if big-endian-p
+        (dotimes (i 8) (setf bits (logior (ash bits 8) (aref bytes (+ offset i)))))
+        (loop for i from 7 downto 0
+              do (setf bits (logior (ash bits 8) (aref bytes (+ offset i))))))
+    (%ieee-double bits)))
+
+(defun %ats-frame-doubles (partials type)
+  "Doubles per frame for a file of TYPE with PARTIALS partials.
+
+  1: time, then (amp frq) per partial
+  2: time, then (amp frq pha) per partial
+  3: like 1 plus 25 noise bands
+  4: like 2 plus 25 noise bands"
+  (+ 1
+     (* partials (if (member type '(2 4)) 3 2))
+     (if (member type '(3 4)) *ats-noise-bands* 0)))
+
+(defun %ats-expected-size (partials frames type)
+  "The exact length an ATS file with this header must have, in bytes."
+  (* 8 (+ 10 (* frames (%ats-frame-doubles partials type)))))
+
+(defun %ats-read-header (bytes)
+  "Reads the ten header doubles.  (values PLIST BIG-ENDIAN-P) or NIL.
+
+The magic number decides the byte order, and it is also the only check
+that this is an ATS file at all."
+  (when (< (length bytes) 80)
+    (return-from %ats-read-header nil))
+  (let ((big-endian-p nil))
+    (cond ((= (%ats-double bytes 0 nil) *ats-magic*) (setf big-endian-p nil))
+          ((= (%ats-double bytes 0 t) *ats-magic*) (setf big-endian-p t))
+          (t (return-from %ats-read-header nil)))
+    (flet ((d (i) (%ats-double bytes (* 8 i) big-endian-p)))
+      (values (list :sample-rate (d 1)
+                    :frame-size (d 2)
+                    :window-size (d 3)
+                    :partials (truncate (d 4))
+                    :frames (truncate (d 5))
+                    :max-amplitude (d 6)
+                    :max-frequency (d 7)
+                    :duration (d 8)
+                    :type (truncate (d 9)))
+              big-endian-p))))
+
+(defun %ats-read-file (path)
+  "The whole file as a byte vector, or NIL."
+  (handler-case
+      (with-open-file (in path :element-type '(unsigned-byte 8)
+                               :if-does-not-exist nil)
+        (when in
+          (let ((bytes (make-array (file-length in)
+                                   :element-type '(unsigned-byte 8))))
+            (read-sequence bytes in)
+            bytes)))
+    (error () nil)))
+
+(defun ats-outline-for-repl (path &optional (columns 400) (max-partials 128)
+                                    (floor-db -96.0))
+  "Partial trajectories of the ATS file at PATH, reduced to COLUMNS.
+
+Returns (:ok HEADER PARTIALS NOISE) or (:error TEXT).
+
+HEADER is
+  (SAMPLE-RATE FRAME-SIZE WINDOW-SIZE PARTIAL-COUNT FRAME-COUNT MAX-AMPLITUDE
+   MAX-FREQUENCY DURATION TYPE COLUMNS SHOWN-PARTIALS HAS-PHASE HAS-NOISE
+   WARNINGS)
+
+PARTIALS is a list, one entry per shown partial:
+  (INDEX PEAK-AMPLITUDE MEAN-FREQUENCY (FREQ ...) (AMP-DB ...))
+with COLUMNS values in each of the two trajectories.
+
+Within a column the LOUDEST frame wins, for both frequency and amplitude
+together. Averaging would be wrong in a way that is hard to see: where a
+partial dies away and is reborn at another frequency, the mean lands
+between the two and draws a line through a place the partial never was.
+
+Partials are sorted by peak amplitude and cut off at MAX-PARTIALS, so that
+a file with a thousand of them still yields a picture. Which ones were
+dropped is stated in the warnings; silently showing the first 128 of a
+thousand would misrepresent the analysis."
+  (let ((bytes (%ats-read-file path)))
+    (when (null bytes)
+      (return-from ats-outline-for-repl
+        (list :error (format nil "~A cannot be read." path))))
+    (multiple-value-bind (header big-endian-p) (%ats-read-header bytes)
+      (when (null header)
+        (return-from ats-outline-for-repl
+          (list :error (format nil "~A is not an ATS file (magic number missing)."
+                               path))))
+      (let* ((partials (getf header :partials))
+             (frames (getf header :frames))
+             (type (getf header :type))
+             (warnings '()))
+        (when (or (< partials 0) (< frames 0)
+                  (not (member type '(1 2 3 4))))
+          (return-from ats-outline-for-repl
+            (list :error (format nil "Implausible ATS header: ~D partials, ~D frames, type ~D."
+                                 partials frames type))))
+        ;; The header determines the length exactly. A mismatch means the
+        ;; assumed layout is wrong, and then every number after the header
+        ;; is a misread double — which would draw a perfectly plausible
+        ;; analysis of a sound that is not in the file.
+        (let ((expected (%ats-expected-size partials frames type)))
+          (unless (= expected (length bytes))
+            (return-from ats-outline-for-repl
+              (list :error
+                    (format nil "~A: the header describes ~D bytes (~D partials, ~D frames, type ~D) but the file has ~D. The layout does not match; nothing is displayed rather than misread numbers."
+                            path expected partials frames type (length bytes))))))
+        (when (zerop frames)
+          (return-from ats-outline-for-repl
+            (list :error (format nil "~A contains no frames." path))))
+
+        (let* ((columns (max 8 (min 2048 (truncate columns) frames)))
+               (max-partials (max 1 (min 512 (truncate max-partials))))
+               (floor-db (min -6.0d0 (float floor-db 1.0d0)))
+               (per-frame (%ats-frame-doubles partials type))
+               (stride (if (member type '(2 4)) 3 2))
+               (has-noise (member type '(3 4)))
+               (frame-bytes (* 8 per-frame))
+               (base 80))
+          (flet ((frame-double (frame index)
+                   (%ats-double bytes (+ base (* frame frame-bytes) (* 8 index))
+                                big-endian-p)))
+            ;; Peak amplitude per partial, to decide what is worth showing.
+            (let ((peaks (make-array partials :element-type 'double-float
+                                              :initial-element 0.0d0)))
+              (dotimes (f frames)
+                (dotimes (p partials)
+                  (let ((amp (abs (frame-double f (+ 1 (* p stride))))))
+                    (when (> amp (aref peaks p)) (setf (aref peaks p) amp)))))
+              (let* ((order (sort (loop for p from 0 below partials collect p)
+                                  #'> :key (lambda (p) (aref peaks p))))
+                     (shown (subseq order 0 (min max-partials partials)))
+                     ;; Back into index order: a display that lists partials
+                     ;; by loudness instead of by number is hard to compare
+                     ;; against the analysis itself.
+                     (shown (sort shown #'<))
+                     (per-column (/ (float frames 1.0d0) (float columns 1.0d0)))
+                     (result '()))
+                (when (< (length shown) partials)
+                  (push (format nil "~D of ~D partials shown, the quietest ~D omitted"
+                                (length shown) partials (- partials (length shown)))
+                        warnings))
+                (dolist (p shown)
+                  (let ((freqs '()) (amps '()) (sum 0.0d0) (n 0))
+                    (declare (type double-float sum))
+                    (loop for c from (1- columns) downto 0
+                          do (let ((from (floor (* c per-column)))
+                                   (to (max (1+ (floor (* c per-column)))
+                                            (min frames (floor (* (1+ c) per-column)))))
+                                   (best-amp 0.0d0) (best-freq 0.0d0))
+                               (loop for f from from below to
+                                     do (let ((amp (abs (frame-double f (+ 1 (* p stride))))))
+                                          (when (>= amp best-amp)
+                                            (setf best-amp amp
+                                                  best-freq (frame-double
+                                                             f (+ 2 (* p stride)))))))
+                               (push (%finite-sample best-freq) freqs)
+                               (push (if (> best-amp 1.0d-9)
+                                         (max floor-db (* 20.0d0 (log best-amp 10.0d0)))
+                                         floor-db)
+                                     amps)
+                               (when (> best-amp 1.0d-9)
+                                 (incf sum best-freq) (incf n))))
+                    (push (list p (%finite-sample (aref peaks p))
+                                (if (plusp n) (/ sum n) 0.0d0)
+                                freqs amps)
+                          result)))
+                ;; Residual noise, reduced the same way: the loudest frame
+                ;; of a column wins.
+                (let ((noise '()))
+                  (when has-noise
+                    (let ((offset (+ 1 (* partials stride))))
+                      (loop for band from (1- *ats-noise-bands*) downto 0
+                            do (let ((values* '()))
+                                 (loop for c from (1- columns) downto 0
+                                       do (let ((from (floor (* c per-column)))
+                                                (to (max (1+ (floor (* c per-column)))
+                                                         (min frames (floor (* (1+ c) per-column)))))
+                                                (best 0.0d0))
+                                            (loop for f from from below to
+                                                  do (let ((v (abs (frame-double
+                                                                    f (+ offset band)))))
+                                                       (when (> v best) (setf best v))))
+                                            (push (if (> best 1.0d-9)
+                                                      (max floor-db
+                                                           (* 20.0d0 (log best 10.0d0)))
+                                                      floor-db)
+                                                  values*)))
+                                 (push values* noise)))))
+                  (unless has-noise
+                    (push "Type ~D carries no residual noise" warnings)
+                    (setf warnings (cons (format nil "Type ~D carries no residual noise"
+                                                 type)
+                                         (rest warnings))))
+                  (list :ok
+                        (list (getf header :sample-rate)
+                              (getf header :frame-size)
+                              (getf header :window-size)
+                              partials frames
+                              (getf header :max-amplitude)
+                              (getf header :max-frequency)
+                              (getf header :duration)
+                              type columns (length shown)
+                              (if (member type '(2 4)) 1 0)
+                              (if has-noise 1 0)
+                              (nreverse warnings))
+                        (nreverse result)
+                        noise))))))))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

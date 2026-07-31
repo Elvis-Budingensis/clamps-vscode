@@ -1536,6 +1536,70 @@ the buffer is."
                         "warnings" (vector)
                         "values" (vector))))))))
 
+(defun handle-ats-outline (id params)
+  "clamps/atsOutline — partial trajectories of an ATS file.
+
+One request per file, not a cycle: an analysis on disk does not change
+while it is being looked at. The reduction still happens in the image,
+because a file with a thousand partials over ten thousand frames is
+twenty million doubles and the display has a few hundred columns."
+  (let ((path (or (gethash "path" params) ""))
+        (columns (or (gethash "columns" params) 400))
+        (max-partials (or (gethash "maxPartials" params) 128))
+        (floor-db (or (gethash "floorDb" params) -96.0)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:ats-outline-for-repl ~S ~D ~D ~F)"
+             path (truncate columns) (truncate max-partials)
+             (float floor-db 1.0d0))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+                (= (length value) 4))
+           (destructuring-bind (ok header partials noise) value
+             (declare (ignore ok))
+             (destructuring-bind (sample-rate frame-size window-size partial-count
+                                  frame-count max-amplitude max-frequency duration
+                                  type columns shown has-phase has-noise warnings)
+                 header
+               (send-response id
+                 (make-jobj "available" :true
+                            "error" ""
+                            "sampleRate" sample-rate
+                            "frameSize" frame-size
+                            "windowSize" window-size
+                            "partialCount" partial-count
+                            "frameCount" frame-count
+                            "maxAmplitude" max-amplitude
+                            "maxFrequency" max-frequency
+                            "duration" duration
+                            "type" type
+                            "columns" columns
+                            "shown" shown
+                            "hasPhase" has-phase
+                            "hasNoise" has-noise
+                            "warnings" (coerce warnings 'vector)
+                            "partials"
+                            (coerce (mapcar
+                                     (lambda (p)
+                                       (make-jobj "index" (first p)
+                                                  "peak" (second p)
+                                                  "meanFrequency" (third p)
+                                                  "frequencies" (coerce (fourth p) 'vector)
+                                                  "levels" (coerce (fifth p) 'vector)))
+                                     partials)
+                                    'vector)
+                            "noise"
+                            (coerce (mapcar (lambda (b) (coerce b 'vector)) noise)
+                                    'vector)))))
+           (send-response id
+             (make-jobj "available" :false
+                        "error" (if (and (consp value) (eq (first value) :error))
+                                    (or (second value) "ATS file not readable.")
+                                    (format nil "~A" value))
+                        "warnings" (vector)
+                        "partials" (vector)
+                        "noise" (vector))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1637,6 +1701,7 @@ the buffer is."
           ((string= method "clamps/stickerSpectrum") (handle-sticker-spectrum id params))
           ((string= method "clamps/stickerSpectrogram") (handle-sticker-spectrogram id params))
           ((string= method "clamps/bufferOutline") (handle-buffer-outline id params))
+          ((string= method "clamps/atsOutline") (handle-ats-outline id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

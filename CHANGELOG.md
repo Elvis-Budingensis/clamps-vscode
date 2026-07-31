@@ -2,6 +2,55 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.1.0] - 2026-07-30
+
+### Added
+
+- **ATS browser** (`CLAMPS: Show ATS Analysis`): the tracked partials of an
+  ATS analysis over time, each as its own line, with residual noise in its
+  25 critical bands underneath. Hovering singles out the nearest partial and
+  reads off its number, frequency, note name and level at that moment.
+
+  The difference from the spectrogram is not the picture but what is behind
+  it. A spectrogram shows a grid of bins and leaves the partials to the eye;
+  an ATS file already knows them. So this view can do the one thing a
+  spectrogram cannot — follow a single partial and give its numbers.
+
+  A partial is therefore drawn as a LINE, not as a smear of bins, and a gap
+  stays a gap: where the tracker had no partial, no line is drawn. Bridging
+  it would invent a trajectory, and a straight line through a silence looks
+  exactly like a partial that was there.
+
+  The reader covers all four ATS types and both byte orders — the magic
+  number 123.0 at the head of the file exists to reveal which. Residual noise
+  is drawn separately and dimmer, because a noise band and a partial are not
+  comparable objects, and that separation is the point of the format.
+
+- **A wrong layout is refused rather than interpreted.** Every number after
+  the header sits at a computed offset; get the stride wrong by one and the
+  file still reads, still yields plausible frequencies and amplitudes, and
+  draws a convincing analysis of a sound that is not in it. The header
+  determines the file length exactly, so a mismatch is detectable — and is
+  reported with both figures instead of shown.
+
+- The reduction keeps the LOUDEST frame of a column, for frequency and
+  amplitude together. Averaging would be wrong in a way that is hard to see:
+  where a partial dies away and is reborn at another frequency, the mean
+  lands between the two and draws a line through a place the partial never
+  was.
+
+  Partials are sorted by peak amplitude, cut off, and returned in index
+  order; how many were dropped is stated. Silently showing the first 128 of a
+  thousand would misrepresent the analysis.
+
+- New gate `lisp/test-ats.lisp`. It is the only test in the project whose
+  expected answer is known exactly, because ATS is a defined binary format
+  and the test writes its own files — deliberately with a writer that shares
+  no code with the reader, since a writer derived from the reader's idea of
+  the layout would agree with it however wrong both were. Three deliberate
+  mutations (stride ignoring the type, frequency offset shifted by one,
+  length check removed) are caught with 4, 29 and 7 failures.
+
 ## [1.0.8] - 2026-07-30
 
 ### Fixed

@@ -1,4 +1,9 @@
 {
+ "src/atsView.ts": {
+  "lines": 430,
+  "comments": 51,
+  "longStrings": 37
+ },
  "src/bufferView.ts": {
   "lines": 441,
   "comments": 70,
@@ -15,9 +20,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 858,
-  "comments": 128,
-  "longStrings": 94
+  "lines": 886,
+  "comments": 131,
+  "longStrings": 98
  },
  "src/freqScope.ts": {
   "lines": 649,
@@ -120,9 +125,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1716,
+  "lines": 1781,
   "comments": 152,
-  "longStrings": 75
+  "longStrings": 77
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -140,14 +145,19 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 3030,
-  "comments": 385,
-  "longStrings": 125
+  "lines": 3289,
+  "comments": 418,
+  "longStrings": 137
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
   "comments": 35,
   "longStrings": 16
+ },
+ "lisp/test-ats.lisp": {
+  "lines": 269,
+  "comments": 74,
+  "longStrings": 6
  },
  "lisp/test-bridge-context.lisp": {
   "lines": 113,
@@ -188,6 +198,11 @@
   "lines": 224,
   "comments": 30,
   "longStrings": 25
+ },
+ "test/ats.test.js": {
+  "lines": 154,
+  "comments": 54,
+  "longStrings": 14
  },
  "test/buffer.test.js": {
   "lines": 166,

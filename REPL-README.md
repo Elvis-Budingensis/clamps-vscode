@@ -295,3 +295,33 @@ arithmetically detectable — an asymmetric waveform, a single spike among a
 hundred thousand quiet samples, a DC offset — and catches both shortcuts above
 when they are introduced deliberately. `test/buffer.test.js` covers the zoom,
 whose failures are invisible in any single picture.
+
+## ATS browser (1.1.0)
+
+`CLAMPS: Show ATS Analysis` opens an `.ats` file and draws its tracked
+partials over time, each as its own line, with the residual noise bands
+underneath. Hovering singles out the nearest partial and gives its number,
+frequency, note name and level at that instant.
+
+This is what an ATS analysis has over a spectrogram: the partials are already
+tracked, so one of them can be followed on its own. A partial is drawn as a
+line rather than as a smear of bins, and that makes visible what matters in a
+tracked analysis — where a partial begins and ends, where the tracker lost it
+and picked it up again elsewhere, whether an apparent glissando is one
+trajectory or two.
+
+A gap stays a gap. Where the tracker had no partial, no line is drawn;
+bridging it would invent a trajectory, and a straight line through a silence
+looks exactly like a partial that was there.
+
+The caption states the analysis window and the frequency resolution that
+follows from it. That figure says which distinctions in the picture are real:
+partials closer together than the window allows cannot have been separated, so
+two lines that nearly touch may be one partial the tracker split.
+
+All four ATS types are read, and both byte orders — the magic number at the
+head of the file reveals which. If the header and the file length disagree,
+nothing is displayed and both figures are reported: every number after the
+header sits at a computed offset, so a wrong layout produces plausible
+frequencies and amplitudes and draws a convincing analysis of a sound that is
+not in the file.

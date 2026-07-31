@@ -26,6 +26,7 @@ import { MeterView } from './meterView';
 import { FreqScopeView, SpectrumFrame } from './freqScope';
 import { SpectrogramView, SpectrogramFrames } from './spectrogramView';
 import { BufferView, BufferOutline } from './bufferView';
+import { AtsView, AtsOutline } from './atsView';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -310,6 +311,33 @@ export async function activate(context: vscode.ExtensionContext) {
           return c.sendRequest<BufferOutline>('clamps/bufferOutline', params);
         },
         expr, pkg
+      );
+    }),
+    vscode.commands.registerCommand('clamps.atsShow', async (given?: string) => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      // A path, not an expression: an ATS analysis is a file, and asking
+      // for a Lisp form here would mean the user has to have loaded it
+      // first in order to look at it.
+      let path = given;
+      if (!path) {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          openLabel: 'Show ATS analysis',
+          filters: { 'ATS analysis': ['ats'], 'All files': ['*'] },
+        });
+        path = picked?.[0]?.fsPath;
+      }
+      if (!path) return;
+      AtsView.show(
+        async params => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<AtsOutline>('clamps/atsOutline', params);
+        },
+        path
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {
