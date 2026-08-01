@@ -325,3 +325,23 @@ nothing is displayed and both figures are reported: every number after the
 header sits at a computed offset, so a wrong layout produces plausible
 frequencies and amplitudes and draws a convincing analysis of a sound that is
 not in the file.
+
+## Sample browser (1.3.0)
+
+`CLAMPS: Browse Samples` lists the sound files of a folder with format,
+channels, sample rate, bit depth, duration and size. Any column sorts; a click
+on a row opens that file's waveform.
+
+Only the headers are read — a folder of samples is gigabytes and everything in
+the table is in the first few hundred bytes of each file.
+
+WAV and AIFF are both read, including AIFF's 80-bit extended sample rate. That
+last point is the one worth knowing about: it is a format nothing else uses,
+and a sloppy decoder gets it almost right. 44099.99 instead of 44100 passes
+every glance and then makes every duration and every resampling ratio subtly
+wrong.
+
+Files whose header cannot be read appear in the list marked with a question
+mark rather than being dropped. Fractional sample rates are shown in full
+instead of rounded, because a rate that is not a whole number of hertz almost
+always means something upstream resampled the file.

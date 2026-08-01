@@ -20,9 +20,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 894,
-  "comments": 131,
-  "longStrings": 99
+  "lines": 929,
+  "comments": 134,
+  "longStrings": 105
  },
  "src/freqScope.ts": {
   "lines": 649,
@@ -79,6 +79,11 @@
   "comments": 20,
   "longStrings": 1
  },
+ "src/sampleBrowser.ts": {
+  "lines": 327,
+  "comments": 43,
+  "longStrings": 23
+ },
  "src/slimeTools.ts": {
   "lines": 110,
   "comments": 1,
@@ -125,9 +130,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1818,
+  "lines": 1859,
   "comments": 152,
-  "longStrings": 79
+  "longStrings": 81
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -145,9 +150,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 3509,
-  "comments": 455,
-  "longStrings": 154
+  "lines": 3718,
+  "comments": 483,
+  "longStrings": 161
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -178,6 +183,11 @@
   "lines": 376,
   "comments": 63,
   "longStrings": 25
+ },
+ "lisp/test-samples.lisp": {
+  "lines": 288,
+  "comments": 64,
+  "longStrings": 5
  },
  "lisp/test-spectrum.lisp": {
   "lines": 561,
@@ -268,6 +278,11 @@
   "lines": 186,
   "comments": 32,
   "longStrings": 1
+ },
+ "test/samples.test.js": {
+  "lines": 131,
+  "comments": 47,
+  "longStrings": 5
  },
  "test/session.test.js": {
   "lines": 108,

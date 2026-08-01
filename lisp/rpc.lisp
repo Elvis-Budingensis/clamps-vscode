@@ -52,6 +52,7 @@
            #:sticker-spectrum-for-repl #:sticker-spectrogram-for-repl
            #:buffer-outline-for-repl #:ats-outline-for-repl
            #:ats-play-for-repl #:ats-stop-for-repl
+           #:sample-browse-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -2854,6 +2855,214 @@ that silently kills a running piece would be worse than no button."
                    (setf *ats-playing* nil)
                    (list :ok "Freed node 0 — this stops ALL running nodes, not only the ATS playback."))
           (error (e) (list :error (format nil "free failed: ~A" e)))))))
+
+;;; ---------------------------------------------------------------------
+;;; Sample browser: what is in a directory of sound files
+;;; ---------------------------------------------------------------------
+;;;
+;;; Reads the HEADERS only.  A directory of a few hundred samples is
+;;; gigabytes; their headers are a few hundred bytes each, and everything
+;;; a browser shows — duration, rate, channels, bit depth — is in them.
+;;; Reading the audio data to find out how long a file is would make
+;;; opening a folder a minute-long operation for information that is
+;;; written down at the front.
+;;;
+;;; Two formats, and they are opposites in every respect.  WAV is RIFF,
+;;; little-endian, chunk sizes exclude the header.  AIFF is IFF,
+;;; big-endian, and stores its sample rate as an 80-BIT IEEE-754 EXTENDED
+;;; float — a format nothing else uses and no Lisp reads natively.
+;;;
+;;; That last point is where this can go wrong invisibly.  Decode the
+;;; extended float sloppily and 44100 comes out as 44099.99 or 44100.0000001,
+;;; which passes every eyeball test, prints as "44100" at one decimal, and
+;;; then makes every duration slightly wrong and every resampling ratio
+;;; irrational.  Hence %read-extended-float below is exact, and the gate
+;;; checks it against bit patterns rather than against a tolerance.
+
+(defun %bytes-be (bytes offset count)
+  "COUNT bytes at OFFSET as a big-endian unsigned integer."
+  (let ((value 0))
+    (dotimes (i count value)
+      (setf value (logior (ash value 8) (aref bytes (+ offset i)))))))
+
+(defun %bytes-le (bytes offset count)
+  "COUNT bytes at OFFSET as a little-endian unsigned integer."
+  (let ((value 0))
+    (dotimes (i count value)
+      (setf value (logior value (ash (aref bytes (+ offset i)) (* 8 i)))))))
+
+(defun %read-extended-float (bytes offset)
+  "The IEEE-754 80-bit extended float at OFFSET.  AIFF's sample rate.
+
+Exact by construction, not approximately right.  The layout is a sign bit,
+a 15-bit exponent with bias 16383, and a 64-bit mantissa whose leading bit
+is EXPLICIT — unlike the 32- and 64-bit formats, where it is implied.
+Forgetting that is the usual mistake and yields a value off by a factor of
+two, which for a sample rate reads as 22050 where 44100 belongs: wrong, and
+entirely plausible.
+
+scale-float rather than expt: the exponent range of this format exceeds a
+double-float's, and computing 2^exponent first would overflow before the
+mantissa ever divided it back down."
+  (let* ((sign (if (logbitp 7 (aref bytes offset)) -1 1))
+         (exponent (logand (%bytes-be bytes offset 2) #x7FFF))
+         (mantissa (%bytes-be bytes (+ offset 2) 8)))
+    (cond ((and (zerop exponent) (zerop mantissa)) 0.0d0)
+          ((= exponent #x7FFF) 0.0d0)   ; infinity or NaN: no use here
+          (t (* sign (scale-float (float mantissa 1.0d0) (- exponent 16383 63)))))))
+
+(defun %read-file-head (path bytes)
+  "The first BYTES bytes of PATH, or NIL."
+  (handler-case
+      (with-open-file (in path :element-type '(unsigned-byte 8)
+                               :if-does-not-exist nil)
+        (when in
+          (let* ((n (min bytes (file-length in)))
+                 (buffer (make-array n :element-type '(unsigned-byte 8))))
+            (read-sequence buffer in)
+            buffer)))
+    (error () nil)))
+
+(defun %ascii (bytes offset count)
+  (let ((out (make-string count)))
+    (dotimes (i count out)
+      (setf (char out i) (code-char (aref bytes (+ offset i)))))))
+
+(defun %read-wav-header (bytes)
+  "Header data of a RIFF/WAVE file, or NIL.
+
+Walks the chunk list rather than assuming fmt sits at offset 12.  Files
+written by editors regularly carry LIST, bext or JUNK chunks first, and an
+assumed offset reads those as the format — yielding a plausible number of
+channels and a nonsensical rate."
+  (when (or (< (length bytes) 12)
+            (not (string= (%ascii bytes 0 4) "RIFF"))
+            (not (string= (%ascii bytes 8 4) "WAVE")))
+    (return-from %read-wav-header nil))
+  (let ((position 12)
+        (channels nil) (rate nil) (bits nil) (data-bytes nil)
+        (limit (length bytes)))
+    (loop while (<= (+ position 8) limit)
+          do (let ((id (%ascii bytes position 4))
+                   (size (%bytes-le bytes (+ position 4) 4)))
+               (cond
+                 ((and (string= id "fmt ") (<= (+ position 24) limit))
+                  (setf channels (%bytes-le bytes (+ position 10) 2)
+                        rate (float (%bytes-le bytes (+ position 12) 4) 1.0d0)
+                        bits (%bytes-le bytes (+ position 22) 2)))
+                 ((string= id "data")
+                  (setf data-bytes size)))
+               ;; Chunks are padded to an even length, and the pad byte is
+               ;; not counted in the size. Ignoring it shifts everything
+               ;; after an odd chunk by one byte.
+               (incf position (+ 8 size (mod size 2)))))
+    (when (and channels rate bits (plusp channels) (plusp bits))
+      (list :format "WAV" :channels channels :sample-rate rate
+            :bit-depth bits
+            :frames (if data-bytes
+                        (floor data-bytes (max 1 (* channels (ceiling bits 8))))
+                        0)))))
+
+(defun %read-aiff-header (bytes)
+  "Header data of an AIFF or AIFF-C file, or NIL."
+  (when (or (< (length bytes) 12)
+            (not (string= (%ascii bytes 0 4) "FORM"))
+            (not (member (%ascii bytes 8 4) '("AIFF" "AIFC") :test #'string=)))
+    (return-from %read-aiff-header nil))
+  (let ((position 12)
+        (channels nil) (frames nil) (bits nil) (rate nil)
+        (compression nil)
+        (limit (length bytes)))
+    (loop while (<= (+ position 8) limit)
+          do (let ((id (%ascii bytes position 4))
+                   (size (%bytes-be bytes (+ position 4) 4)))
+               (when (and (string= id "COMM") (<= (+ position 26) limit))
+                 (setf channels (%bytes-be bytes (+ position 8) 2)
+                       frames (%bytes-be bytes (+ position 10) 4)
+                       bits (%bytes-be bytes (+ position 14) 2)
+                       rate (%read-extended-float bytes (+ position 16)))
+                 (when (and (string= (%ascii bytes 8 4) "AIFC")
+                            (<= (+ position 30) limit))
+                   (setf compression (%ascii bytes (+ position 26) 4))))
+               (incf position (+ 8 size (mod size 2)))))
+    (when (and channels frames bits rate (plusp channels))
+      (list :format (if compression
+                        (format nil "AIFC/~A" (string-trim " " compression))
+                        "AIFF")
+            :channels channels :sample-rate rate :bit-depth bits
+            :frames frames))))
+
+(defun %sample-info (path)
+  "Header data for PATH, or (:format \"?\" ...) when it is not readable.
+
+Never NIL: a directory listing that silently omits what it cannot read is
+worse than one that names it. A file that is there but unreadable is
+something the user wants to see."
+  (let ((bytes (%read-file-head path 4096)))
+    (or (and bytes (or (%read-wav-header bytes) (%read-aiff-header bytes)))
+        (list :format "?" :channels 0 :sample-rate 0.0d0 :bit-depth 0
+              :frames 0))))
+
+(defparameter *sample-extensions*
+  '("wav" "aif" "aiff" "aifc" "wave")
+  "Extensions the browser lists.")
+
+(defun sample-browse-for-repl (directory &optional (recursive nil))
+  "Sound files in DIRECTORY with their header data.
+
+Returns (:ok ENTRIES) or (:error TEXT).  Each entry is
+  (NAME PATH FORMAT CHANNELS SAMPLE-RATE BIT-DEPTH FRAMES DURATION SIZE)
+
+DURATION is computed from frames and rate; where the header does not give
+both, it is 0 rather than a guess.  A browser that invents a duration is
+worse than one that leaves the column empty."
+  (handler-case
+      (let* ((path (merge-pathnames
+                    (make-pathname :directory '(:relative))
+                    (pathname (concatenate 'string
+                                           (string-right-trim "/" directory)
+                                           "/"))))
+             (pattern (merge-pathnames (make-pathname :name :wild :type :wild)
+                                       path))
+             (entries '()))
+        (unless (probe-file path)
+          (return-from sample-browse-for-repl
+            (list :error (format nil "~A does not exist." directory))))
+        (dolist (file (directory pattern))
+          (let ((type (pathname-type file)))
+            (cond
+              ;; A directory: recurse only when asked. A sample library can
+              ;; be tens of thousands of files deep, and opening a folder
+              ;; must not walk all of it.
+              ((null (pathname-name file))
+               (when recursive
+                 (let ((sub (sample-browse-for-repl (namestring file) t)))
+                   (when (eq (first sub) :ok)
+                     (setf entries (append (second sub) entries))))))
+              ((and type (member (string-downcase type) *sample-extensions*
+                                 :test #'string=))
+               (let* ((info (%sample-info file))
+                      (frames (getf info :frames))
+                      (rate (getf info :sample-rate))
+                      (size (or (ignore-errors
+                                  (with-open-file (in file :element-type
+                                                           '(unsigned-byte 8))
+                                    (file-length in)))
+                                0)))
+                 (push (list (file-namestring file)
+                             (namestring file)
+                             (getf info :format)
+                             (getf info :channels)
+                             rate
+                             (getf info :bit-depth)
+                             frames
+                             (if (and (plusp rate) (plusp frames))
+                                 (/ (float frames 1.0d0) rate)
+                                 0.0d0)
+                             size)
+                       entries))))))
+        (list :ok (sort entries #'string< :key #'first)))
+    (error (e) (list :error (princ-to-string e)))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

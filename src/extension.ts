@@ -27,6 +27,7 @@ import { FreqScopeView, SpectrumFrame } from './freqScope';
 import { SpectrogramView, SpectrogramFrames } from './spectrogramView';
 import { BufferView, BufferOutline } from './bufferView';
 import { AtsView, AtsOutline } from './atsView';
+import { SampleBrowserView, SampleListing } from './sampleBrowser';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -346,6 +347,40 @@ export async function activate(context: vscode.ExtensionContext) {
           );
         },
         path
+      );
+    }),
+    vscode.commands.registerCommand('clamps.samplesShow', async () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
+        openLabel: 'Browse samples',
+      });
+      const directory = picked?.[0]?.fsPath;
+      if (!directory) return;
+      SampleBrowserView.show(
+        async params => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<SampleListing>('clamps/sampleBrowse', params);
+        },
+        (entry) => {
+          // The table answers "which file", the waveform "what is in it".
+          // Handing the path straight over is what makes having both worth
+          // it; asking the user to open a second dialogue would not.
+          BufferView.show(
+            async params => {
+              const c = client;
+              if (!c || c.state !== State.Running) return undefined;
+              return c.sendRequest<BufferOutline>('clamps/bufferOutline', params);
+            },
+            `(incudine:buffer-load "${entry.path.replace(/["\\]/g, '\\$&')}")`,
+            'COMMON-LISP-USER'
+          );
+        },
+        directory
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {

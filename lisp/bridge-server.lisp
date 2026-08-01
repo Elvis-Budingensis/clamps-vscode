@@ -1635,6 +1635,46 @@ See ats-play-for-repl for why."
                                     (or (second value) "Stopping failed.")
                                     (format nil "~A" value))))))))
 
+(defun handle-sample-browse (id params)
+  "clamps/sampleBrowse — sound files of a directory with their headers.
+
+Headers only. A directory of samples is gigabytes; everything a browser
+shows is written down in the first few hundred bytes of each file."
+  (let ((directory (or (gethash "directory" params) ""))
+        (recursive (eq (gethash "recursive" params) :true)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:sample-browse-for-repl ~S ~A)"
+             directory (if recursive "t" "nil"))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+           (send-response id
+             (make-jobj "available" :true
+                        "error" ""
+                        "entries"
+                        (coerce
+                         (mapcar
+                          (lambda (e)
+                            (destructuring-bind (name path format channels rate
+                                                 bits frames duration size)
+                                e
+                              (make-jobj "name" name "path" path
+                                         "format" format
+                                         "channels" channels
+                                         "sampleRate" rate
+                                         "bitDepth" bits
+                                         "frames" frames
+                                         "duration" duration
+                                         "size" size)))
+                          (second value))
+                         'vector)))
+           (send-response id
+             (make-jobj "available" :false
+                        "error" (if (consp value)
+                                    (or (second value) "Directory not readable.")
+                                    (format nil "~A" value))
+                        "entries" (vector))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1739,6 +1779,7 @@ See ats-play-for-repl for why."
           ((string= method "clamps/atsOutline") (handle-ats-outline id params))
           ((string= method "clamps/atsPlay") (handle-ats-play id params))
           ((string= method "clamps/atsStop") (handle-ats-stop id params))
+          ((string= method "clamps/sampleBrowse") (handle-sample-browse id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

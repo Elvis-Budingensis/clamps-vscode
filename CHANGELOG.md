@@ -2,6 +2,56 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.3.0] - 2026-07-30
+
+### Added
+
+- **Sample browser** (`CLAMPS: Browse Samples`): the sound files of a folder
+  with format, channels, sample rate, bit depth, duration and size, sortable
+  by any column. Clicking a row opens its waveform in the buffer viewer — the
+  table answers "which file", the waveform "what is in it".
+
+  Only the HEADERS are read. A folder of a few hundred samples is gigabytes,
+  and everything the table shows is written down in the first few hundred
+  bytes of each file. Reading the audio to find out how long a file is would
+  make opening a folder a minute-long operation for information that is
+  already there.
+
+  A table rather than thumbnails, deliberately. The other audio views exist
+  because their subject cannot be written down. What one wants from a sample
+  folder is the opposite — the questions are "which of these is the 96 kHz
+  one" and "why is this take four seconds shorter than that one", and those
+  are answered by a sorted column, not by a picture.
+
+- **WAV and AIFF headers read exactly**, including AIFF's 80-bit IEEE-754
+  extended sample rate — a format nothing else uses and no Lisp reads
+  natively. This is the part that goes wrong invisibly: decode it sloppily
+  and 44100 comes out as 44099.99, which passes every eyeball test, prints as
+  "44100" at one decimal, and then makes every duration slightly wrong and
+  every resampling ratio irrational. Treat its leading mantissa bit as
+  implied — as it is in the 32- and 64-bit formats — and every rate halves,
+  giving 22050 where 44100 belongs. The gate checks against known bit
+  patterns and demands exact equality rather than a tolerance.
+
+  Chunks are walked rather than assumed at fixed offsets: real files carry
+  LIST, bext or JUNK before the format chunk, and an assumed offset reads
+  those as the format. Odd-length chunks are padded and the pad byte is not
+  counted in the size, so ignoring it shifts everything after it by one byte
+  and the data chunk is never found — the duration then silently becomes 0.
+
+  Three mutations covering exactly these faults are caught with 8, 9 and 2
+  failures.
+
+- Files whose header cannot be read are LISTED, marked, and counted, not
+  omitted. A browser that silently drops what it cannot parse is worse than
+  one that shows a question mark: the user knows the file is in the folder
+  and would go looking for a bug in the browser.
+
+- Fractional sample rates are shown in full rather than rounded to kHz. A
+  rate that is not a whole number of hertz is a fact about the file and
+  almost always a sign that something upstream resampled it — rounding it to
+  "44.1 k" would hide precisely the anomaly worth seeing.
+
 ## [1.2.1] - 2026-07-30
 
 ### Fixed
