@@ -2696,13 +2696,27 @@ thousand would misrepresent the analysis."
 (defparameter *ats-load-names* '("ATS-LOAD" "LOAD-ATS" "ATS-READ")
   "Candidate names for reading an ATS file into an object.")
 
-(defparameter *ats-synth-names*
-  '("SIN-NOI-SYNTH" "ATS-PLAY" "ATS-SYNTH" "SIN-SYNTH")
-  "Candidate names for the resynthesis, in order of preference.
+(defparameter *ats-noise-synth-names*
+  '("SIN-NOI-SYNTH" "ATS-PLAY" "ATS-SYNTH")
+  "Resynthesis candidates for files that HAVE residual noise (types 3, 4).")
 
-SIN-NOI-SYNTH first because it plays partials AND residual noise; the
-purely sinusoidal variants leave out precisely the part an ATS analysis
-separated out with some effort.")
+(defparameter *ats-sine-synth-names*
+  '("SIN-SYNTH" "ATS-PLAY" "ATS-SYNTH")
+  "Resynthesis candidates for files WITHOUT residual noise (types 1, 2).
+
+SIN-NOI-SYNTH is deliberately absent. It reads the noise bands, and a type
+1 or 2 file has none — it then fails, or worse, reads whatever lies at that
+offset as noise. The type is in the header, so this is decidable rather
+than a matter of trying and seeing.
+
+Found in the field: a type 4 analysis played and a type 2 one did not, from
+the same source material. The display had even said \"Type 2 carries no
+residual noise\" while the playback went on asking for it anyway — the
+program knew and did not use what it knew.")
+
+(defparameter *ats-synth-names*
+  (append *ats-noise-synth-names* '("SIN-SYNTH"))
+  "Every synthesis candidate, for the diagnostic message only.")
 
 (defun %ats-sym (names)
   "The first fbound symbol from NAMES in any of *ats-packages*.
@@ -2779,11 +2793,22 @@ and does — is that every failure names what was attempted."
     (when (null loader)
       (return-from ats-play-for-repl
         (list :error (%ats-missing-report "ATS loading" *ats-load-names*))))
+    ;; Choose the synthesis by the file's TYPE, not by trying in turn.
+    ;; Types 1 and 2 carry no residual noise, so a noise synthesis has
+    ;; nothing to read there.
+    (let* ((type (getf (%ats-read-header (%ats-read-file path)) :type))
+           (candidates (if (member type '(3 4))
+                           *ats-noise-synth-names*
+                           *ats-sine-synth-names*)))
     (multiple-value-bind (synth synth-package synth-name)
-        (%ats-sym *ats-synth-names*)
+        (%ats-sym candidates)
       (when (null synth)
         (return-from ats-play-for-repl
-          (list :error (%ats-missing-report "ATS synthesis" *ats-synth-names*))))
+          (list :error
+                (format nil "~A~@[ This file is type ~D, so ~A was ruled out: it needs residual noise the file does not carry.~]"
+                        (%ats-missing-report "ATS synthesis" candidates)
+                        (and (member type '(1 2)) type)
+                        (and (member type '(1 2)) "SIN-NOI-SYNTH")))))
       (let* ((failures '())
              (binding (intern (format nil "*ATS-PLAY-~D*"
                                       (incf *ats-play-counter*))
@@ -2832,13 +2857,13 @@ and does — is that every failure names what was attempted."
               (setf failures rest)
               (when ok
                 (return-from ats-play-for-repl
-                  (list :ok (format nil "Playing ~A via ~A::~A (~A), loaded with ~A::~A into cl-user::~A."
-                                    (file-namestring path)
+                  (list :ok (format nil "Playing ~A (type ~D) via ~A::~A (~A), loaded with ~A::~A into cl-user::~A."
+                                    (file-namestring path) type
                                     synth-package synth-name (car attempt)
                                     loader-package loader-name
                                     (symbol-name binding))))))))
         (list :error (format nil "Synthesis failed. Attempts: ~{~A~^; ~}"
-                             (reverse failures)))))))
+                             (reverse failures))))))))
 
 (defun ats-stop-for-repl ()
   "Stops the playback by freeing the root group, as (free 0) does.

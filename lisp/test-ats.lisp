@@ -354,14 +354,14 @@
 ;;; A stand-in whose loader and synthesis both refuse in known ways: the
 ;;; report must contain BOTH names, so that neither can be blamed for the
 ;;; other's error.
-(defpackage #:ats-play-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(defpackage #:ats-play-probe (:use #:cl)
+  (:export #:ats-load #:sin-noi-synth #:sin-synth))
 (in-package #:ats-play-probe)
 (defun ats-load (path symbol)
   (declare (ignore path symbol))
   (error "loader refuses on purpose"))
-(defun sin-noi-synth (&rest args)
-  (declare (ignore args))
-  (error "synthesis refuses on purpose"))
+(defun sin-noi-synth (&rest args) (declare (ignore args)) (error "noise synth"))
+(defun sin-synth (&rest args) (declare (ignore args)) (error "sine synth"))
 (in-package :cl-user)
 
 (let ((clamps-bridge-rpc::*ats-packages* '(:ats-play-probe))
@@ -386,14 +386,15 @@
 ;;; And when the loader works but the synthesis does not, every argument
 ;;; list that was tried appears — the conventions differ between versions,
 ;;; so which ones were attempted is the useful part of the message.
-(defpackage #:ats-synth-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(defpackage #:ats-synth-probe (:use #:cl)
+  (:export #:ats-load #:sin-noi-synth #:sin-synth))
 (in-package #:ats-synth-probe)
 (defun ats-load (path symbol)
   (declare (ignore path))
   (setf (symbol-value symbol) :a-sound)
   symbol)
-(defun sin-noi-synth (&rest args)
-  (declare (ignore args))
+(defun sin-noi-synth (&rest args) (declare (ignore args)) (error "noise synth"))
+(defun sin-synth (&rest args) (declare (ignore args))
   (error "synthesis refuses on purpose"))
 (in-package :cl-user)
 
@@ -410,13 +411,18 @@
 
 ;;; A loader that works and a synthesis that works: the message says which
 ;;; convention succeeded, so that a working setup can be reproduced.
-(defpackage #:ats-ok-probe (:use #:cl) (:export #:ats-load #:sin-noi-synth))
+(defpackage #:ats-ok-probe (:use #:cl)
+  (:export #:ats-load #:sin-noi-synth #:sin-synth))
 (in-package #:ats-ok-probe)
 (defun ats-load (path symbol)
   (declare (ignore path))
   (setf (symbol-value symbol) :a-sound)
   symbol)
 (defun sin-noi-synth (start sound &key amp-scale)
+  (declare (ignore sound amp-scale))
+  (unless (floatp start) (error "start time must be a float"))
+  :playing)
+(defun sin-synth (start sound &key amp-scale)
   (declare (ignore sound amp-scale))
   (unless (floatp start) (error "start time must be a float"))
   :playing)
@@ -434,8 +440,65 @@
       ;; The start time must be a float. sin-noi-synth schedules on it, and
       ;; an integer 0 is not the same thing there — the probe above rejects
       ;; an integer, so this passing at all is the check.
-      (unless (search "SIN-NOI-SYNTH" (second r))
-        (fail "The function used is not named: ~A" (second r))))))
+      ;; A type 1 file: the SINE synthesis is the right one, and the
+      ;; message says which was used.
+      (unless (search "SIN-SYNTH" (second r))
+        (fail "The function used is not named: ~A" (second r)))
+      (unless (search "type 1" (second r))
+        (fail "The file type is not named: ~A" (second r))))))
+
+;;; ---------------------------------------------------------------------
+;;; 9. The synthesis is chosen by the file's TYPE
+;;; ---------------------------------------------------------------------
+;;; Found in the field: a type 4 analysis played, a type 2 one from the same
+;;; source did not. SIN-NOI-SYNTH reads the residual noise bands, and types
+;;; 1 and 2 have none — so it fails, or worse, reads whatever lies at that
+;;; offset as noise.
+;;;
+;;; The display had even printed "Type 2 carries no residual noise" while
+;;; the playback went on asking for it. The program knew and did not use
+;;; what it knew, which is the part worth guarding: the type is in the
+;;; header, so this is decidable rather than a matter of trying and seeing.
+(defpackage #:ats-type-probe (:use #:cl)
+  (:export #:ats-load #:sin-noi-synth #:sin-synth))
+(in-package #:ats-type-probe)
+(defvar *called* nil)
+(defun ats-load (path symbol)
+  (declare (ignore path))
+  (setf (symbol-value symbol) :a-sound)
+  symbol)
+(defun sin-noi-synth (start sound &key amp-scale)
+  (declare (ignore start sound amp-scale))
+  (setf *called* :noise) :playing)
+(defun sin-synth (start sound &key amp-scale)
+  (declare (ignore start sound amp-scale))
+  (setf *called* :sine) :playing)
+(in-package :cl-user)
+
+(let ((clamps-bridge-rpc::*ats-packages* '(:ats-type-probe)))
+  ;; Type 1 and 2: no noise in the file, so the sine synthesis.
+  (dolist (type '(1 2))
+    (setf ats-type-probe::*called* nil)
+    (let ((data (list (loop repeat 10 collect
+                            (if (= type 2) (list 0.5d0 440.0d0 0.0d0)
+                                (list 0.5d0 440.0d0))))))
+      (write-ats *tmp* :type type :partials-data data)
+      (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))
+      (unless (eq ats-type-probe::*called* :sine)
+        (fail "Type ~D used ~S instead of the sine synthesis"
+              type ats-type-probe::*called*))))
+  ;; Type 3 and 4: noise is present, so the noise synthesis.
+  (dolist (type '(3 4))
+    (setf ats-type-probe::*called* nil)
+    (let ((data (list (loop repeat 10 collect
+                            (if (= type 4) (list 0.5d0 440.0d0 0.0d0)
+                                (list 0.5d0 440.0d0)))))
+          (noise (loop repeat 10 collect (loop repeat 25 collect 0.1d0))))
+      (write-ats *tmp* :type type :partials-data data :noise-data noise)
+      (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))
+      (unless (eq ats-type-probe::*called* :noise)
+        (fail "Type ~D used ~S instead of the noise synthesis"
+              type ats-type-probe::*called*)))))
 
 ;;; A file that is not ATS is refused BEFORE the search for the synthesis:
 ;;; otherwise the user gets a message about missing packages when the real

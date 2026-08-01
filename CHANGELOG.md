@@ -2,6 +2,29 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.3.1] - 2026-07-31
+
+### Fixed
+
+- **ATS playback failed on files without residual noise.** A type 4 analysis
+  played and a type 2 one from the same source material did not.
+  `sin-noi-synth` reads the residual noise bands, and types 1 and 2 carry
+  none — so it fails, or worse, reads whatever lies at that offset as noise.
+
+  The synthesis is now chosen by the file's type rather than tried in turn:
+  `sin-noi-synth` for types 3 and 4, `sin-synth` for 1 and 2. The type is in
+  the header, so this is decidable, and the message names it, so that a
+  difference between two files is visible in what the program says rather
+  than only in whether sound comes out.
+
+  The galling part is that the program already knew. The browser had printed
+  "Type 2 carries no residual noise" in the same panel while the playback
+  went on asking for it — the information was on screen and unused. That is
+  what the new gate guards: stand-in packages provide both synthesis
+  functions and record which was called, and files of all four types are
+  played against them. Always using the noise synthesis fails the gate with
+  3 failures.
+
 ## [1.3.0] - 2026-07-30
 
 ### Added

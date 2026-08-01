@@ -150,9 +150,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 3718,
-  "comments": 483,
-  "longStrings": 161
+  "lines": 3743,
+  "comments": 486,
+  "longStrings": 164
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -160,9 +160,9 @@
   "longStrings": 16
  },
  "lisp/test-ats.lisp": {
-  "lines": 474,
-  "comments": 146,
-  "longStrings": 17
+  "lines": 537,
+  "comments": 162,
+  "longStrings": 19
  },
  "lisp/test-bridge-context.lisp": {
   "lines": 113,
