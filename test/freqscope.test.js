@@ -171,8 +171,8 @@ if (!/anyUsable/.test(html)) {
   fail('The webview does not distinguish "no ring" from "no usable ring" — '
      + 'a level meter ring then yields a bare error with no recipe');
 }
-if (!html.includes('No registered ring can carry a spectrum.')) {
-  fail('There is no recipe for the case of a registered but unusable ring');
+if (!html.includes('None of the registered rings can carry a spectrum.')) {
+  fail('There is no message for the case of a registered but unusable ring');
 }
 // The recipe must not contain a decimation factor: a decimated ring folds
 // high frequencies down where they look like real partials, so an
@@ -187,8 +187,15 @@ if (!html.includes("' 1))")) {
 if (!html.includes('sticker-state-record-sample-for-repl')) {
   fail('The recipe does not name the allocation-free recorder');
 }
-if (!/UNDECIMATED/.test(html)) {
-  fail('The recipe does not stress that the ring must be undecimated');
+// The reason has to be stated where a ring IS present: the selector lists a
+// name that looks perfectly good, and without the reason there is nothing to
+// act on. With no ring at all the recipe alone is enough, and the reasoning
+// would be ballast.
+if (!/undecimated/i.test(html)) {
+  fail('The message does not say the ring must be undecimated');
+}
+if (!/decimated and too small/.test(html)) {
+  fail('The message does not say why a level meter ring will not do');
 }
 
 // The classification itself, which is what decides all of the above.

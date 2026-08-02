@@ -336,10 +336,14 @@ Dropped messages are counted and shown. A monitor that loses events silently
 answers "nothing arrived" when the truth is that many arrived and were
 discarded.
 
-The receiving half depends on Incudine's MIDI input and needs an interface
-attached to exercise; the decoding is checked exhaustively against the
-specification. The ring is created whether or not the hook succeeds, so the
-window can be exercised by hand:
+The monitor attaches to Incudine's raw MIDI reception, so it sees every
+message — pitch bend, program change and the system messages included, which
+never reach cl-midictl's controller callbacks. Registered controllers are
+unaffected: exactly one responder is added and exactly that one removed, and
+a receiver that was already running keeps running.
+
+Without a configured MIDI input the ring is still created, so the window can
+be exercised by hand:
 
 ```lisp
 (clamps-bridge-rpc:midi-ring-record-for-repl

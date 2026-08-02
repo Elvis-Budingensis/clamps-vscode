@@ -653,19 +653,23 @@ window.addEventListener('message', event => {
       '>' + r.key + (r.unusable ? ' \\u2014 ' + r.unusable : '') +
       '</option>').join('');
     settings.key = message.selected;
+    // As in the freq scope: with no ring the recipe is what is needed, with
+    // an unusable one the reason is.
+    const size = Math.max(8192, message.fftSize * 4);
+    const recipe =
+      '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl ' +
+      size + ' 1))</code><br>' +
+      '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)</code><br>' +
+      'and in the dsp! body:<br>' +
+      '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)</code>';
     document.getElementById('empty').innerHTML = message.anyUsable
       ? ''
-      : (message.rings.length === 0
-          ? 'No ring registered. '
-          : 'No registered ring can carry a spectrogram. ') +
-        'It needs an UNDECIMATED ring holding at least twice the FFT length ' +
-        '\\u2014 more than the scope, because between two requests the ring ' +
-        'has to keep the frames accrued in the meantime:<br>' +
-        '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl ' +
-        Math.max(8192, message.fftSize * 4) + ' 1))</code><br>' +
-        '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)</code><br>' +
-        'and unconditionally in the dsp! body:<br>' +
-        '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)</code>';
+      : message.rings.length === 0
+        ? 'No ring registered:<br>' + recipe
+        : 'None of the registered rings can carry a spectrogram. One is ' +
+          'needed that is undecimated and holds at least twice the FFT ' +
+          'length, so that it keeps the frames accruing between two ' +
+          'requests.<br>' + recipe;
     return;
   }
   if (message.type !== 'frames') return;

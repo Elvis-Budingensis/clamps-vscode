@@ -265,6 +265,116 @@ the MIDI callback is allocating" consed iterations))
       (format t "midi ring: ~D bytes over ~D calls~%" consed iterations))))
 (clamps-bridge-rpc:midi-monitor-stop-for-repl)
 
+;;; ---------------------------------------------------------------------
+;;; 11. Attaching leaves other responders alone
+;;; ---------------------------------------------------------------------
+;;; The monitor listens on the same stream cl-midictl uses, and CLAMPS
+;;; starts that receiver during startup — its registered controllers depend
+;;; on it. Two things must therefore hold, and neither is visible from the
+;;; window:
+;;;
+;;;   - Only the monitor's OWN responder is removed on stopping. Clearing
+;;;     the list would disable every controller in the session, silently,
+;;;     and the user would look for the fault in their patch.
+;;;   - A receiver that was already running is not stopped. Stopping it
+;;;     would have the same effect by another route.
+;;;
+;;; A stand-in package supplies the Incudine surface and records what was
+;;; done to it, so this is checkable without an interface.
+(defpackage #:midi-recv-probe (:use #:cl)
+  (:export #:make-responder #:remove-responder #:recv-start #:recv-stop
+           #:recv-status #:recv-functions #:now #:rt-sample-rate))
+(in-package #:midi-recv-probe)
+(defvar *responders* '())
+(defvar *status* :running)
+(defvar *started* 0)
+(defvar *stopped* 0)
+(defun make-responder (stream function)
+  (declare (ignore stream))
+  (push function *responders*)
+  function)
+(defun remove-responder (responder)
+  (setf *responders* (remove responder *responders*)))
+(defun recv-start (stream) (declare (ignore stream)) (incf *started*) :started)
+(defun recv-stop (stream) (declare (ignore stream)) (incf *stopped*) :stopped)
+(defun recv-status (stream) (declare (ignore stream)) *status*)
+(defun recv-functions (stream) (declare (ignore stream)) *responders*)
+(defun now () 0)
+(defun rt-sample-rate () 44100)
+(in-package :cl-user)
+
+(defpackage #:midi-stream-probe (:use #:cl))
+(let ((sym (intern "*MIDI-IN1*" '#:midi-stream-probe)))
+  (proclaim (list 'special sym))
+  (setf (symbol-value sym) :a-stream))
+
+;;; The receiver is already running: attach, do not start.
+(let ((clamps-bridge-rpc::*rt-packages* '(:midi-recv-probe))
+      (clamps-bridge-rpc::*midi-stream-packages* '(:midi-stream-probe)))
+  (setf midi-recv-probe::*responders* (list :a-foreign-responder)
+        midi-recv-probe::*status* :running
+        midi-recv-probe::*started* 0
+        midi-recv-probe::*stopped* 0)
+  (let ((r (clamps-bridge-rpc:midi-monitor-start-for-repl 64)))
+    (unless (eq (first r) :ok)
+      (fail "Attaching reports ~S" r))
+    (unless (search "already running" (second r))
+      (fail "The message does not say the receiver was already running: ~A"
+            (second r)))
+    (check "the receiver was not started again" midi-recv-probe::*started* 0)
+    (check "two responders now" (length midi-recv-probe::*responders*) 2))
+
+  ;; The responder really records: a message pushed through it must arrive
+  ;; in the ring, decoded.
+  (let ((ours (find-if #'functionp midi-recv-probe::*responders*)))
+    (unless ours (fail "The monitor registered no function"))
+    (when ours
+      (funcall ours #x90 60 100 :ignored)
+      (funcall ours #xE0 0 64 :ignored)
+      (let ((events (fourth (clamps-bridge-rpc:midi-events-since-for-repl 0))))
+        (check "two events arrived" (length events) 2)
+        (check "the first is a note on" (getf (first events) :kind) :note-on)
+        (check "the second is a bend" (getf (second events) :kind) :pitch-bend))))
+
+  ;; Stopping removes OUR responder and leaves the foreign one.
+  (clamps-bridge-rpc:midi-monitor-stop-for-repl)
+  (check "the foreign responder survives"
+         midi-recv-probe::*responders* (list :a-foreign-responder))
+  ;; And a receiver that was already running is not stopped: CLAMPS's own
+  ;; controllers depend on it.
+  (check "the running receiver was not stopped" midi-recv-probe::*stopped* 0))
+
+;;; The receiver is NOT running: start it, and stop it again on closing.
+(let ((clamps-bridge-rpc::*rt-packages* '(:midi-recv-probe))
+      (clamps-bridge-rpc::*midi-stream-packages* '(:midi-stream-probe)))
+  (setf midi-recv-probe::*responders* '()
+        midi-recv-probe::*status* :stopped
+        midi-recv-probe::*started* 0
+        midi-recv-probe::*stopped* 0)
+  (let ((r (clamps-bridge-rpc:midi-monitor-start-for-repl 64)))
+    (unless (search "started by the monitor" (second r))
+      (fail "The message does not say the monitor started the receiver: ~A"
+            (second r))))
+  (check "the receiver was started" midi-recv-probe::*started* 1)
+  (clamps-bridge-rpc:midi-monitor-stop-for-repl)
+  (check "and stopped again" midi-recv-probe::*stopped* 1))
+
+;;; No stream at all: the ring is still built, and the message says what was
+;;; looked for. Without an interface this is the normal case, and an empty
+;;; window with no explanation would be the worst answer.
+(let ((clamps-bridge-rpc::*midi-stream-packages* '(:no-such-package-here)))
+  (let ((r (clamps-bridge-rpc:midi-monitor-start-for-repl 64)))
+    (unless (eq (first r) :ok)
+      (fail "A missing stream reports ~S" r))
+    (unless (search "*MIDI-IN1*" (second r))
+      (fail "The message does not name what was looked for: ~A" (second r))))
+  ;; And the ring works, so the window can be exercised by hand.
+  (clamps-bridge-rpc:midi-ring-record-for-repl clamps-bridge-rpc::*midi-ring*
+                                               #x90 60 100 0.0d0)
+  (check "recording by hand still works"
+         (length (fourth (clamps-bridge-rpc:midi-events-since-for-repl 0))) 1))
+(clamps-bridge-rpc:midi-monitor-stop-for-repl)
+
 (if (> *failed* 0)
     (progn (format t "~%~D test(s) failed.~%" *failed*)
            (sb-ext:exit :code 1))

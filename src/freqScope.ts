@@ -599,20 +599,25 @@ window.addEventListener('message', event => {
     // already has a level meter ring (decimation 441, capacity 256):
     // there IS a ring, it just cannot do this, and a bare error message
     // leaves the user without a next step.
+    // Two different situations, two different messages. With no ring at
+    // all, the recipe is what is needed and the reasoning is ballast; with
+    // a ring present that cannot carry a spectrum, the REASON is the point,
+    // because the selector already lists it and the user is looking at a
+    // name that seems perfectly good.
+    const size = Math.max(4096, message.fftSize);
+    const recipe =
+      '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl ' +
+      size + ' 1))</code><br>' +
+      '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)</code><br>' +
+      'and in the dsp! body:<br>' +
+      '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)</code>';
     document.getElementById('empty').innerHTML = message.anyUsable
       ? ''
-      : (message.rings.length === 0
-          ? 'No ring registered. '
-          : 'No registered ring can carry a spectrum. ') +
-        'The freq scope needs an UNDECIMATED ring holding at least ' +
-        message.fftSize + ' values \\u2014 a level meter ring will not do, ' +
-        'because decimation folds high frequencies down where they look ' +
-        'like real partials:<br>' +
-        '<code>(defparameter *scope* (clamps-bridge-rpc:make-sticker-sample-state-for-repl ' +
-        Math.max(4096, message.fftSize) + ' 1))</code><br>' +
-        '<code>(clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)</code><br>' +
-        'and unconditionally in the dsp! body:<br>' +
-        '<code>(clamps-bridge-rpc:sticker-state-record-sample-for-repl *scope* in)</code>';
+      : message.rings.length === 0
+        ? 'No ring registered:<br>' + recipe
+        : 'None of the registered rings can carry a spectrum. One is needed ' +
+          'that is undecimated and holds at least ' + message.fftSize +
+          ' values; a level meter ring is decimated and too small.<br>' + recipe;
     return;
   }
   if (message.type !== 'frame') return;

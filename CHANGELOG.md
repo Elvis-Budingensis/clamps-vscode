@@ -2,13 +2,43 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
-## [1.4.1] - 2026-07-31
+## [1.4.3] - 2026-07-31
 
 ### Changed
 
-- Changelog and documentation rewritten to describe the software rather than
-  its development: no first-person narration, no accounts of earlier attempts,
-  no test internals in files that ship to users.
+- The freq scope and spectrogram now show a short message when no ring is
+  registered and a longer one only when a ring exists that cannot carry the
+  analysis. The single long text was cut off in a narrow panel, and the
+  reasoning about decimation is only useful in the second case: with no ring
+  at all, the recipe is what is needed.
+
+## [1.4.2] - 2026-07-31
+
+### Changed
+
+- The Marketplace page now describes the audio views — frequency scope,
+  spectrogram, ATS browser, buffer waveform, sample browser and MIDI monitor —
+  with a section each and a place for a screenshot. It previously described
+  the extension as it was at 1.0.0.
+- Added a short guide to setting up a sticker ring, which the scope,
+  spectrogram and level meters read from.
+
+## [1.4.1] - 2026-07-31
+
+### Added
+
+- The MIDI monitor now receives from a running CLAMPS session. It attaches a
+  responder to Incudine's raw MIDI reception, which sees every message —
+  including pitch bend, program change and the system messages, which never
+  reach cl-midictl's controller callbacks.
+
+  Registered controllers are unaffected. The monitor adds exactly one
+  responder and removes exactly that one; a receiver that was already running
+  is left running when the window closes, since CLAMPS starts it during
+  startup and its controllers depend on it.
+
+  Where no MIDI input is configured, the ring is still created and the
+  message names what was looked for, so the window can be exercised by hand.
 
 ## [1.4.0] - 2026-07-31
 
@@ -24,6 +54,7 @@ All notable changes to CLAMPS for VS Code are documented here.
 - Marketplace keywords now name what the extension does: `ats`,
   `spectral analysis`, `spectrum`, `spectrogram`, `waveform`, `midi`,
   `computer music`.
+- Documentation describes the software rather than its development history.
 
 ### Fixed
 

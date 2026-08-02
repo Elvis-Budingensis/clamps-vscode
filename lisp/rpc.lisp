@@ -3360,32 +3360,156 @@ something arrived."
 ;;; the worst possible answer to the question of whether a controller is
 ;;; sending at all.
 
-(defparameter *midi-receiver-names*
-  '("MIDI-IN" "MAKE-MIDI-RESPONDER" "MIDIIN" "PM-RECV")
-  "Candidate names for Incudine's MIDI reception.")
+(defparameter *midi-stream-names*
+  '("*MIDI-IN1*" "*MIDI-IN*")
+  "Candidate variables holding the MIDI input stream.
+
+CLAMPS opens its input as cl-midictl:*midi-in1* and starts receiving on it
+during startup, so the monitor attaches to a stream that is already
+running.")
+
+(defparameter *midi-stream-packages*
+  '(:cl-midictl :clamps :incudine :cl-user)
+  "Packages searched for the input stream variable.")
+
+(defvar *midi-responder* nil
+  "The responder this monitor added, so that exactly it can be removed.")
+
+(defvar *midi-stream* nil
+  "The stream the responder was added to.")
+
+(defvar *midi-started-receiver* nil
+  "Whether this monitor started the receiver, and must therefore stop it.
+
+The distinction matters. CLAMPS starts receiving on its input during
+startup and its own controllers depend on it; stopping that on closing a
+window would silently disable every registered controller. So the monitor
+stops the receiver only if it started it.")
+
+(defun %midi-input-stream ()
+  "The MIDI input stream, or NIL.  (values STREAM PACKAGE NAME)."
+  (dolist (name *midi-stream-names* nil)
+    (dolist (pkg-name *midi-stream-packages*)
+      (let ((pkg (find-package pkg-name)))
+        (when pkg
+          (let ((sym (find-symbol name pkg)))
+            (when (and sym (boundp sym) (symbol-value sym))
+              (return-from %midi-input-stream
+                (values (symbol-value sym) (package-name pkg) name)))))))))
 
 (defun midi-monitor-start-for-repl (&optional (capacity 1024))
   "Starts recording MIDI into a fresh ring.
 
-Returns (:ok TEXT) or (:error TEXT).  The ring is created either way, so
-that the decoding can be exercised by hand — (midi-ring-record-for-repl
-clamps-bridge-rpc::*midi-ring* #x90 60 100 0.0d0) is a legitimate way to
-check that the window works when no interface is attached."
+Returns (:ok TEXT) or (:error TEXT).
+
+Attaches a responder to Incudine's raw MIDI reception rather than to
+cl-midictl's controller callbacks. Two reasons:
+
+  - The raw receiver sees EVERYTHING. cl-midictl dispatches into cc-fns
+    and note-fns, which cover control changes and notes; pitch bend,
+    program change and the system messages never reach them, and pitch
+    bend is often the most interesting thing an instrument sends.
+  - It leaves cl-midictl alone. Registered controllers keep working, and
+    nothing this monitor does can disturb them.
+
+The responder signature is (status data1 data2 stream), the same one
+incudine::midi-responder-wrapper uses.
+
+The ring is created even when no stream is found, so that the decoding can
+be exercised by hand:
+
+  (midi-ring-record-for-repl clamps-bridge-rpc::*midi-ring* #x90 60 100 0.0d0)"
+  (midi-monitor-stop-for-repl)
   (setf *midi-ring* (make-midi-ring-for-repl capacity))
-  (let ((responder (%rt-sym "MAKE-RESPONDER"))
-        (receiver (%rt-sym "MIDI-IN")))
-    (if (or responder receiver)
-        (list :ok (format nil "Ring for ~D messages ready. Attach a responder that calls ~
-clamps-bridge-rpc:midi-ring-record-for-repl on clamps-bridge-rpc::*midi-ring*."
-                          capacity))
-        (list :ok (format nil "Ring for ~D messages ready, but no Incudine MIDI symbols were found ~
-(looked for ~{~A~^, ~}). Messages recorded by hand will still be shown."
-                          capacity *midi-receiver-names*)))))
+  (multiple-value-bind (stream package name) (%midi-input-stream)
+    (cond
+      ((null stream)
+       (list :ok (format nil "Ring for ~D messages ready, but no MIDI input stream was found ~
+(looked for ~{~A~^, ~} in ~{~A~^, ~}). Messages recorded by hand are still shown."
+                         capacity *midi-stream-names*
+                         (mapcar #'string *midi-stream-packages*))))
+      (t
+       (let ((make-responder (%rt-sym "MAKE-RESPONDER"))
+             (recv-start (%rt-sym "RECV-START"))
+             (recv-status (%rt-sym "RECV-STATUS")))
+         (cond
+           ((null make-responder)
+            (list :ok (format nil "Ring for ~D messages ready, but incudine:make-responder was not found. ~
+Messages recorded by hand are still shown." capacity)))
+           (t
+            (handler-case
+                (let* ((running (and recv-status
+                                     (eq (funcall recv-status stream) :running)))
+                       (start (%midi-now)))
+                  ;; Start the receiver ONLY if it is not already running.
+                  ;; CLAMPS starts it during startup and its controllers
+                  ;; depend on it.
+                  (unless running
+                    (when recv-start (funcall recv-start stream))
+                    (setf *midi-started-receiver* t))
+                  (setf *midi-stream* stream
+                        *midi-responder*
+                        (funcall make-responder stream
+                                 (lambda (status data1 data2 in)
+                                   (declare (ignore in))
+                                   ;; Allocation-free, and it must be: this
+                                   ;; runs in the receiver thread alongside
+                                   ;; every controller callback.
+                                   (let ((ring *midi-ring*))
+                                     (when ring
+                                       (midi-ring-record-for-repl
+                                        ring
+                                        (logand status #xFF)
+                                        (logand data1 #xFF)
+                                        (logand data2 #xFF)
+                                        (- (%midi-now) start)))))))
+                  (list :ok (format nil "Listening on ~A::~A (receiver was ~:[started by the monitor~;already running~]), ring for ~D messages."
+                                    package name running capacity)))
+              (error (e)
+                (list :ok (format nil "Ring for ~D messages ready, but attaching failed: ~A. ~
+Messages recorded by hand are still shown." capacity e)))))))))))
+
+(defun %midi-now ()
+  "A timestamp in seconds.  Incudine's clock where available.
+
+get-internal-real-time is the fallback and is coarser, but a monitor needs
+times that are consistent with each other, not times that agree with the
+audio clock."
+  (let ((now (%rt-sym "NOW"))
+        (rate (%rt-sym "RT-SAMPLE-RATE")))
+    (or (ignore-errors
+          (when (and now rate)
+            (let ((samples (funcall now)) (sr (funcall rate)))
+              (when (and (realp samples) (realp sr) (plusp sr))
+                (/ (float samples 1.0d0) (float sr 1.0d0))))))
+        (/ (float (get-internal-real-time) 1.0d0)
+           (float internal-time-units-per-second 1.0d0)))))
 
 (defun midi-monitor-stop-for-repl ()
-  "Stops recording and releases the ring."
-  (setf *midi-ring* nil)
-  (list :ok "MIDI monitor stopped."))
+  "Removes the responder and releases the ring.
+
+Removes exactly the responder this monitor added, by object identity —
+never all of them. cl-midictl has its own registered on the same stream,
+and clearing the list would disable every controller in the session
+without a word."
+  (let ((removed nil))
+    (when (and *midi-responder* *midi-stream*)
+      (let ((remove (%rt-sym "REMOVE-RESPONDER")))
+        (when remove
+          (ignore-errors (funcall remove *midi-responder*) (setf removed t)))))
+    ;; Stop the receiver only if the monitor started it. CLAMPS's own
+    ;; controllers depend on a receiver it started itself.
+    (when *midi-started-receiver*
+      (let ((stop (%rt-sym "RECV-STOP")))
+        (when (and stop *midi-stream*)
+          (ignore-errors (funcall stop *midi-stream*)))))
+    (setf *midi-responder* nil
+          *midi-stream* nil
+          *midi-started-receiver* nil
+          *midi-ring* nil)
+    (list :ok (if removed
+                  "MIDI monitor stopped, responder removed."
+                  "MIDI monitor stopped."))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok
