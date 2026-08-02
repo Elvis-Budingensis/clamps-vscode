@@ -345,3 +345,29 @@ Files whose header cannot be read appear in the list marked with a question
 mark rather than being dropped. Fractional sample rates are shown in full
 instead of rounded, because a rate that is not a whole number of hertz almost
 always means something upstream resampled the file.
+
+## MIDI monitor (1.4.0)
+
+`CLAMPS: Show MIDI Monitor` shows incoming messages decoded, with times, a
+per-channel activity strip and a filter for clock and active sensing.
+
+Clock and sensing are hidden by default: a running clock is 24 messages per
+beat, 48 a second at 120 bpm, and given equal weight it buries everything
+else. They can be switched on, because "is the clock running" is also a real
+question.
+
+Dropped messages are counted and shown. A monitor that loses events silently
+answers "nothing arrived" when the truth is "many things arrived and I
+discarded them".
+
+The receiving half depends on Incudine's MIDI input, which could not be
+tested where this was written; the decoding is checked exhaustively against
+the specification. The ring is created whether or not the hook succeeds, so
+the window can be exercised by hand:
+
+```lisp
+(clamps-bridge-rpc:midi-ring-record-for-repl
+  clamps-bridge-rpc::*midi-ring* #x90 60 100 0.0d0)
+```
+
+That should appear as `note on  C4 (60) velocity 100` on channel 1.

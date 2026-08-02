@@ -28,6 +28,7 @@ import { SpectrogramView, SpectrogramFrames } from './spectrogramView';
 import { BufferView, BufferOutline } from './bufferView';
 import { AtsView, AtsOutline } from './atsView';
 import { SampleBrowserView, SampleListing } from './sampleBrowser';
+import { MidiMonitorView, MidiBatch } from './midiMonitor';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -381,6 +382,27 @@ export async function activate(context: vscode.ExtensionContext) {
           );
         },
         directory
+      );
+    }),
+    vscode.commands.registerCommand('clamps.midiShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration('clamps');
+      MidiMonitorView.show(
+        async since => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<MidiBatch>('clamps/midiEvents', { since, limit: 512 });
+        },
+        async action => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<{ ok: boolean; message: string }>(
+            'clamps/midiMonitor', { action, capacity: 2048 });
+        },
+        configuration.get<number>('midiIntervalMs', 60)
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {

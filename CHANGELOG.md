@@ -2,6 +2,68 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
+## [1.4.0] - 2026-07-31
+
+### Added
+
+- **MIDI monitor** (`CLAMPS: Show MIDI Monitor`): the incoming messages,
+  decoded, with times, a per-channel activity strip and a filter for clock
+  and active sensing.
+
+  A log rather than a plot. The one question this window exists to answer is
+  "is anything arriving, and what" — usually asked in a hurry, while
+  something is not working — and that wants the messages themselves in order,
+  not a curve from which they would have to be inferred.
+
+  The decoding is checked exhaustively: every status byte from #x80 to #xFF,
+  every channel, both fourteen-bit assemblies. Four things in the MIDI
+  specification are traps, and all four produce output that reads perfectly
+  well while being wrong:
+
+  - A note-on with velocity 0 IS a note-off. Shown as "note on, velocity 0"
+    it is technically honest and practically useless: the player let go of
+    the key.
+  - Channels are 0-15 on the wire and 1-16 everywhere a musician reads them.
+  - The fourteen-bit pairs put the LOW seven bits first. Swapped, a bend of
+    one semitone reads as a wild jump — and both orders yield numbers in
+    range, so nothing looks broken.
+  - Pitch bend centres on 8192. Raw, a centred wheel looks like a large
+    positive value.
+
+  Reintroducing each fault fails the gate with 112, 8, 2 and 8 failures.
+
+- Dropped messages are counted and named. A monitor that loses events
+  silently answers "nothing arrived" when the truth is "many things arrived
+  and I discarded them", and that answer sends the user to check cables that
+  are fine.
+
+- The ring is allocation-free, like the sticker rings and for the same
+  reason: MIDI arrives in a callback that must not cons, and a pitch-bend
+  sweep is a thousand messages a second. Verified at 0 bytes over 100000
+  calls.
+
+**The receiving half is untested.** Incudine's MIDI input is not available
+where this was written, so the hook resolves its symbols at runtime and
+reports what it looked for when they are missing. The ring is created either
+way, so the window can be exercised by hand:
+
+    (clamps-bridge-rpc:midi-ring-record-for-repl
+      clamps-bridge-rpc::*midi-ring* #x90 60 100 0.0d0)
+
+### Fixed
+
+- `midi-events-since-for-repl` could serve more events than the ring holds,
+  reading twice round the buffer and delivering the same slots again as fresh
+  messages. Duplicated events in a monitor are worse than lost ones: a note
+  played once appears twice, and the monitor is the only witness.
+
+### Changed
+
+- Marketplace keywords now name what this extension actually does: `ats`,
+  `spectral analysis`, `spectrum`, `spectrogram`, `waveform`, `midi`,
+  `computer music`. The previous list carried `keybindings`, which finds
+  people looking for keyboard-shortcut tools.
+
 ## [1.3.1] - 2026-07-31
 
 ### Fixed

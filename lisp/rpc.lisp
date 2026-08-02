@@ -53,6 +53,9 @@
            #:buffer-outline-for-repl #:ats-outline-for-repl
            #:ats-play-for-repl #:ats-stop-for-repl
            #:sample-browse-for-repl
+           #:make-midi-ring-for-repl #:midi-ring-record-for-repl
+           #:midi-events-since-for-repl
+           #:midi-monitor-start-for-repl #:midi-monitor-stop-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -3088,6 +3091,299 @@ worse than one that leaves the column empty."
                        entries))))))
         (list :ok (sort entries #'string< :key #'first)))
     (error (e) (list :error (princ-to-string e)))))
+
+;;; ---------------------------------------------------------------------
+;;; MIDI monitor
+;;; ---------------------------------------------------------------------
+;;;
+;;; Two halves with very different footing, and it is worth saying which
+;;; is which.
+;;;
+;;; The DECODING below is pure bit arithmetic on three bytes, defined by a
+;;; specification that has not changed since 1983.  It is checked
+;;; exhaustively: every status byte from #x80 to #xFF, every channel, the
+;;; fourteen-bit assemblies, the running-status rule.  That part either is
+;;; right or the gate says so.
+;;;
+;;; The RECEIVING half hooks into Incudine's MIDI input, which is not
+;;; available where this was written.  It is therefore built like the node
+;;; browser: symbols resolved at runtime, and when they are missing, a
+;;; report naming what was looked for rather than an empty window.
+;;;
+;;; The ring is the same allocation-free design as the sticker rings, for
+;;; the same reason: MIDI arrives in a callback that must not cons.  A
+;;; dense stream — a pitch-bend sweep is a thousand messages a second —
+;;; must not make the editor the reason the timing slips.
+
+(defparameter *midi-note-names*
+  #("C" "C#" "D" "D#" "E" "F" "F#" "G" "G#" "A" "A#" "B"))
+
+(defun %midi-note-name (number)
+  "Note name for a MIDI number, C4 = 60.
+
+The octave convention is the one Incudine and CLAMPS use: middle C, MIDI
+60, is C4.  Other traditions call it C3 or C5, and picking the wrong one
+would make every note name in the window off by an octave — wrong, and
+entirely readable."
+  (if (or (< number 0) (> number 127))
+      ""
+      (format nil "~A~D" (aref *midi-note-names* (mod number 12))
+              (1- (floor number 12)))))
+
+(defun %midi-14bit (lsb msb)
+  "The fourteen-bit value of a two-byte pair, LSB first.
+
+Pitch bend and the fine controllers put the LOW seven bits first.  Swap
+them and a bend of +1 semitone reads as a wild jump — plausible-looking
+nonsense, since both orders yield numbers in range."
+  (logior (logand lsb #x7F) (ash (logand msb #x7F) 7)))
+
+(defun %midi-decode (status data1 data2)
+  "Describes one MIDI message.  Returns a plist.
+
+  :kind      a symbol naming the message
+  :channel   1..16, or NIL for system messages
+  :label     a short text for the display
+  :detail    the interpreted values
+  :value     the number that matters, for a display that plots it
+
+Channels are numbered from ONE here, as everywhere a musician reads them,
+while the wire numbers them from zero.  The conversion belongs in exactly
+one place; done at the display instead, it gets forgotten in one of the
+several places that show a channel."
+  (let* ((high (logand status #xF0))
+         (channel (1+ (logand status #x0F)))
+         (d1 (logand data1 #x7F))
+         (d2 (logand data2 #x7F)))
+    (case high
+      (#x80 (list :kind :note-off :channel channel
+                  :label "note off"
+                  :detail (format nil "~A (~D) velocity ~D"
+                                  (%midi-note-name d1) d1 d2)
+                  :value d1))
+      (#x90
+       ;; A note-on with velocity 0 IS a note-off. The specification allows
+       ;; it and most keyboards send it that way, so a monitor that shows
+       ;; "note on, velocity 0" is technically honest and practically
+       ;; useless: the player let go of the key.
+       (if (zerop d2)
+           (list :kind :note-off :channel channel
+                 :label "note off"
+                 :detail (format nil "~A (~D) velocity 0 (note on)"
+                                 (%midi-note-name d1) d1)
+                 :value d1)
+           (list :kind :note-on :channel channel
+                 :label "note on"
+                 :detail (format nil "~A (~D) velocity ~D"
+                                 (%midi-note-name d1) d1 d2)
+                 :value d1)))
+      (#xA0 (list :kind :poly-pressure :channel channel
+                  :label "poly pressure"
+                  :detail (format nil "~A (~D) pressure ~D"
+                                  (%midi-note-name d1) d1 d2)
+                  :value d2))
+      (#xB0 (list :kind :control-change :channel channel
+                  :label "control change"
+                  :detail (format nil "CC ~D = ~D~@[ (~A)~]"
+                                  d1 d2 (%midi-controller-name d1))
+                  :value d2))
+      (#xC0 (list :kind :program-change :channel channel
+                  :label "program change"
+                  :detail (format nil "program ~D" d1)
+                  :value d1))
+      (#xD0 (list :kind :channel-pressure :channel channel
+                  :label "channel pressure"
+                  :detail (format nil "pressure ~D" d1)
+                  :value d1))
+      (#xE0 (let ((bend (%midi-14bit d1 d2)))
+              (list :kind :pitch-bend :channel channel
+                    :label "pitch bend"
+                    ;; Centre is 8192, not 0. Showing the raw value alone
+                    ;; makes a centred wheel look like a large positive
+                    ;; number.
+                    :detail (format nil "~:[~;+~]~D (raw ~D)"
+                                    (> bend 8192) (- bend 8192) bend)
+                    :value bend)))
+      (#xF0
+       (case status
+         (#xF0 (list :kind :sysex :channel nil :label "sysex"
+                     :detail "system exclusive" :value 0))
+         (#xF1 (list :kind :time-code :channel nil :label "MTC quarter frame"
+                     :detail (format nil "type ~D value ~D"
+                                     (ash d1 -4) (logand d1 #x0F))
+                     :value d1))
+         (#xF2 (list :kind :song-position :channel nil :label "song position"
+                     :detail (format nil "beat ~D" (%midi-14bit d1 d2))
+                     :value (%midi-14bit d1 d2)))
+         (#xF3 (list :kind :song-select :channel nil :label "song select"
+                     :detail (format nil "song ~D" d1) :value d1))
+         (#xF8 (list :kind :clock :channel nil :label "clock"
+                     :detail "timing clock" :value 0))
+         (#xFA (list :kind :start :channel nil :label "start"
+                     :detail "" :value 0))
+         (#xFB (list :kind :continue :channel nil :label "continue"
+                     :detail "" :value 0))
+         (#xFC (list :kind :stop :channel nil :label "stop"
+                     :detail "" :value 0))
+         (#xFE (list :kind :active-sensing :channel nil :label "active sensing"
+                     :detail "" :value 0))
+         (#xFF (list :kind :reset :channel nil :label "reset"
+                     :detail "" :value 0))
+         (t (list :kind :unknown :channel nil :label "system"
+                  :detail (format nil "status ~2,'0X" status) :value 0))))
+      (t
+       ;; Below #x80 there is no status byte at all. This is running
+       ;; status — a data byte belonging to the previous message — and it
+       ;; must be named as such rather than shown as an unknown message,
+       ;; because a monitor that reports "unknown" for a perfectly ordinary
+       ;; dense stream sends the user looking for a fault that is not there.
+       (list :kind :running-status :channel nil :label "running status"
+             :detail (format nil "data ~D ~D (no status byte)" d1 d2)
+             :value d1)))))
+
+(defparameter *midi-controller-names*
+  '((1 . "modulation") (2 . "breath") (4 . "foot") (5 . "portamento time")
+    (7 . "volume") (8 . "balance") (10 . "pan") (11 . "expression")
+    (64 . "sustain") (65 . "portamento") (66 . "sostenuto") (67 . "soft")
+    (71 . "resonance") (74 . "brightness")
+    (120 . "all sound off") (121 . "reset controllers")
+    (123 . "all notes off"))
+  "The controllers worth naming.
+
+Deliberately not all 128. A monitor that writes \"undefined\" next to
+ninety numbers is harder to read than one that writes nothing; the ones
+here are those a musician recognises by name rather than by number.")
+
+(defun %midi-controller-name (number)
+  (cdr (assoc number *midi-controller-names*)))
+
+;;; ---------------------------------------------------------------------
+;;; The event ring
+;;; ---------------------------------------------------------------------
+
+(defstruct (midi-ring (:constructor %make-midi-ring))
+  (capacity 1024 :type fixnum)
+  (status (make-array 1024 :element-type '(unsigned-byte 8)) :type (simple-array (unsigned-byte 8) (*)))
+  (data1 (make-array 1024 :element-type '(unsigned-byte 8)) :type (simple-array (unsigned-byte 8) (*)))
+  (data2 (make-array 1024 :element-type '(unsigned-byte 8)) :type (simple-array (unsigned-byte 8) (*)))
+  (stamp (make-array 1024 :element-type 'double-float) :type (simple-array double-float (*)))
+  (write-index 0 :type fixnum)
+  (count 0 :type fixnum)
+  (sequence 0 :type fixnum))
+
+(defvar *midi-ring* nil
+  "The single ring the monitor reads from.")
+
+(defun make-midi-ring-for-repl (&optional (capacity 1024))
+  "A ring of CAPACITY messages.
+
+Unboxed arrays of bytes, like the sticker rings and for the same reason:
+MIDI arrives in a callback that must not allocate. A pitch-bend sweep is a
+thousand messages a second, and the editor must not be the reason the
+timing slips."
+  (let ((n (max 16 (min 65536 (truncate capacity)))))
+    (%make-midi-ring
+     :capacity n
+     :status (make-array n :element-type '(unsigned-byte 8) :initial-element 0)
+     :data1 (make-array n :element-type '(unsigned-byte 8) :initial-element 0)
+     :data2 (make-array n :element-type '(unsigned-byte 8) :initial-element 0)
+     :stamp (make-array n :element-type 'double-float :initial-element 0.0d0))))
+
+(declaim (inline midi-ring-record-for-repl))
+(defun midi-ring-record-for-repl (ring status data1 data2 stamp)
+  "Records one message.  Allocation-free; safe to call from a callback."
+  (declare (type midi-ring ring)
+           (type (unsigned-byte 8) status data1 data2)
+           (type double-float stamp)
+           (optimize (speed 3) (safety 0)))
+  (let ((index (midi-ring-write-index ring))
+        (capacity (midi-ring-capacity ring)))
+    (setf (aref (midi-ring-status ring) index) status
+          (aref (midi-ring-data1 ring) index) data1
+          (aref (midi-ring-data2 ring) index) data2
+          (aref (midi-ring-stamp ring) index) stamp
+          (midi-ring-write-index ring) (mod (1+ index) capacity))
+    (incf (midi-ring-sequence ring))
+    (when (< (midi-ring-count ring) capacity)
+      (incf (midi-ring-count ring)))
+    ring))
+
+(defun midi-events-since-for-repl (since &optional (limit 512))
+  "Messages received since sequence number SINCE, decoded.
+
+Returns (:ok SEQUENCE DROPPED EVENTS) or (:error TEXT).
+
+The same incremental scheme as the sticker rings, and dropped messages are
+counted rather than passed over: a monitor that silently loses events is
+worse than none, because the one question it exists to answer is whether
+something arrived."
+  (let ((ring *midi-ring*))
+    (cond
+      ((null ring) (list :error "The MIDI monitor is not running."))
+      (t
+       (let* ((sequence (midi-ring-sequence ring))
+              (count (midi-ring-count ring))
+              (capacity (midi-ring-capacity ring))
+              (since (max 0 (min (truncate since) sequence)))
+              (pending (- sequence since))
+              ;; Bounded by the RING as well, not only by what is
+              ;; pending. Without the capacity in this min, a ring of 8
+              ;; that received 20 messages reported 16 events — it read
+              ;; twice round the buffer and served the same slots again,
+              ;; each time as a fresh message. Duplicated events in a
+              ;; monitor are worse than lost ones: a note that was played
+              ;; once appears twice, and the monitor is the only witness.
+              (available (min pending count capacity))
+              (take (min available (max 1 (truncate limit))))
+              (dropped (- pending take))
+              (start (mod (- (midi-ring-write-index ring) take) capacity))
+              (events '()))
+         (dotimes (offset take)
+           (let ((index (mod (+ start offset) capacity)))
+             (push (list* :time (aref (midi-ring-stamp ring) index)
+                          :status (aref (midi-ring-status ring) index)
+                          (%midi-decode (aref (midi-ring-status ring) index)
+                                        (aref (midi-ring-data1 ring) index)
+                                        (aref (midi-ring-data2 ring) index)))
+                   events)))
+         (list :ok sequence (max 0 dropped) (nreverse events)))))))
+
+;;; ---------------------------------------------------------------------
+;;; Hooking into Incudine's MIDI input
+;;; ---------------------------------------------------------------------
+;;;
+;;; NOT verifiable where this was written: there is no Incudine here.  The
+;;; approach is the node browser's — resolve at runtime, and when nothing
+;;; is found, say what was looked for.  A monitor that shows an empty
+;;; window is indistinguishable from one that works and receives nothing,
+;;; which is the worst possible answer to "is my controller sending?".
+
+(defparameter *midi-receiver-names*
+  '("MIDI-IN" "MAKE-MIDI-RESPONDER" "MIDIIN" "PM-RECV")
+  "Candidate names for Incudine's MIDI reception.")
+
+(defun midi-monitor-start-for-repl (&optional (capacity 1024))
+  "Starts recording MIDI into a fresh ring.
+
+Returns (:ok TEXT) or (:error TEXT).  The ring is created either way, so
+that the decoding can be exercised by hand — (midi-ring-record-for-repl
+clamps-bridge-rpc::*midi-ring* #x90 60 100 0.0d0) is a legitimate way to
+check that the window works when no interface is attached."
+  (setf *midi-ring* (make-midi-ring-for-repl capacity))
+  (let ((responder (%rt-sym "MAKE-RESPONDER"))
+        (receiver (%rt-sym "MIDI-IN")))
+    (if (or responder receiver)
+        (list :ok (format nil "Ring for ~D messages ready. Attach a responder that calls ~
+clamps-bridge-rpc:midi-ring-record-for-repl on clamps-bridge-rpc::*midi-ring*."
+                          capacity))
+        (list :ok (format nil "Ring for ~D messages ready, but no Incudine MIDI symbols were found ~
+(looked for ~{~A~^, ~}). Messages recorded by hand will still be shown."
+                          capacity *midi-receiver-names*)))))
+
+(defun midi-monitor-stop-for-repl ()
+  "Stops recording and releases the ring."
+  (setf *midi-ring* nil)
+  (list :ok "MIDI monitor stopped."))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

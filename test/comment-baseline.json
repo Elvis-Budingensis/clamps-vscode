@@ -20,9 +20,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 929,
+  "lines": 951,
   "comments": 134,
-  "longStrings": 105
+  "longStrings": 111
  },
  "src/freqScope.ts": {
   "lines": 649,
@@ -57,6 +57,11 @@
  "src/meterView.ts": {
   "lines": 197,
   "comments": 22,
+  "longStrings": 1
+ },
+ "src/midiMonitor.ts": {
+  "lines": 321,
+  "comments": 49,
   "longStrings": 1
  },
  "src/nodeBrowser.ts": {
@@ -130,9 +135,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1859,
+  "lines": 1922,
   "comments": 152,
-  "longStrings": 81
+  "longStrings": 86
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -150,9 +155,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 3743,
-  "comments": 486,
-  "longStrings": 164
+  "lines": 4039,
+  "comments": 539,
+  "longStrings": 175
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -183,6 +188,11 @@
   "lines": 376,
   "comments": 63,
   "longStrings": 25
+ },
+ "lisp/test-midi.lisp": {
+  "lines": 273,
+  "comments": 109,
+  "longStrings": 7
  },
  "lisp/test-samples.lisp": {
   "lines": 288,
@@ -268,6 +278,11 @@
   "lines": 135,
   "comments": 39,
   "longStrings": 13
+ },
+ "test/midi.test.js": {
+  "lines": 118,
+  "comments": 45,
+  "longStrings": 9
  },
  "test/paredit.test.js": {
   "lines": 165,
