@@ -99,9 +99,6 @@ Also:
   `#-foo`. The bug was latent, because up to then `#:` only occurred in files
   that are readable without rewriting.
 
-New gates: `sbcl --script lisp/test-xref.lisp` and `node test/xref.test.js`,
-both wired into `npm run gates`. Against the state of v77 they fail.
-
 ## Multi-line input to Swank (v79)
 
 Multi-line code arrived in the image mangled as soon as it went through the
@@ -138,9 +135,6 @@ and the Swank frame counts bytes.
 Only the route through the debugger was affected. The bridge always built its
 forms with `~S`, which is why the same input worked with
 `clamps.replUsesDebugger: false` — and that was also the proof of the cause.
-
-New gate: `node test/lispstring.test.js`. It checks the escaping and
-statically forbids `JSON.stringify` in forms with Lisp syntax.
 
 ## Autodoc and XREF navigation
 
@@ -208,12 +202,6 @@ always looks plausible:
   this handling the display would show silence at exactly the moment when one
   is looking.
 
-New gates: `sbcl --script lisp/test-spectrum.lisp` checks the FFT against a
-naive DFT, the level accuracy of all three window functions, sub-bin frequency
-interpolation and the column reduction; `node test/freqscope.test.js` checks
-the note names, the peak hold and that the frequency axis is computed
-identically in `rpc.lisp`, in `freqScope.ts` and in the webview twin.
-
 ## Live spectrogram (1.0.4)
 
 `CLAMPS: Show Spectrogram (frequency over time)` shows frequency vertically,
@@ -253,12 +241,6 @@ accrued in the meantime:
 (clamps-bridge-rpc:register-sticker-state-for-repl "scope" *scope*)
 ```
 
-New gates: the frame grid is checked in `lisp/test-spectrum.lisp` against a
-signal that steps in frequency every hop, so that each frame's peak says which
-segment it saw; `test/spectrogram.test.js` checks the ring requirement, that a
-request covers what accrues, that the colour ramp never darkens as the level
-rises, and that low frequencies are drawn at the bottom.
-
 ## Buffer waveform viewer (1.0.6)
 
 `CLAMPS: Show Buffer Waveform` displays an Incudine buffer. It takes the
@@ -289,12 +271,6 @@ Any vector of numbers works too, not only an Incudine buffer — which is what
 makes the reduction testable against a bare SBCL, without Incudine, without an
 audio device and without a sound file. Without a buffer there is no sample
 rate, and the axis then says frames rather than inventing seconds.
-
-Gates: `lisp/test-buffer.lisp` uses signals in which a wrong reduction is
-arithmetically detectable — an asymmetric waveform, a single spike among a
-hundred thousand quiet samples, a DC offset — and catches both shortcuts above
-when they are introduced deliberately. `test/buffer.test.js` covers the zoom,
-whose failures are invisible in any single picture.
 
 ## ATS browser (1.1.0)
 
@@ -357,13 +333,13 @@ else. They can be switched on, because "is the clock running" is also a real
 question.
 
 Dropped messages are counted and shown. A monitor that loses events silently
-answers "nothing arrived" when the truth is "many things arrived and I
-discarded them".
+answers "nothing arrived" when the truth is that many arrived and were
+discarded.
 
-The receiving half depends on Incudine's MIDI input, which could not be
-tested where this was written; the decoding is checked exhaustively against
-the specification. The ring is created whether or not the hook succeeds, so
-the window can be exercised by hand:
+The receiving half depends on Incudine's MIDI input and needs an interface
+attached to exercise; the decoding is checked exhaustively against the
+specification. The ring is created whether or not the hook succeeds, so the
+window can be exercised by hand:
 
 ```lisp
 (clamps-bridge-rpc:midi-ring-record-for-repl

@@ -152,7 +152,7 @@ export class ClampsProcessManager {
    *
    * Deliberately not a hash over the contents — together the files are
    * over 2500 lines, and this runs at every start. Size plus mtime is
-   * enough to recognise "I have just changed rpc.lisp".
+   * enough to recognise that rpc.lisp has just changed.
    */
   private sourceFingerprint(): string {
     try {

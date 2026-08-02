@@ -55,9 +55,8 @@ if (typeof provider.lineEdit !== 'function') {
  * The column LINE stands at after formatting.
  *
  * No edit does not mean "no result" but "already in the right place" —
- * then the existing indentation is the result. The first version of this
- * helper returned undefined there and let the test fail on an already
- * correct line.
+ * then the existing indentation is the result. Returning undefined there
+ * would fail the test on an already correct line.
  */
 function indentOf(text, line) {
   const d = doc(text);

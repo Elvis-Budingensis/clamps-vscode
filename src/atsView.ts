@@ -67,13 +67,12 @@ export type AtsPlayer = (action: 'play' | 'stop', path: string)
  * The upper edges of the 25 critical bands, in hertz.
  *
  * The standard Bark scale, which is what ATS uses for its residual noise.
- * Written out rather than approximated: an earlier version spaced the
- * bands logarithmically between 20 Hz and the maximum frequency, which is
- * close enough to look right and wrong everywhere in particular. The Bark
- * scale is near-linear below 500 Hz and only then turns logarithmic, so a
- * purely logarithmic guess squeezes the low bands and stretches the high
- * ones — and the noise would then be drawn beside the partials it belongs
- * to.
+ * Written out rather than approximated. Spacing the bands logarithmically
+ * between 20 Hz and the maximum frequency is close enough to look right and
+ * wrong everywhere in particular: the Bark scale is near-linear below
+ * 500 Hz and only then turns logarithmic, so a purely logarithmic spacing
+ * squeezes the low bands and stretches the high ones, and the noise ends up
+ * drawn beside the partials it belongs to.
  */
 export const BARK_EDGES = [
   100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480, 1720, 2000,

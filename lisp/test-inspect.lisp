@@ -290,11 +290,11 @@ the refusals."
 ;;; ---------------------------------------------------------------------
 ;;; The REPL caps what it prints
 ;;; ---------------------------------------------------------------------
-;;; Found in the field: (defparameter *buf* (make-array 100000 ...)) returns
-;;; the array, and the REPL printed it in full — some 800 kilobytes through
-;;; the bridge, into the terminal, and past the scrollback, so that the
-;;; input which caused it was gone. A REPL that punishes you for making a
-;;; buffer is a REPL you stop using for buffers.
+;;; (defparameter *buf* (make-array 100000 ...)) returns the array. Printed
+;;; in full that is some 800 kilobytes through the bridge, into the
+;;; terminal, and past the scrollback, so that the input which caused it is
+;;; gone. A REPL that punishes you for making a buffer is a REPL you stop
+;;; using for buffers.
 ;;;
 ;;; The cap must sit around the PRINTING of the result and not around the
 ;;; evaluation: code that prints for itself is the user's own output and

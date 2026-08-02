@@ -16,8 +16,8 @@ import * as vscode from 'vscode';
  *
  * And hence the counter of dropped messages. A monitor that silently loses
  * events is worse than no monitor: it answers "nothing arrived" when the
- * truth is "sixty things arrived and I discarded them", and that answer
- * sends the user to check cables that are fine.
+ * truth is that sixty arrived and were discarded, and that answer sends the
+ * user to check cables that are fine.
  */
 
 export interface MidiEvent {
@@ -72,7 +72,8 @@ export function kindColour(kind: string): string {
  *
  * Clock and active sensing arrive continuously and say nothing about what
  * a player did. They are hidden by default and shown on request, because
- * both questions are real: "what am I playing" and "is the clock running".
+ * both questions are real: what is being played, and whether the clock is
+ * running.
  */
 export function isTransportNoise(kind: string): boolean {
   return kind === 'clock' || kind === 'active-sensing';
@@ -285,8 +286,8 @@ window.addEventListener('message', event => {
   if (batch.dropped > 0) {
     droppedTotal += batch.dropped;
     // Named, not swallowed. A monitor that loses events silently answers
-    // "nothing arrived" when the truth is "many things arrived and I threw
-    // them away" — and sends the user to check cables that are fine.
+    // "nothing arrived" when the truth is that many arrived and were thrown
+    // away — and sends the user to check cables that are fine.
     document.getElementById('warn').textContent =
       batch.dropped + ' message(s) dropped — the ring is too small or the ' +
       'poll interval too long';

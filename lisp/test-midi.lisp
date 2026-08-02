@@ -237,8 +237,8 @@
 
 ;;; Without a running monitor the answer is an error, not an empty list: an
 ;;; empty window is indistinguishable from one that works and receives
-;;; nothing, which is the worst possible answer to "is my controller
-;;; sending?".
+;;; nothing, which is the worst possible answer to the question of whether a
+;;; controller is sending at all.
 (clamps-bridge-rpc:midi-monitor-stop-for-repl)
 (let ((r (clamps-bridge-rpc:midi-events-since-for-repl 0)))
   (unless (eq (first r) :error)

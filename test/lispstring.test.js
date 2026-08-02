@@ -86,11 +86,11 @@ check('printSexpr leaves a symbol raw', printSexpr(new Sym('t')), 't');
   const offenders = [];
   // Scan ALL .ts under src/, not a maintained list.
   //
-  // The first version had 15 file names entered in it. When v81 added
-  // three modules, those were not in it — and advancedTools.ts promptly
-  // built a Lisp string with JSON.stringify again. The guard came through
-  // green because it never read the file. A whitelist decays exactly when
-  // it is needed most urgently: with new code.
+  // A list of 15 file names was maintained here once. Three modules added
+  // in v81 were not in it, and advancedTools.ts promptly built a Lisp
+  // string with JSON.stringify again; the guard came through green because
+  // it never read the file. A whitelist decays exactly when it is needed
+  // most urgently: with new code.
   const srcDir = path.join(__dirname, '..', 'src');
   for (const file of fs.readdirSync(srcDir).filter(f => f.endsWith('.ts')).sort()) {
     const full = path.join(srcDir, file);

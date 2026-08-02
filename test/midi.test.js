@@ -85,8 +85,8 @@ equal('NaN is a dash', timeLabel(NaN), '—');
 {
   const html = MidiMonitorView.html();
   // Dropped messages are named. A monitor that loses events silently
-  // answers "nothing arrived" when the truth is "many things arrived and I
-  // threw them away" — and sends the user to check cables that are fine.
+  // answers "nothing arrived" when the truth is that many arrived and were
+  // thrown away — and sends the user to check cables that are fine.
   if (!/dropped/.test(html)) {
     fail('the monitor does not report dropped messages');
   }

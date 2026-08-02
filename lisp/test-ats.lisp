@@ -70,10 +70,9 @@
         (emit 123.0d0) (emit sample-rate) (emit frame-size) (emit window-size)
         (emit (float partials 1.0d0)) (emit (float frames 1.0d0))
         ;; max-amplitude and max-frequency are COMPUTED, not filled in with
-        ;; a round number. The first version wrote 1.0 and 20000.0 flat, so
-        ;; every file it produced contradicted its own header — and the
-        ;; reader's cross-check dutifully complained about all of them. The
-        ;; test was wrong, the check was right.
+        ;; a round number. Written flat as 1.0 and 20000.0, every file
+        ;; produced here would contradict its own header, and the reader's
+        ;; cross-check would rightly complain about all of them.
         (emit (reduce #'max (mapcar (lambda (p) (reduce #'max (mapcar #'first p)))
                                     partials-data)
                       :initial-value 0.0d0))
@@ -329,8 +328,8 @@
 ;;; message is the whole point of this test. The names differ between
 ;;; ats-cuda versions and CLAMPS's own wrappers, so "not available" without
 ;;; a list of what was searched for would leave the user with nothing to
-;;; act on — and this gate runs precisely in the environment where nothing
-;;; is available, so it always exercises that path.
+;;; act on — and this gate runs without ats-cuda present, so it always
+;;; exercises that path.
 (let ((data (list (loop repeat 10 collect (list 0.5d0 440.0d0)))))
   (write-ats *tmp* :type 1 :partials-data data)
   (let ((r (clamps-bridge-rpc:ats-play-for-repl (namestring *tmp*))))
@@ -344,12 +343,11 @@
 ;;; Every attempt is named, and the failure is attributed to the function
 ;;; that actually signalled.
 ;;;
-;;; This is the correction of a real misdiagnosis. The first version called
-;;; ATS-LOAD with one argument, where it takes a path AND a symbol to bind
-;;; the sound to; the resulting "invalid number of arguments: 1" was caught
-;;; by an outer handler and reported as "SIN-NOI-SYNTH failed" — pointing
-;;; at the wrong function entirely. Half an hour could be lost to that
-;;; message, because it named a function that was fine.
+;;; ATS-LOAD takes a path AND a symbol to bind the sound to. Called with
+;;; the path alone it signals "invalid number of arguments: 1", and an
+;;; outer handler around both calls would report that as "SIN-NOI-SYNTH
+;;; failed" — naming a function that is perfectly fine. A message pointing
+;;; at the wrong function is worse than no message.
 ;;;
 ;;; A stand-in whose loader and synthesis both refuse in known ways: the
 ;;; report must contain BOTH names, so that neither can be blamed for the
@@ -450,15 +448,13 @@
 ;;; ---------------------------------------------------------------------
 ;;; 9. The synthesis is chosen by the file's TYPE
 ;;; ---------------------------------------------------------------------
-;;; Found in the field: a type 4 analysis played, a type 2 one from the same
-;;; source did not. SIN-NOI-SYNTH reads the residual noise bands, and types
-;;; 1 and 2 have none — so it fails, or worse, reads whatever lies at that
-;;; offset as noise.
+;;; SIN-NOI-SYNTH reads the residual noise bands, and types 1 and 2 have
+;;; none — so on those it fails, or worse, reads whatever lies at that
+;;; offset as noise. A type 4 analysis then plays and a type 2 one from the
+;;; same source does not.
 ;;;
-;;; The display had even printed "Type 2 carries no residual noise" while
-;;; the playback went on asking for it. The program knew and did not use
-;;; what it knew, which is the part worth guarding: the type is in the
-;;; header, so this is decidable rather than a matter of trying and seeing.
+;;; The type is in the header, so the choice is decidable rather than a
+;;; matter of trying and seeing. That is what this guards.
 (defpackage #:ats-type-probe (:use #:cl)
   (:export #:ats-load #:sin-noi-synth #:sin-synth))
 (in-package #:ats-type-probe)

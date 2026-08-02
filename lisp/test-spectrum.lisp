@@ -503,13 +503,12 @@ the parabola's apex is not being used" db)))
 ;;; The assurance that actually pins the grid down: frame F has to CONTAIN
 ;;; the samples of frame F.
 ;;;
-;;; The checks above compare indices and counts, and a first version of
-;;; this file stopped there. It let a mutation through that read every
-;;; window from the newest end of the ring instead of from the absolute
-;;; position — because the test signal was a steady sine, so every window
-;;; looked alike and no content check could tell them apart. That is the
-;;; same class of mistake as a test that never asserts: it runs, it passes,
-;;; it checks nothing.
+;;; Checking indices and counts alone is not enough. A reader that took
+;;; every window from the newest end of the ring instead of from the
+;;; absolute position would pass such checks — with a steady sine as the
+;;; test signal, every window looks alike and no content check can tell
+;;; them apart. That is the same class of mistake as a test that never
+;;; asserts: it runs, it passes, it checks nothing.
 ;;;
 ;;; So the signal now changes with time. Each segment of 512 samples
 ;;; carries a different tone; with FFT-SIZE = HOP = 512, frame F covers

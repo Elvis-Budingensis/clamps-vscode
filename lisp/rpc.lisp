@@ -2397,9 +2397,9 @@ display refresh."
 ;;; byte order: read it little-endian, and if it is not 123.0, the file
 ;;; was written big-endian.
 ;;;
-;;; What is read here is the format as documented by ATS; I have taken
-;;; care to make the reader say when reality disagrees rather than
-;;; interpret whatever it finds.  Hence %ats-expected-size below: the
+;;; What is read here is the format as documented by ATS, and the reader
+;;; is built to say when a file disagrees rather than interpret whatever
+;;; it finds.  Hence %ats-expected-size below: the
 ;;; header determines exactly how long the file must be, and if it is not
 ;;; that long, something about the assumed layout is wrong.  Reporting
 ;;; that is worth more than a picture of misread doubles, which would look
@@ -2712,10 +2712,10 @@ SIN-NOI-SYNTH is deliberately absent. It reads the noise bands, and a type
 offset as noise. The type is in the header, so this is decidable rather
 than a matter of trying and seeing.
 
-Found in the field: a type 4 analysis played and a type 2 one did not, from
-the same source material. The display had even said \"Type 2 carries no
-residual noise\" while the playback went on asking for it anyway — the
-program knew and did not use what it knew.")
+A type 4 analysis plays and a type 2 one from the same source does not,
+unless the type decides which function is called. The browser states
+\"Type 2 carries no residual noise\" in the same panel, and the playback
+has to act on that rather than ask for noise anyway.")
 
 (defparameter *ats-synth-names*
   (append *ats-noise-synth-names* '("SIN-SYNTH"))
@@ -2757,8 +2757,8 @@ Packages present: ~{~A~^, ~}."
 Returns (values RESULT SUCCEEDED-P FAILURES). The point is the recording:
 the argument lists of these functions differ between ats-cuda versions, so
 several have to be tried — and when they all fail, the user needs to see
-each attempt with its own error. The first version reported only the last
-one, and it blamed the synthesis for an error the LOADER had signalled."
+each attempt with its own error. Reporting only the last one blames the
+synthesis for errors the LOADER signalled."
   (handler-case (values (funcall thunk) t failures)
     (error (e)
       (values nil nil (cons (format nil "~A: ~A" label e) failures)))))
@@ -2780,9 +2780,9 @@ symbol, not the sound. And the start time is a FLOAT: sin-noi-synth
 schedules on it, and an integer 0 is not the same thing there.
 
 Both are still tried in several forms rather than assumed, because this is
-the one part of the extension that cannot be checked by a gate: there is
-no Incudine in the environment it is written in. What a gate can check —
-and does — is that every failure names what was attempted."
+the one part of the extension a gate cannot check: it needs a running audio
+device. What a gate can check — and does — is that every failure names what
+was attempted."
   (let ((bytes (%ats-read-file path)))
     (when (null bytes)
       (return-from ats-play-for-repl
@@ -3105,10 +3105,11 @@ worse than one that leaves the column empty."
 ;;; fourteen-bit assemblies, the running-status rule.  That part either is
 ;;; right or the gate says so.
 ;;;
-;;; The RECEIVING half hooks into Incudine's MIDI input, which is not
-;;; available where this was written.  It is therefore built like the node
-;;; browser: symbols resolved at runtime, and when they are missing, a
-;;; report naming what was looked for rather than an empty window.
+;;; The RECEIVING half hooks into Incudine's MIDI input, which needs an
+;;; interface attached and is therefore outside the gates.  It is built
+;;; like the node browser: symbols resolved at runtime, and when they are
+;;; missing, a report naming what was looked for rather than an empty
+;;; window.
 ;;;
 ;;; The ring is the same allocation-free design as the sticker rings, for
 ;;; the same reason: MIDI arrives in a callback that must not cons.  A
@@ -3352,11 +3353,12 @@ something arrived."
 ;;; Hooking into Incudine's MIDI input
 ;;; ---------------------------------------------------------------------
 ;;;
-;;; NOT verifiable where this was written: there is no Incudine here.  The
-;;; approach is the node browser's — resolve at runtime, and when nothing
-;;; is found, say what was looked for.  A monitor that shows an empty
-;;; window is indistinguishable from one that works and receives nothing,
-;;; which is the worst possible answer to "is my controller sending?".
+;;; Outside the gates: this needs a MIDI interface attached.  The approach
+;;; is the node browser's — resolve at runtime, and when nothing is found,
+;;; say what was looked for.  A monitor that shows an empty window is
+;;; indistinguishable from one that works and receives nothing, which is
+;;; the worst possible answer to the question of whether a controller is
+;;; sending at all.
 
 (defparameter *midi-receiver-names*
   '("MIDI-IN" "MAKE-MIDI-RESPONDER" "MIDIIN" "PM-RECV")

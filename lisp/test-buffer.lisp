@@ -66,8 +66,7 @@ only the reduction."
 ;; 128 periods over 4096 samples and 64 columns: 64 samples per column,
 ;; two full periods each. Fewer periods and a column would cover less than
 ;; one, so it could not reach +-1 and the expectation below would be wrong
-;; rather than the code — which is exactly what the first version of this
-;; test got backwards.
+;; rather than the code.
 (let* ((n 4096)
        (v (make-array n :element-type 'double-float)))
   (dotimes (i n)
@@ -186,12 +185,12 @@ only the reduction."
 ;;; ---------------------------------------------------------------------
 ;;; 7. The package of the file is not the package of the REPL
 ;;; ---------------------------------------------------------------------
-;;; Found in the field, and it is the kind of failure where everybody is
-;;; right and nobody can proceed: the REPL sat at a CLAMPS> prompt, so
-;;; (defparameter *buf* ...) made clamps::*buf*. The display took its
-;;; package from the file, which had no (in-package ...) form and therefore
-;;; fell back to COMMON-LISP-USER, and reported "*buf* is unbound" — truly,
-;;; about a different symbol of the same name.
+;;; The kind of failure where both sides are right and neither can
+;;; proceed: at a CLAMPS> prompt, (defparameter *buf* ...) makes
+;;; clamps::*buf*. A display taking its package from a file without an
+;;; (in-package ...) form falls back to COMMON-LISP-USER and reports
+;;; "*buf* is unbound" — truthfully, about a different symbol of the same
+;;; name.
 ;;;
 ;;; A bare symbol that is unbound in the named package is now looked for in
 ;;; the others, and where it was found is stated rather than assumed.

@@ -631,8 +631,8 @@ async function startClamps(context: vscode.ExtensionContext, bridgePath: string)
         outputChannel.appendLine('Starting/checking the bootstrap process …');
         const session = await processManager!.ensureRunning();
         // Whether reused or freshly started — that is the difference
-        // between "my code is loaded" and "I am testing against an image
-        // from the day before yesterday".
+        // between the current code being loaded and testing against an
+        // image from the day before yesterday.
         if (processManager!.lastStartNote) {
           outputChannel.appendLine(processManager!.lastStartNote);
         }
@@ -931,7 +931,7 @@ async function closeParens(): Promise<void> {
   const st = readState(upToCursor);
   if (st.inString) {
     vscode.window.showWarningMessage(
-      'The cursor is inside a string — I will not close parens there.'
+      'The cursor is inside a string; parens are not closed there.'
     );
     return;
   }
