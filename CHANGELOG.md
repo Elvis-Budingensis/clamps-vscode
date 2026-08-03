@@ -21,7 +21,7 @@ All notable changes to CLAMPS for VS Code are documented here.
   ordinary mistake, and "the value nil is not of type osc-ring" is true and
   useless.
 
-## [1.4.4] - 2026-08-02
+## [1.4.6] - 2026-08-02
 
 ### Added
 
