@@ -20,9 +20,9 @@
   "longStrings": 2
  },
  "src/extension.ts": {
-  "lines": 951,
+  "lines": 974,
   "comments": 134,
-  "longStrings": 111
+  "longStrings": 118
  },
  "src/freqScope.ts": {
   "lines": 654,
@@ -68,6 +68,11 @@
   "lines": 162,
   "comments": 14,
   "longStrings": 4
+ },
+ "src/oscMonitor.ts": {
+  "lines": 290,
+  "comments": 36,
+  "longStrings": 1
  },
  "src/processManager.ts": {
   "lines": 376,
@@ -135,9 +140,9 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 1922,
+  "lines": 1985,
   "comments": 152,
-  "longStrings": 86
+  "longStrings": 91
  },
  "lisp/completion.lisp": {
   "lines": 454,
@@ -155,9 +160,9 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 4165,
-  "comments": 549,
-  "longStrings": 184
+  "lines": 4439,
+  "comments": 597,
+  "longStrings": 201
  },
  "lisp/swankframing.lisp": {
   "lines": 217,
@@ -175,9 +180,9 @@
   "longStrings": 7
  },
  "lisp/test-buffer.lisp": {
-  "lines": 270,
-  "comments": 89,
-  "longStrings": 14
+  "lines": 275,
+  "comments": 90,
+  "longStrings": 15
  },
  "lisp/test-completion.lisp": {
   "lines": 153,
@@ -190,9 +195,14 @@
   "longStrings": 25
  },
  "lisp/test-midi.lisp": {
-  "lines": 383,
-  "comments": 136,
+  "lines": 397,
+  "comments": 142,
   "longStrings": 10
+ },
+ "lisp/test-osc.lisp": {
+  "lines": 204,
+  "comments": 69,
+  "longStrings": 8
  },
  "lisp/test-samples.lisp": {
   "lines": 288,
@@ -283,6 +293,11 @@
   "lines": 118,
   "comments": 45,
   "longStrings": 9
+ },
+ "test/osc.test.js": {
+  "lines": 118,
+  "comments": 38,
+  "longStrings": 11
  },
  "test/paredit.test.js": {
   "lines": 165,

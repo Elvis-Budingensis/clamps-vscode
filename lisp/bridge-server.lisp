@@ -1736,6 +1736,67 @@ whole ring on every poll would be the reason the timing slips."
                                       (or (second value) "Failed.")
                                       (format nil "~A" value)))))))))
 
+(defun handle-osc-events (id params)
+  "clamps/oscEvents — OSC messages since a sequence number."
+  (let ((since (or (gethash "since" params) 0))
+        (limit (or (gethash "limit" params) 256)))
+    (swank-rex
+     (format nil "(clamps-bridge-rpc:osc-events-since-for-repl ~D ~D)"
+             (truncate since) (truncate limit))
+     :callback
+     (lambda (status value)
+       (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+           (destructuring-bind (ok sequence dropped events) value
+             (declare (ignore ok))
+             (send-response id
+               (make-jobj "available" :true
+                          "error" ""
+                          "sequence" sequence
+                          "dropped" dropped
+                          "events"
+                          (coerce
+                           (mapcar
+                            (lambda (e)
+                              (destructuring-bind (time address typetag values) e
+                                (make-jobj "time" time
+                                           "address" address
+                                           "typetag" typetag
+                                           "values"
+                                           (coerce
+                                            (mapcar (lambda (v)
+                                                      (make-jobj "type" (first v)
+                                                                 "text" (second v)))
+                                                    values)
+                                            'vector))))
+                            events)
+                           'vector))))
+           (send-response id
+             (make-jobj "available" :false
+                        "error" (if (consp value)
+                                    (or (second value) "OSC monitor not available.")
+                                    (format nil "~A" value))
+                        "events" (vector))))))))
+
+(defun handle-osc-monitor (id params)
+  "clamps/oscMonitor — starts or stops recording."
+  (let ((action (or (gethash "action" params) "start"))
+        (port (or (gethash "port" params) 32126))
+        (capacity (or (gethash "capacity" params) 512)))
+    (swank-rex
+     (if (string= action "stop")
+         "(clamps-bridge-rpc:osc-monitor-stop-for-repl)"
+         (format nil "(clamps-bridge-rpc:osc-monitor-start-for-repl ~D ~D)"
+                 (truncate port) (truncate capacity)))
+     :callback
+     (lambda (status value)
+       (send-response id
+         (if (and (eq status :ok) (consp value) (eq (first value) :ok))
+             (make-jobj "ok" :true "message" (or (second value) ""))
+             (make-jobj "ok" :false
+                        "message" (if (consp value)
+                                      (or (second value) "Failed.")
+                                      (format nil "~A" value)))))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1843,6 +1904,8 @@ whole ring on every poll would be the reason the timing slips."
           ((string= method "clamps/sampleBrowse") (handle-sample-browse id params))
           ((string= method "clamps/midiEvents") (handle-midi-events id params))
           ((string= method "clamps/midiMonitor") (handle-midi-monitor id params))
+          ((string= method "clamps/oscEvents") (handle-osc-events id params))
+          ((string= method "clamps/oscMonitor") (handle-osc-monitor id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

@@ -56,6 +56,9 @@
            #:make-midi-ring-for-repl #:midi-ring-record-for-repl
            #:midi-events-since-for-repl
            #:midi-monitor-start-for-repl #:midi-monitor-stop-for-repl
+           #:make-osc-ring-for-repl #:osc-ring-record-for-repl
+           #:osc-events-since-for-repl
+           #:osc-monitor-start-for-repl #:osc-monitor-stop-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -2370,7 +2373,13 @@ display refresh."
                              (let ((warnings '()))
                                (when package-note (push package-note warnings))
                                (when note (push note warnings))
-                               (when (zerop rate)
+                               ;; Only when nothing has said so already. The
+                               ;; plain-vector path reports the same fact in
+                               ;; its own words, and two warnings about one
+                               ;; circumstance make the user look for two
+                               ;; problems.
+                               (when (and (zerop rate)
+                                          (not (and note (search "sample rate" note))))
                                  (push "Sample rate unknown, the axis is in frames"
                                        warnings))
                                (when (> clipped 0)
@@ -3292,7 +3301,12 @@ timing slips."
 
 (declaim (inline midi-ring-record-for-repl))
 (defun midi-ring-record-for-repl (ring status data1 data2 stamp)
-  "Records one message.  Allocation-free; safe to call from a callback."
+  "Records one message.  Allocation-free; safe to call from a callback.
+
+RING is NOT checked here, deliberately: this runs in the MIDI receiver
+thread on every message, and a type check per message is exactly the kind
+of cost that does not belong there. The callers inside this file test
+*midi-ring* for NIL before calling."
   (declare (type midi-ring ring)
            (type (unsigned-byte 8) status data1 data2)
            (type double-float stamp)
@@ -3307,7 +3321,12 @@ timing slips."
     (incf (midi-ring-sequence ring))
     (when (< (midi-ring-count ring) capacity)
       (incf (midi-ring-count ring)))
-    ring))
+    ;; The sequence number, not the ring. Returning the structure means the
+    ;; REPL prints it when the function is called by hand, and this ring
+    ;; holds four unboxed arrays of the full capacity — 8192 numbers for a
+    ;; ring of 2048. The sequence number is also the cursor for the next
+    ;; fetch, so it is the more useful value.
+    (midi-ring-sequence ring)))
 
 (defun midi-events-since-for-repl (since &optional (limit 512))
   "Messages received since sequence number SINCE, decoded.
@@ -3334,6 +3353,13 @@ something arrived."
               ;; each time as a fresh message. Duplicated events in a
               ;; monitor are worse than lost ones: a note that was played
               ;; once appears twice, and the monitor is the only witness.
+              ;; COUNT never exceeds CAPACITY, so it alone would bound
+              ;; this. CAPACITY is named as well because the bound that
+              ;; matters is the ring's: reading twice round the buffer
+              ;; would serve the same slots again as fresh messages, and a
+              ;; message sent once would appear twice. Which of the two
+              ;; limits happens to bite is an implementation detail; that
+              ;; the ring is the limit is not.
               (available (min pending count capacity))
               (take (min available (max 1 (truncate limit))))
               (dropped (- pending take))
@@ -3510,6 +3536,254 @@ without a word."
     (list :ok (if removed
                   "MIDI monitor stopped, responder removed."
                   "MIDI monitor stopped."))))
+
+;;; ---------------------------------------------------------------------
+;;; OSC monitor
+;;; ---------------------------------------------------------------------
+;;;
+;;; The point of a monitor is to find out what is arriving.  So it must
+;;; not be told in advance.
+;;;
+;;; That rules out MAKE-OSC-RESPONDER, which binds a function to a fixed
+;;; address AND a fixed type tag:
+;;;
+;;;   (make-osc-responder *oscin* "/osc/test" "iii" (lambda (a b c) ...))
+;;;
+;;; Useful for a patch, useless here — one would have to know the answer
+;;; to ask the question.  Instead a plain receiver function is attached,
+;;; and the message is read out of the stream buffer with the exported
+;;; accessors: OSC:ADDRESS-PATTERN gives the address and, with T, the type
+;;; tag; OSC:VALUE gives each argument, already converted to the type the
+;;; tag names.
+;;;
+;;; The TYPE TAG is what makes the difference between a monitor and a
+;;; guess.  In OSC an integer 1 and a float 1.0 print alike and are not
+;;; alike; a blob is not a string; and a receiver expecting "if" that gets
+;;; "fi" fails silently.  So the tag is shown next to the values rather
+;;; than dropped once the values have been read.
+
+(defparameter *osc-packages* '(:incudine.osc :incudine :cl-user)
+  "Packages searched for the OSC accessors.")
+
+(defun %osc-sym (name)
+  "The first fbound symbol NAME from *osc-packages*."
+  (dolist (pkg-name *osc-packages* nil)
+    (let ((pkg (find-package pkg-name)))
+      (when pkg
+        (let ((sym (find-symbol name pkg)))
+          (when (and sym (fboundp sym)) (return sym)))))))
+
+(defstruct (osc-ring (:constructor %make-osc-ring))
+  (capacity 512 :type fixnum)
+  (events (make-array 512 :initial-element nil) :type simple-vector)
+  (write-index 0 :type fixnum)
+  (count 0 :type fixnum)
+  (sequence 0 :type fixnum))
+
+(defvar *osc-ring* nil
+  "The ring the monitor reads from.")
+
+(defvar *osc-stream* nil
+  "The stream the monitor opened, so that exactly it can be closed.")
+
+(defvar *osc-responder* nil
+  "The receiver function this monitor added.")
+
+(defvar *osc-opened-stream* nil
+  "Whether the monitor opened the stream, and must therefore close it.
+
+The same distinction as in the MIDI monitor: a stream somebody else opened
+belongs to them, and closing it on window close would break a running
+patch without a word.")
+
+(defun make-osc-ring-for-repl (&optional (capacity 512))
+  "A ring of CAPACITY messages.
+
+Boxed, unlike the sticker and MIDI rings — an OSC message carries an
+address string and a list of values of differing types, so there is
+nothing to store unboxed. That is acceptable here because OSC arrives in
+an ordinary receiver thread rather than in the audio callback."
+  (let ((n (max 16 (min 16384 (truncate capacity)))))
+    (%make-osc-ring :capacity n
+                    :events (make-array n :initial-element nil))))
+
+(defun osc-ring-record-for-repl (ring address typetag values time)
+  "Records one message.
+
+RING is checked rather than assumed. The ring exists only while the
+monitor runs, so recording by hand before opening the window is the
+ordinary mistake — and \"the value nil is not of type osc-ring\" says
+nothing about what to do."
+  (unless (osc-ring-p ring)
+    (error "No OSC ring. Start the monitor first, either by opening ~
+CLAMPS: Show OSC Monitor or with ~
+(clamps-bridge-rpc:osc-monitor-start-for-repl)."))
+  (let ((index (osc-ring-write-index ring))
+        (capacity (osc-ring-capacity ring)))
+    (setf (svref (osc-ring-events ring) index)
+          (list address typetag values time)
+          (osc-ring-write-index ring) (mod (1+ index) capacity))
+    (incf (osc-ring-sequence ring))
+    (when (< (osc-ring-count ring) capacity)
+      (incf (osc-ring-count ring)))
+    ;; The sequence number, not the ring. Returning the structure means the
+    ;; REPL prints it, and a ring of 512 prints as 509 NILs around the three
+    ;; entries one wanted to see. The sequence number is what a caller can
+    ;; use — it is the cursor for the next fetch.
+    (osc-ring-sequence ring)))
+
+(defun %osc-value-label (value)
+  "A short type name for a decoded OSC value.
+
+Read off the value rather than the tag, so that the two can be compared:
+where they disagree, the reader and the sender disagree about the message,
+and that is worth seeing."
+  (typecase value
+    (integer "int")
+    (single-float "float")
+    (double-float "double")
+    (string "string")
+    ((or (vector (unsigned-byte 8)) (simple-array (unsigned-byte 8) (*)))
+     "blob")
+    (null "nil")
+    (t (string-downcase (princ-to-string (type-of value))))))
+
+(defun %osc-format-value (value)
+  "A printed form for one value, bounded.
+
+A blob can be a megabyte, and a monitor that prints it fills the window
+with hex for a message whose interesting part is its length."
+  (typecase value
+    ((or (vector (unsigned-byte 8)) (simple-array (unsigned-byte 8) (*)))
+     (format nil "<blob ~D bytes>" (length value)))
+    (string (if (> (length value) 64)
+                (format nil "~S…" (subseq value 0 64))
+                (format nil "~S" value)))
+    (t (let ((*print-length* 32) (*print-level* 4))
+         (princ-to-string value)))))
+
+(defun osc-events-since-for-repl (since &optional (limit 256))
+  "Messages received since sequence number SINCE.
+
+Returns (:ok SEQUENCE DROPPED EVENTS) or (:error TEXT).  Each event is
+
+  (TIME ADDRESS TYPETAG ((LABEL TEXT) ...))
+
+Dropped messages are counted rather than passed over: the question a
+monitor exists to answer is whether something arrived."
+  (let ((ring *osc-ring*))
+    (cond
+      ((null ring) (list :error "The OSC monitor is not running."))
+      (t
+       (let* ((sequence (osc-ring-sequence ring))
+              (count (osc-ring-count ring))
+              (capacity (osc-ring-capacity ring))
+              (since (max 0 (min (truncate since) sequence)))
+              (pending (- sequence since))
+              (available (min pending count capacity))
+              (take (min available (max 1 (truncate limit))))
+              (dropped (- pending take))
+              (start (mod (- (osc-ring-write-index ring) take) capacity))
+              (events '()))
+         (dotimes (offset take)
+           (let ((entry (svref (osc-ring-events ring)
+                               (mod (+ start offset) capacity))))
+             (when entry
+               (destructuring-bind (address typetag values time) entry
+                 (push (list time address typetag
+                             (mapcar (lambda (v)
+                                       (list (%osc-value-label v)
+                                             (%osc-format-value v)))
+                                     values))
+                       events)))))
+         (list :ok sequence (max 0 dropped) (nreverse events)))))))
+
+(defparameter *osc-default-port* 32126
+  "The port OSC:OPEN defaults to, mirrored here so that the message can
+name it before the stream exists.")
+
+(defun osc-monitor-start-for-repl (&optional (port 32126) (capacity 512))
+  "Opens an OSC input on PORT and records every message arriving there.
+
+Returns (:ok TEXT) or (:error TEXT).
+
+Deliberately opens a stream of its own rather than attaching to one the
+session may already have. An OSC input is bound to a port, and two readers
+on one port is not a thing the protocol provides for; taking over
+somebody's stream would silently divert their messages. If the port is
+busy, that is said plainly — it usually means the patch being debugged is
+already listening there, and then the monitor should be pointed at another
+port and the patch's own address forwarded to it."
+  (osc-monitor-stop-for-repl)
+  (setf *osc-ring* (make-osc-ring-for-repl capacity))
+  (let ((open (%osc-sym "OPEN"))
+        (make-responder (%rt-sym "MAKE-RESPONDER"))
+        (recv-start (%rt-sym "RECV-START"))
+        (address-pattern (%osc-sym "ADDRESS-PATTERN"))
+        (value (%osc-sym "VALUE"))
+        (message-time (%osc-sym "MESSAGE-TIME")))
+    (cond
+      ((not (and open make-responder recv-start address-pattern value))
+       (list :ok (format nil "Ring for ~D messages ready, but the OSC functions were not found ~
+(looked for OPEN, ADDRESS-PATTERN, VALUE in INCUDINE.OSC). Messages recorded by hand are still shown."
+                         capacity)))
+      (t
+       (handler-case
+           (let ((stream (funcall open :direction :input :port port)))
+             (setf *osc-stream* stream
+                   *osc-opened-stream* t
+                   *osc-responder*
+                   (funcall make-responder stream
+                            (lambda (in)
+                              (declare (ignore in))
+                              (let ((ring *osc-ring*))
+                                (when ring
+                                  ;; Every accessor guarded on its own: a
+                                  ;; malformed message must cost one line in
+                                  ;; the log, not the receiver thread.
+                                  (multiple-value-bind (address typetag)
+                                      (or (ignore-errors
+                                            (funcall address-pattern stream t))
+                                          (values "?" nil))
+                                    (let ((values* '()))
+                                      (dotimes (i (max 0 (1- (length (or typetag "")))))
+                                        (push (or (ignore-errors
+                                                    (funcall value stream i))
+                                                  :unreadable)
+                                              values*))
+                                      (osc-ring-record-for-repl
+                                       ring address (or typetag "")
+                                       (nreverse values*)
+                                       (or (and message-time
+                                                (ignore-errors
+                                                  (funcall message-time stream)))
+                                           0)))))))))
+             (funcall recv-start stream)
+             (list :ok (format nil "Listening on OSC port ~D, ring for ~D messages."
+                               port capacity)))
+         (error (e)
+           (setf *osc-stream* nil *osc-opened-stream* nil)
+           (list :ok (format nil "Could not open OSC port ~D: ~A. If something else is ~
+listening there, point the monitor at a free port and forward to it. Messages recorded by hand are still shown."
+                             port e))))))))
+
+(defun osc-monitor-stop-for-repl ()
+  "Removes the responder, closes the stream if the monitor opened it."
+  (let ((removed nil))
+    (when (and *osc-responder* *osc-stream*)
+      (let ((remove (%rt-sym "REMOVE-RESPONDER")))
+        (when remove
+          (ignore-errors (funcall remove *osc-responder*) (setf removed t)))))
+    (when (and *osc-opened-stream* *osc-stream*)
+      (let ((stop (%rt-sym "RECV-STOP"))
+            (close-fn (%osc-sym "CLOSE")))
+        (when stop (ignore-errors (funcall stop *osc-stream*)))
+        (when close-fn (ignore-errors (funcall close-fn *osc-stream*)))))
+    (setf *osc-responder* nil
+          *osc-stream* nil
+          *osc-opened-stream* nil
+          *osc-ring* nil)
+    (list :ok (if removed "OSC monitor stopped." "OSC monitor stopped."))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

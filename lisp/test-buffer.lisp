@@ -255,12 +255,17 @@ only the reduction."
 execute code")))
 
 ;;; A plain vector says that its time axis is in frames, rather than
-;;; inventing a sample rate.
-(let ((r (outline (make-array 100 :element-type 'double-float
-                                 :initial-element 0.0d0)
-                  "CL-USER" 0 -1 16)))
-  (unless (some (lambda (w) (search "frames" w)) (warnings-of r))
-    (fail "No note about the missing sample rate: ~S" (warnings-of r))))
+;;; inventing a sample rate — ONCE. Two warnings about one circumstance make
+;;; the user look for two problems.
+(let* ((r (outline (make-array 100 :element-type 'double-float
+                                  :initial-element 0.0d0)
+                   "CL-USER" 0 -1 16))
+       (about-rate (count-if (lambda (w) (search "frames" w)) (warnings-of r))))
+  (when (zerop about-rate)
+    (fail "No note about the missing sample rate: ~S" (warnings-of r)))
+  (unless (= about-rate 1)
+    (fail "~D warnings about the missing sample rate: ~S"
+          about-rate (warnings-of r))))
 
 (if (> *failed* 0)
     (progn (format t "~%~D test(s) failed.~%" *failed*)

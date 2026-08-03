@@ -2,7 +2,7 @@
   "name": "clamps-vscode",
   "displayName": "CLAMPS – Audio-aware Lisp IDE",
   "description": "An audio-aware Lisp IDE for CLAMPS and Incudine.",
-  "version": "1.4.3",
+  "version": "1.4.6",
   "publisher": "elvis-budingensis",
   "engines": {
     "vscode": "^1.85.0"
@@ -333,6 +333,10 @@
       {
         "command": "clamps.midiShow",
         "title": "CLAMPS: Show MIDI Monitor"
+      },
+      {
+        "command": "clamps.oscShow",
+        "title": "CLAMPS: Show OSC Monitor"
       }
     ],
     "languages": [
@@ -490,6 +494,19 @@
           "default": 60,
           "minimum": 20,
           "description": "Poll interval of the MIDI monitor in milliseconds. Messages are fetched incrementally, so this sets how often the log updates, not how many messages are seen — what accrues between two polls arrives together. Only if the ring overflows between polls are messages lost, and then the monitor says so."
+        },
+        "clamps.oscIntervalMs": {
+          "type": "number",
+          "default": 80,
+          "minimum": 20,
+          "description": "Poll interval of the OSC monitor in milliseconds. Messages are fetched incrementally, so this sets how often the log updates, not how many messages are seen."
+        },
+        "clamps.oscPort": {
+          "type": "number",
+          "default": 32126,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port the OSC monitor listens on. 32126 is Incudine's default. The monitor opens a stream of its own, so this must be a port nothing else is listening on — if the patch under test already listens on a port, point the monitor at a free one and forward to it."
         },
         "clamps.openReplOnStart": {
           "type": "boolean",
@@ -657,9 +674,9 @@
     "watch": "tsc -watch -p ./",
     "check": "python3 lisp/check.py",
     "comments:update": "node test/comments-update.js",
-    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/freqscope.test.js && node test/spectrogram.test.js && node test/buffer.test.js && node test/ats.test.js && node test/samples.test.js && node test/midi.test.js && node test/lispstring.test.js && node test/comments.test.js",
+    "test": "node test/gatecoverage.test.js && node test/manifest.test.js && node test/hover.test.js && node test/debugger.test.js && node test/session.test.js && node test/features.test.js && node test/toplevel.test.js && node test/indentation.test.js && node test/paredit.test.js && node test/xref.test.js && node test/replcomplete.test.js && node test/stickerpoll.test.js && node test/freqscope.test.js && node test/spectrogram.test.js && node test/buffer.test.js && node test/ats.test.js && node test/samples.test.js && node test/midi.test.js && node test/osc.test.js && node test/lispstring.test.js && node test/comments.test.js",
     "gates": "npm run check && npm run lisp && npm run compile && npm test",
-    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/test-spectrum.lisp && sbcl --script lisp/test-buffer.lisp && sbcl --script lisp/test-ats.lisp && sbcl --script lisp/test-samples.lisp && sbcl --script lisp/test-midi.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp",
+    "lisp": "sbcl --script lisp/loadcheck.lisp && sbcl --script lisp/framingtest.lisp && sbcl --script lisp/test-sticker-state.lisp && sbcl --script lisp/test-spectrum.lisp && sbcl --script lisp/test-buffer.lisp && sbcl --script lisp/test-ats.lisp && sbcl --script lisp/test-samples.lisp && sbcl --script lisp/test-midi.lisp && sbcl --script lisp/test-osc.lisp && sbcl --script lisp/swankframing.lisp && sbcl --script lisp/test-xref.lisp && sbcl --script lisp/test-inspect.lisp && sbcl --script lisp/test-completion.lisp && sbcl --script lisp/test-bridge-context.lisp && sbcl --script lisp/test-fallback.lisp && sbcl --script lisp/test-autodoc.lisp",
     "package": "npx @vscode/vsce package",
     "publish": "npx @vscode/vsce publish",
     "release:check": "npm run compile && npm test"
@@ -700,6 +717,7 @@
     "music",
     "computer music",
     "midi",
+    "osc",
     "repl",
     "swank",
     "debuggers"

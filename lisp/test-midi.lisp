@@ -244,6 +244,20 @@
   (unless (eq (first r) :error)
     (fail "A stopped monitor returns ~S instead of an error" (first r))))
 
+;;; Recording returns the sequence number, not the ring.
+;;;
+;;; This ring holds four unboxed arrays of the full capacity — 8192 numbers
+;;; for a ring of 2048 — so returning the structure buries the result when
+;;; the function is called by hand in the REPL. The sequence number is also
+;;; the cursor for the next fetch.
+(clamps-bridge-rpc:midi-monitor-start-for-repl 64)
+(let ((ring clamps-bridge-rpc::*midi-ring*))
+  (check "the first record returns 1"
+         (clamps-bridge-rpc:midi-ring-record-for-repl ring #x90 60 100 0.0d0) 1)
+  (check "the second returns 2"
+         (clamps-bridge-rpc:midi-ring-record-for-repl ring #x80 60 0 0.1d0) 2))
+(clamps-bridge-rpc:midi-monitor-stop-for-repl)
+
 ;;; ---------------------------------------------------------------------
 ;;; 10. Recording does not cons
 ;;; ---------------------------------------------------------------------

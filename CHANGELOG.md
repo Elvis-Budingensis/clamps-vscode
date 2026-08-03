@@ -2,17 +2,53 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
-## [1.4.3] - 2026-07-31
+## [1.4.6] - 2026-08-02
 
 ### Changed
 
-- The freq scope and spectrogram now show a short message when no ring is
-  registered and a longer one only when a ring exists that cannot carry the
-  analysis. The single long text was cut off in a narrow panel, and the
-  reasoning about decimation is only useful in the second case: with no ring
-  at all, the recipe is what is needed.
+- Recording into the OSC and MIDI rings returns the sequence number instead
+  of the ring. Called by hand in the REPL, returning the structure printed
+  the whole ring — 509 NILs around the three entries one wanted to see, and
+  for the MIDI ring four unboxed arrays of the full capacity. The sequence
+  number is also the cursor for the next fetch.
 
-## [1.4.2] - 2026-07-31
+## [1.4.5] - 2026-08-02
+
+### Fixed
+
+- Recording an OSC message by hand before the monitor is running now says
+  what to do. The ring exists only while the monitor runs, so this is the
+  ordinary mistake, and "the value nil is not of type osc-ring" is true and
+  useless.
+
+## [1.4.4] - 2026-08-02
+
+### Added
+
+- **OSC monitor** (`CLAMPS: Show OSC Monitor`): incoming messages with
+  address, type tag and values, each value shown with its own type, plus an
+  address filter and a settable port.
+
+  The types are half the information. An integer 1 and a float 1.0 print
+  alike and are not alike, a blob is not a string, and a receiver expecting
+  `if` that gets `fi` fails without saying so — so the type tag stands next
+  to the address and every value carries its own type and colour.
+
+  The monitor reads the message out of the stream itself rather than
+  registering a responder for a fixed address and type tag. A monitor exists
+  to find out what is arriving; one that has to be told in advance answers a
+  question nobody has.
+
+  It opens a stream of its own on the chosen port rather than taking over an
+  existing one, since two readers on one port is not something the protocol
+  provides for. If the port is busy the message says so — usually the patch
+  under test is already listening there, and then the monitor should be
+  pointed at a free port with the patch forwarding to it.
+
+  Blobs are shown by their length and long strings truncated: a megabyte of
+  hex fills the window for a message whose interesting part is its size.
+
+## [1.4.3] - 2026-07-31
 
 ### Changed
 
@@ -22,6 +58,14 @@ All notable changes to CLAMPS for VS Code are documented here.
   the extension as it was at 1.0.0.
 - Added a short guide to setting up a sticker ring, which the scope,
   spectrogram and level meters read from.
+- The freq scope and spectrogram show a short message when no ring is
+  registered and a longer one only when a ring exists that cannot carry the
+  analysis. The single long text was cut off in a narrow panel, and the
+  reasoning about decimation is only useful in the second case.
+
+### Fixed
+
+- The buffer viewer reported a missing sample rate twice for a plain vector.
 
 ## [1.4.1] - 2026-07-31
 

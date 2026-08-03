@@ -29,6 +29,7 @@ import { BufferView, BufferOutline } from './bufferView';
 import { AtsView, AtsOutline } from './atsView';
 import { SampleBrowserView, SampleListing } from './sampleBrowser';
 import { MidiMonitorView, MidiBatch } from './midiMonitor';
+import { OscMonitorView, OscBatch } from './oscMonitor';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -403,6 +404,28 @@ export async function activate(context: vscode.ExtensionContext) {
             'clamps/midiMonitor', { action, capacity: 2048 });
         },
         configuration.get<number>('midiIntervalMs', 60)
+      );
+    }),
+    vscode.commands.registerCommand('clamps.oscShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration('clamps');
+      OscMonitorView.show(
+        async since => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<OscBatch>('clamps/oscEvents', { since, limit: 256 });
+        },
+        async (action, port) => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<{ ok: boolean; message: string }>(
+            'clamps/oscMonitor', { action, port, capacity: 1024 });
+        },
+        configuration.get<number>('oscIntervalMs', 80),
+        configuration.get<number>('oscPort', 32126)
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {

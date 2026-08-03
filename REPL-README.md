@@ -351,3 +351,29 @@ be exercised by hand:
 ```
 
 That should appear as `note on  C4 (60) velocity 100` on channel 1.
+
+## OSC monitor (1.4.4)
+
+`CLAMPS: Show OSC Monitor` lists incoming OSC messages with their address,
+type tag and values, each value shown with its own type. The port is settable
+in the window; 32126 is Incudine's default.
+
+The types are half the information: an integer 1 and a float 1.0 print alike
+and are not alike, a blob is not a string, and a receiver expecting `if` that
+gets `fi` fails without saying so.
+
+The monitor opens a stream of its own on the chosen port. Two readers on one
+port is not something the protocol provides for, so if the patch under test is
+already listening there, point the monitor at a free port and forward to it.
+
+To exercise the window without a sender, start the monitor first — the ring
+exists only while it runs:
+
+```lisp
+(clamps-bridge-rpc:osc-monitor-start-for-repl 32126 512)
+(clamps-bridge-rpc:osc-ring-record-for-repl
+  clamps-bridge-rpc::*osc-ring* "/synth/freq" "if" (list 1 440.0) 0.0d0)
+```
+
+That should appear as `/synth/freq ,if  1  440.0`, with the integer and the
+float in different colours.

@@ -93,6 +93,14 @@ controllers are unaffected.
 
 ![MIDI monitor](https://raw.githubusercontent.com/Elvis-Budingensis/clamps-vscode/main/docs/images/midi-monitor.png)
 
+### OSC monitor
+
+`CLAMPS: Show OSC Monitor` — incoming OSC messages with address, type tag and
+values, each value shown with its own type, plus an address filter and a
+settable port. The types matter: an integer 1 and a float 1.0 print alike and
+are not alike, and a receiver expecting one that gets the other fails
+silently.
+
 ### Level meters and node browser
 
 Real-time levels in dBFS from allocation-free rings written by the audio
