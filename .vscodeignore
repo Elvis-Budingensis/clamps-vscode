@@ -9,6 +9,7 @@ test/**
 CHANGES-v80.md
 CHANGES-v81.md
 ROADMAP.md
+docs/**
 *.vsix
 *.zip
 

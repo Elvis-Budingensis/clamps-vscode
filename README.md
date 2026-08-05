@@ -101,6 +101,14 @@ settable port. The types matter: an integer 1 and a float 1.0 print alike and
 are not alike, and a receiver expecting one that gets the other fails
 silently.
 
+### Scheduler status
+
+`CLAMPS: Show Scheduler Status` — pending events, time to the next one, how
+far ahead the queue reaches, and how full the EDF heap is, with the queue
+depth plotted over time. The heap figure decides whether a piece can be
+scheduled at all: a score with more events than the heap holds fails
+silently.
+
 ### Level meters and node browser
 
 Real-time levels in dBFS from allocation-free rings written by the audio

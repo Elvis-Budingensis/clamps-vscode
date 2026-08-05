@@ -59,6 +59,7 @@
            #:make-osc-ring-for-repl #:osc-ring-record-for-repl
            #:osc-events-since-for-repl
            #:osc-monitor-start-for-repl #:osc-monitor-stop-for-repl
+           #:scheduler-status-for-repl
            #:sticker-snapshot-for-repl #:sticker-clear-for-repl))
 (in-package :clamps-bridge-rpc)
 
@@ -3784,6 +3785,118 @@ listening there, point the monitor at a free port and forward to it. Messages re
           *osc-opened-stream* nil
           *osc-ring* nil)
     (list :ok (if removed "OSC monitor stopped." "OSC monitor stopped."))))
+
+;;; ---------------------------------------------------------------------
+;;; Scheduler status
+;;; ---------------------------------------------------------------------
+;;;
+;;; Everything here is read INSIDE the realtime thread, in one call, and
+;;; through exported functions only.  Three findings from Incudine's source
+;;; make that the right shape rather than a cautious one:
+;;;
+;;; 1. EDF times are ABSOLUTE SAMPLE POSITIONS, and INCUDINE:NOW uses the
+;;;    same base.  There is one time base, not several.  What looked like
+;;;    several was a second symbol named NOW visible in the CLAMPS package
+;;;    — Common Music's, counting seconds.  Hence every symbol below is
+;;;    fully qualified: an unqualified NOW or AT in a CLAMPS session is
+;;;    quite possibly not Incudine's.
+;;;
+;;; 2. *HEAP* is the dynamically bindable working variable; *RT-HEAP* holds
+;;;    the identity of the realtime heap.  HEAP-COUNT and NEXT-TIME, called
+;;;    without arguments, read whichever heap is currently bound — and
+;;;    outside the realtime thread that is not the one AT writes to.  So
+;;;    reading them from outside gives an answer about a different heap,
+;;;    which is worse than no answer.
+;;;
+;;; 3. RT-EVAL is ASYNCHRONOUS unless given :RETURN-VALUE-P T.  Without it
+;;;    the call returns before the body has run, which is why a SETF into a
+;;;    global from inside it appears never to arrive.
+;;;
+;;; What is deliberately NOT done here is walking HEAP-DATA.  Incudine
+;;; exposes no synchronised enumeration of pending events; the traversal
+;;; would need HEAP-DATA, HEAP-NEXT-NODE, NODE-TIME and *RT-HEAP*, all
+;;; internal, while the audio thread reorders the heap underneath.  A
+;;; timeline built that way shows events at wrong times occasionally, and
+;;; looks entirely convincing while doing so.  A real timeline belongs at
+;;; the scheduling call, not in the heap.
+
+(defparameter *edf-symbols*
+  '(("NOW" . :incudine)
+    ("SAMPLE-RATE-VAR" . :incudine)
+    ("HEAP-COUNT" . :incudine.edf)
+    ("NEXT-TIME" . :incudine.edf)
+    ("LAST-TIME" . :incudine.edf)
+    ("HEAP-SIZE-VAR" . :incudine.edf))
+  "Documentation of what this section needs, for the error message.")
+
+(defun %edf-available-p ()
+  "Are the packages and the exported functions present?"
+  (and (find-package :incudine)
+       (find-package :incudine.edf)
+       (let ((now (find-symbol "NOW" :incudine))
+             (count (find-symbol "HEAP-COUNT" :incudine.edf)))
+         (and now (fboundp now) count (fboundp count)))))
+
+(defun %edf-probe-form ()
+  "The form evaluated inside the realtime thread.
+
+Built as a string because the symbols must not be read when this file is
+compiled: rpc.lisp loads against a bare SBCL, where INCUDINE.EDF does not
+exist and a package-qualified symbol would be a READER error — one that no
+handler-case can catch, because it happens before anything runs.
+
+:RETURN-VALUE-P T is what makes this synchronous. Without it the call
+returns before the body has run and the answer is the previous state."
+  "(incudine:rt-eval (:return-value-p t)
+     (list (incudine:now)
+           (incudine.edf:heap-count)
+           (incudine.edf:next-time)
+           (incudine.edf:last-time)
+           incudine.edf:*heap-size*
+           incudine:*sample-rate*))")
+
+(defun scheduler-status-for-repl ()
+  "Scalar state of the EDF scheduler.
+
+Returns (:ok NOW COUNT NEXT LAST CAPACITY SAMPLE-RATE WARNINGS)
+     or (:error TEXT).
+
+All times are absolute sample positions on the same base as INCUDINE:NOW,
+read in one synchronous pass inside the realtime thread. The client
+converts to seconds; doing it here would mean sending numbers whose base
+the client cannot check.
+
+NEXT and LAST are 0 when the heap is empty — that is what NEXT-TIME
+returns for an absent event, and it must not be read as a time at the very
+beginning of the session. The client is told the count, so it can tell the
+two apart."
+  (unless (%edf-available-p)
+    (return-from scheduler-status-for-repl
+      (list :error "Incudine's EDF scheduler is not available (packages INCUDINE and INCUDINE.EDF, functions NOW and HEAP-COUNT).")))
+  (handler-case
+      (let ((result (eval (read-from-string (%edf-probe-form)))))
+        (if (and (consp result) (= (length result) 6))
+            (destructuring-bind (now count next last capacity rate) result
+              (let ((warnings '()))
+                (when (and (numberp capacity) (numberp count)
+                           (> count (* 0.8 capacity)))
+                  ;; The figure that decides whether a piece can be
+                  ;; scheduled at all. A MIDI file with more events than
+                  ;; the heap holds fails silently; *rt-edf-heap-size* in
+                  ;; ~/.incudinerc is where that is raised.
+                  (push (format nil "~D of ~D heap slots in use — raise *rt-edf-heap-size* in ~~/.incudinerc if a longer piece is to be scheduled"
+                                count capacity)
+                        warnings))
+                (list :ok
+                      (%finite-sample now) count
+                      (%finite-sample next) (%finite-sample last)
+                      capacity (%finite-sample rate)
+                      (nreverse warnings))))
+            (list :error
+                  (format nil "The realtime thread returned ~S instead of six values. rt-eval may have run asynchronously."
+                          result))))
+    (error (e)
+      (list :error (format nil "Reading the scheduler failed: ~A" e)))))
 
 (defun sticker-snapshot-for-repl ()
   (list :ok

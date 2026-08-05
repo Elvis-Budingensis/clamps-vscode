@@ -1797,6 +1797,40 @@ whole ring on every poll would be the reason the timing slips."
                                       (or (second value) "Failed.")
                                       (format nil "~A" value)))))))))
 
+(defun handle-scheduler-status (id params)
+  "clamps/schedulerStatus — scalar state of the EDF scheduler.
+
+Times are absolute sample positions, the same base as INCUDINE:NOW, read
+in one synchronous pass inside the realtime thread. The conversion to
+seconds happens at the display, so that the base travels with the numbers
+rather than being assumed."
+  (declare (ignore params))
+  (swank-rex
+   "(clamps-bridge-rpc:scheduler-status-for-repl)"
+   :callback
+   (lambda (status value)
+     (if (and (eq status :ok) (consp value) (eq (first value) :ok)
+              (= (length value) 8))
+         (destructuring-bind (ok now count next last capacity rate warnings)
+             value
+           (declare (ignore ok))
+           (send-response id
+             (make-jobj "available" :true
+                        "error" ""
+                        "now" now
+                        "count" count
+                        "nextTime" next
+                        "lastTime" last
+                        "capacity" capacity
+                        "sampleRate" rate
+                        "warnings" (coerce warnings 'vector))))
+         (send-response id
+           (make-jobj "available" :false
+                      "error" (if (and (consp value) (eq (first value) :error))
+                                  (or (second value) "Scheduler not available.")
+                                  (format nil "~A" value))
+                      "warnings" (vector)))))))
+
 (defun handle-repl-complete (id params)
   "clamps/replComplete — completion for the REPL terminal.
 
@@ -1906,6 +1940,7 @@ whole ring on every poll would be the reason the timing slips."
           ((string= method "clamps/midiMonitor") (handle-midi-monitor id params))
           ((string= method "clamps/oscEvents") (handle-osc-events id params))
           ((string= method "clamps/oscMonitor") (handle-osc-monitor id params))
+          ((string= method "clamps/schedulerStatus") (handle-scheduler-status id params))
           ((string= method "clamps/breakOnSignals") (handle-break-on-signals id params))
           (id (send-error id -32601 (format nil "Not implemented: ~A" method)))
           (t (log-msg "Unbehandelte Notification: ~A" method)))

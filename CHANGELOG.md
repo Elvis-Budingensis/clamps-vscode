@@ -2,26 +2,40 @@
 
 All notable changes to CLAMPS for VS Code are documented here.
 
-## [1.4.6] - 2026-08-02
+## [1.4.5] - 2026-08-04
 
-### Changed
+### Added
 
-- Recording into the OSC and MIDI rings returns the sequence number instead
-  of the ring. Called by hand in the REPL, returning the structure printed
-  the whole ring — 509 NILs around the three entries one wanted to see, and
-  for the MIDI ring four unboxed arrays of the full capacity. The sequence
-  number is also the cursor for the next fetch.
+- **Scheduler status** (`CLAMPS: Show Scheduler Status`): how many events are
+  pending, when the next one fires, how far ahead the queue reaches, and how
+  full the EDF heap is, with the queue depth plotted over time.
 
-## [1.4.5] - 2026-08-02
+  The heap figure is the one that decides whether a piece can be scheduled at
+  all: a score with more events than the heap holds fails silently, and
+  `*rt-edf-heap-size*` in `~/.incudinerc` is where that is raised. The gauge
+  turns red before the heap is full, while there is still room to react.
 
-### Fixed
+  Individual pending events are deliberately not listed. Incudine offers no
+  synchronised way to enumerate them; walking the heap would need four
+  internal symbols while the audio thread reorders it underneath, and the
+  result would place events at wrong times occasionally while looking
+  entirely convincing. The window says so rather than leaving the absence to
+  be read as an unfinished feature.
 
-- Recording an OSC message by hand before the monitor is running now says
-  what to do. The ring exists only while the monitor runs, so this is the
-  ordinary mistake, and "the value nil is not of type osc-ring" is true and
-  useless.
+  All values are read in one synchronous `rt-eval` inside the realtime
+  thread, through exported functions only. That matters for three reasons,
+  each of which otherwise produces a plausible wrong answer: EDF times are
+  absolute sample positions and a second symbol named `now` is visible in the
+  CLAMPS package counting seconds; `heap-count` and `next-time` read whichever
+  heap is currently bound, which outside the realtime thread is not the one
+  `at` writes to; and `rt-eval` returns before its body has run unless given
+  `:return-value-p t`.
 
-## [1.4.6] - 2026-08-02
+  An empty queue is distinguished from an imminent event: `next-time` returns
+  0 when nothing is pending, and shown as a duration that would read as
+  "right now".
+
+## [1.4.4] - 2026-08-02
 
 ### Added
 
@@ -47,6 +61,20 @@ All notable changes to CLAMPS for VS Code are documented here.
 
   Blobs are shown by their length and long strings truncated: a megabyte of
   hex fills the window for a message whose interesting part is its size.
+
+### Changed
+
+- Recording into the OSC and MIDI rings returns the sequence number instead
+  of the ring. Called by hand in the REPL, returning the structure printed
+  the whole ring — 509 NILs around the entries one wanted to see, and for the
+  MIDI ring four unboxed arrays of the full capacity. The sequence number is
+  also the cursor for the next fetch.
+
+### Fixed
+
+- Recording an OSC message before the monitor is running now says what to do.
+  The ring exists only while the monitor runs, so this is the ordinary
+  mistake, and "the value nil is not of type osc-ring" is true and useless.
 
 ## [1.4.3] - 2026-07-31
 

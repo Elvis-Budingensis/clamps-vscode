@@ -30,6 +30,7 @@ import { AtsView, AtsOutline } from './atsView';
 import { SampleBrowserView, SampleListing } from './sampleBrowser';
 import { MidiMonitorView, MidiBatch } from './midiMonitor';
 import { OscMonitorView, OscBatch } from './oscMonitor';
+import { SchedulerView, SchedulerStatus } from './schedulerView';
 import { macroexpandCommand, topLevelFormAt, sexpBeforePoint, packageAt } from './macroexpand';
 import { disassembleCommand, symbolAt } from './disassemble';
 import { inspectCommand } from './inspector';
@@ -426,6 +427,21 @@ export async function activate(context: vscode.ExtensionContext) {
         },
         configuration.get<number>('oscIntervalMs', 80),
         configuration.get<number>('oscPort', 32126)
+      );
+    }),
+    vscode.commands.registerCommand('clamps.schedulerShow', () => {
+      if (!client || client.state !== State.Running) {
+        vscode.window.showErrorMessage('CLAMPS is not running. Run "CLAMPS: Start".');
+        return;
+      }
+      const configuration = vscode.workspace.getConfiguration('clamps');
+      SchedulerView.show(
+        async () => {
+          const c = client;
+          if (!c || c.state !== State.Running) return undefined;
+          return c.sendRequest<SchedulerStatus>('clamps/schedulerStatus', {});
+        },
+        configuration.get<number>('schedulerIntervalMs', 200)
       );
     }),
     vscode.commands.registerCommand('clamps.evalSelection', async () => {
