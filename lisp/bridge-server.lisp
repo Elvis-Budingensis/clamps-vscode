@@ -1810,17 +1810,14 @@ rather than being assumed."
    :callback
    (lambda (status value)
      (if (and (eq status :ok) (consp value) (eq (first value) :ok)
-              (= (length value) 8))
-         (destructuring-bind (ok now count next last capacity rate warnings)
-             value
+              (= (length value) 6))
+         (destructuring-bind (ok now count capacity rate warnings) value
            (declare (ignore ok))
            (send-response id
              (make-jobj "available" :true
                         "error" ""
                         "now" now
                         "count" count
-                        "nextTime" next
-                        "lastTime" last
                         "capacity" capacity
                         "sampleRate" rate
                         "warnings" (coerce warnings 'vector))))

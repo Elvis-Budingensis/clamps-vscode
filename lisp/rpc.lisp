@@ -3846,37 +3846,62 @@ exist and a package-qualified symbol would be a READER error — one that no
 handler-case can catch, because it happens before anything runs.
 
 :RETURN-VALUE-P T is what makes this synchronous. Without it the call
-returns before the body has run and the answer is the previous state."
-  "(incudine:rt-eval (:return-value-p t)
-     (list (incudine:now)
-           (incudine.edf:heap-count)
-           (incudine.edf:next-time)
-           (incudine.edf:last-time)
-           incudine.edf:*heap-size*
-           incudine:*sample-rate*))")
+returns before the body has run and the answer is the previous state.
+
+EVERY symbol takes two colons, and that is a rule rather than a series of
+individual findings. A single colon on an internal symbol is a READER
+error, which no handler-case can catch because it happens before anything
+runs — and which of these names happens to be exported is not something
+this file can know for a given Incudine version. RT-EVAL and *SAMPLE-RATE*
+both turned out to be internal despite being documented; NOW is exported.
+Writing them all the same way removes the question instead of answering it
+six times.
+
+Two colons work for exported symbols too, so nothing is lost. What is
+gained is that a future Incudine that un-exports one of these does not
+break the view with a reader error."
+  "(incudine::rt-eval (:return-value-p t)
+     (list (incudine::now)
+           (incudine.edf::heap-count)
+           incudine.edf::*heap-size*
+           incudine::*sample-rate*))")
 
 (defun scheduler-status-for-repl ()
   "Scalar state of the EDF scheduler.
 
-Returns (:ok NOW COUNT NEXT LAST CAPACITY SAMPLE-RATE WARNINGS)
-     or (:error TEXT).
+Returns (:ok NOW COUNT CAPACITY SAMPLE-RATE WARNINGS) or (:error TEXT).
 
-All times are absolute sample positions on the same base as INCUDINE:NOW,
-read in one synchronous pass inside the realtime thread. The client
-converts to seconds; doing it here would mean sending numbers whose base
-the client cannot check.
+NOW is an absolute sample position, read in one synchronous pass inside the
+realtime thread.
 
-NEXT and LAST are 0 when the heap is empty — that is what NEXT-TIME
-returns for an absent event, and it must not be read as a time at the very
-beginning of the session. The client is told the count, so it can tell the
-two apart."
+NEXT-TIME and LAST-TIME are deliberately NOT reported, and the reason is a
+measurement rather than a precaution. Scheduling events changes HEAP-COUNT
+as expected — 2, then 4 — while NEXT-TIME stays at the same value across
+new events and across FLUSH-PENDING. Whatever it describes, it is not the
+heap COUNT describes, and its magnitude does not relate to NOW by the
+sample rate either: an event five seconds away read as some 46 billion
+against a NOW of 6 million.
+
+Reporting it anyway would have put a countdown of \"17579:24.3\" next to an
+event due in five seconds. A number the extension cannot vouch for is worse
+than a missing one, because the display gives it the same authority as the
+figures that are right."
   (unless (%edf-available-p)
     (return-from scheduler-status-for-repl
       (list :error "Incudine's EDF scheduler is not available (packages INCUDINE and INCUDINE.EDF, functions NOW and HEAP-COUNT).")))
   (handler-case
-      (let ((result (eval (read-from-string (%edf-probe-form)))))
-        (if (and (consp result) (= (length result) 6))
-            (destructuring-bind (now count next last capacity rate) result
+      ;; The compiler is silenced around this one form, not generally.
+      ;; Reading the probe interns the symbols it names, and compiling it
+      ;; then warns that they are undefined — which they are, at this
+      ;; moment, in an image where Incudine has been checked to exist but
+      ;; the individual functions have not. The warnings are correct and
+      ;; useless: the handler-case below is what actually deals with a
+      ;; missing symbol, and a warning printed on every poll would bury the
+      ;; session's own output at five lines a second.
+      (let ((result (handler-bind ((warning #'muffle-warning))
+                      (eval (read-from-string (%edf-probe-form))))))
+        (if (and (consp result) (= (length result) 4))
+            (destructuring-bind (now count capacity rate) result
               (let ((warnings '()))
                 (when (and (numberp capacity) (numberp count)
                            (> count (* 0.8 capacity)))
@@ -3889,11 +3914,10 @@ two apart."
                         warnings))
                 (list :ok
                       (%finite-sample now) count
-                      (%finite-sample next) (%finite-sample last)
                       capacity (%finite-sample rate)
                       (nreverse warnings))))
             (list :error
-                  (format nil "The realtime thread returned ~S instead of six values. rt-eval may have run asynchronously."
+                  (format nil "The realtime thread returned ~S instead of four values. rt-eval may have run asynchronously."
                           result))))
     (error (e)
       (list :error (format nil "Reading the scheduler failed: ~A" e)))))

@@ -103,11 +103,12 @@ silently.
 
 ### Scheduler status
 
-`CLAMPS: Show Scheduler Status` — pending events, time to the next one, how
-far ahead the queue reaches, and how full the EDF heap is, with the queue
-depth plotted over time. The heap figure decides whether a piece can be
-scheduled at all: a score with more events than the heap holds fails
-silently.
+`CLAMPS: Show Scheduler Status` — how many events are pending and how full the
+EDF heap is, with the queue depth plotted over time. The heap figure decides
+whether a piece can be scheduled at all: a score with more events than the
+heap holds fails silently.
+
+![Scheduler status](https://raw.githubusercontent.com/Elvis-Budingensis/clamps-vscode/main/docs/images/scheduler.png)
 
 ### Level meters and node browser
 

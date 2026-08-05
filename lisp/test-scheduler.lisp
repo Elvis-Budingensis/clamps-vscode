@@ -19,7 +19,14 @@
 ;;;;   - RT-EVAL is asynchronous without :RETURN-VALUE-P T, and then
 ;;;;     returns before the body has run.
 ;;;;
-;;;; Run: sbcl --script lisp/test-scheduler.lisp
+;;;; NEXT-TIME and LAST-TIME are not read, and the probe must not start
+;;; reading them again. Measured against a running session: HEAP-COUNT
+;;; follows the events scheduled — 2, then 4 — while NEXT-TIME stays at one
+;;; value across new events and across FLUSH-PENDING, and its magnitude does
+;;; not relate to NOW by the sample rate. Reported anyway it produced a
+;;; countdown of "17579:24.3" for an event due in five seconds.
+;;;
+;;; Run: sbcl --script lisp/test-scheduler.lisp
 
 (load (merge-pathnames "rpc.lisp" *load-truename*))
 
@@ -54,16 +61,43 @@
 ;;; are not. The original diagnosis of this bug took several rounds
 ;;; precisely because both are called NOW.
 (let ((form (clamps-bridge-rpc::%edf-probe-form)))
-  (dolist (needle '("incudine:now" "incudine.edf:heap-count"
-                    "incudine.edf:next-time" "incudine.edf:last-time"
-                    "incudine.edf:*heap-size*" "incudine:*sample-rate*"))
+  ;; Every symbol carries a package prefix AND two colons.
+  ;;
+  ;; Two colons is a rule here, not the sum of individual findings. Which of
+  ;; these names is exported is not something this file can know for a given
+  ;; Incudine version — RT-EVAL and *SAMPLE-RATE* are internal despite being
+  ;; documented, NOW is exported — and a single colon on an internal symbol
+  ;; is a READER error. That happens before anything runs, so no
+  ;; handler-case catches it: the view then reports a symbol problem instead
+  ;; of a scheduler state. Two colons work for exported symbols too, so the
+  ;; rule costs nothing and removes the question.
+  (dolist (needle '("incudine::rt-eval" "incudine::now"
+                    "incudine.edf::heap-count" "incudine.edf::*heap-size*"
+                    "incudine::*sample-rate*"))
     (unless (search needle form)
       (fail "The probe does not use ~A: ~A" needle form)))
-  ;; And nothing unqualified: every occurrence of these names must carry a
-  ;; package prefix.
-  (dolist (bare '("(now)" "(heap-count)" "(next-time)" "(last-time)"))
-    (when (search bare form)
-      (fail "The probe uses the unqualified ~A" bare)))
+
+  ;; And no single-colon reference to these packages anywhere in the form.
+  ;; Checked positionally rather than by listing the names again, so that a
+  ;; symbol added later is covered without touching this test.
+  (let ((position 0))
+    (loop
+      (let ((found (search "incudine" form :start2 position)))
+        (unless found (return))
+        (let* ((rest (subseq form found))
+               (colon (position #\: rest)))
+          (when colon
+            (unless (and (< (1+ colon) (length rest))
+                         (char= (char rest (1+ colon)) #\:))
+              (fail "A single-colon reference at ~S"
+                    (subseq rest 0 (min 40 (length rest)))))))
+        (setf position (1+ found)))))
+
+  ;; And the two figures that cannot be trusted stay out.
+  (dolist (absent '("next-time" "last-time"))
+    (when (search absent form)
+      (fail "The probe reads ~A again, which does not describe the heap ~
+HEAP-COUNT counts" absent)))
 
   ;; :RETURN-VALUE-P T is what makes rt-eval synchronous. Without it the
   ;; call returns before the body has run, and the answer is the state from
@@ -75,27 +109,34 @@
   ;; code it would be a READER error whenever INCUDINE.EDF does not exist —
   ;; and a reader error happens before anything runs, so no handler-case
   ;; could catch it. This gate is proof: it loads rpc.lisp without Incudine
-  ;; present, which a literal incudine.edf:heap-count would prevent.
+  ;; present, which a literal incudine.edf::heap-count would prevent.
   (unless (stringp form)
     (fail "The probe form is not a string; loading without Incudine would fail")))
 
 ;;; ---------------------------------------------------------------------
 ;;; 3. A malformed answer is reported, not interpreted
 ;;; ---------------------------------------------------------------------
-;;; If rt-eval ran asynchronously after all, it returns something other
-;;; than the six values. Reading that as a scheduler state would put
-;;; arbitrary numbers on a time axis.
-(let ((clamps-bridge-rpc::*edf-symbols* clamps-bridge-rpc::*edf-symbols*))
-  ;; Stand in for the packages so that the availability check passes and
-  ;; the probe is actually evaluated.
-  (defpackage #:incudine (:use #:cl) (:export #:now))
-  (defpackage #:incudine.edf (:use #:cl) (:export #:heap-count))
-  (let ((now (intern "NOW" :incudine))
-        (count (intern "HEAP-COUNT" :incudine.edf)))
+;;; If rt-eval ran asynchronously after all, or the realtime thread was not
+;;; running, the call returns something other than the six values. Reading
+;;; that as a scheduler state would put arbitrary numbers on a time axis.
+;;;
+;;; Checked by calling the probe with stand-in packages present but no
+;;; rt-eval: the evaluation then fails, and the failure must reach the
+;;; caller as an error rather than as a state.
+;;;
+;;; The stand-ins are built with MAKE-PACKAGE and INTERN at runtime rather
+;;; than DEFPACKAGE, so that reading this file does not create the symbols
+;;; the probe names. Written as literal code, SBCL would intern
+;;; INCUDINE::RT-EVAL and the rest while compiling the test and then warn
+;;; about them being undefined — warnings in a passing gate teach the reader
+;;; to skip its output.
+(let ((incudine (or (find-package "INCUDINE") (make-package "INCUDINE" :use '("COMMON-LISP"))))
+      (edf (or (find-package "INCUDINE.EDF") (make-package "INCUDINE.EDF" :use '("COMMON-LISP")))))
+  (let ((now (intern "NOW" incudine))
+        (count (intern "HEAP-COUNT" edf)))
     (setf (fdefinition now) (lambda () 0)
           (fdefinition count) (lambda () 0))
-    ;; The probe form names rt-eval, which does not exist here, so the
-    ;; evaluation fails — and that must be reported rather than swallowed.
+    ;; rt-eval is deliberately absent, so evaluating the probe fails.
     (let ((r (clamps-bridge-rpc:scheduler-status-for-repl)))
       (unless (eq (first r) :error)
         (fail "A failing probe returns ~S instead of an error" (first r)))

@@ -47,11 +47,19 @@ equal('negative is a dash', distanceLabel(-1), '—');
 equal('NaN is a dash', distanceLabel(NaN), '—');
 
 // ---------------------------------------------------------------------
-// 3. Zero means "nothing pending", not "now"
+// 3. No countdown is shown, and the reason is stated
 // ---------------------------------------------------------------------
-// The distinction this view turns on. With an empty queue NEXT-TIME
-// returns 0, and showing that as a time would say an event is imminent
-// when none exists.
+// NEXT-TIME and LAST-TIME are not reported. Measured against a running
+// session: scheduling events changes HEAP-COUNT as expected — 2, then 4 —
+// while NEXT-TIME stays at the same value, across new events and across
+// FLUSH-PENDING. Its magnitude does not relate to NOW by the sample rate
+// either; an event five seconds away read as some 46 billion against a NOW
+// of 6 million, which the display duly rendered as a countdown of
+// "17579:24.3".
+//
+// hasPendingTime remains exported because the distinction it makes is still
+// the right one for any future countdown: a zero returned for an absent
+// event must not be shown as a time.
 equal('empty queue, zero time', hasPendingTime(0, 0), false);
 equal('empty queue, nonzero time', hasPendingTime(0, 12345), false);
 equal('events pending, zero time', hasPendingTime(3, 0), false);
@@ -85,8 +93,8 @@ if (gaugeColour(0.85) !== 'var(--vscode-charts-red)') {
 // the window rather than assume the feature is unfinished.
 {
   const html = SchedulerView.html();
-  if (!/not listed|no synchronised way|enumerate/.test(html)) {
-    fail('the window does not say why individual events are not listed');
+  if (!/not shown|not listed/.test(html)) {
+    fail('the window does not mention that individual events are absent');
   }
   // The queue-depth curve is scaled to the CAPACITY, not to its own peak: a
   // curve rescaled to what it has seen always looks alarming, and the
@@ -94,9 +102,23 @@ if (gaugeColour(0.85) !== 'var(--vscode-charts-red)') {
   if (!/point\.count \/ capacity/.test(html)) {
     fail('the history is not scaled to the heap capacity');
   }
-  // Zero must not be shown as a time.
-  if (!/s\.count > 0 && s\.nextTime > 0/.test(html)) {
-    fail('an empty queue would show a next-event time');
+  // No countdown is rendered at all, since the figure behind it cannot be
+  // trusted. A field showing a number the extension cannot vouch for would
+  // carry the same authority on screen as the ones it can.
+  if (/nextTime|lastTime/.test(html)) {
+    fail('the view still renders a countdown from next-time or last-time');
+  }
+  // And the window says that they are absent, so the gap is not read as an
+  // unfinished feature. The REASON lives in the source and the changelog,
+  // not in a paragraph the user re-reads on every glance: four lines about
+  // what is missing beside two figures that are present is the wrong
+  // proportion.
+  if (!/not shown/.test(html)) {
+    fail('the window does not mention that no countdown is shown');
+  }
+  if (html.length > 12000) {
+    fail(`the window markup is ${html.length} characters — the explanation `
+       + 'has outgrown what it explains');
   }
 }
 

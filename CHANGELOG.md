@@ -7,33 +7,33 @@ All notable changes to CLAMPS for VS Code are documented here.
 ### Added
 
 - **Scheduler status** (`CLAMPS: Show Scheduler Status`): how many events are
-  pending, when the next one fires, how far ahead the queue reaches, and how
-  full the EDF heap is, with the queue depth plotted over time.
+  pending, how full the EDF heap is, and the queue depth plotted over time.
 
   The heap figure is the one that decides whether a piece can be scheduled at
   all: a score with more events than the heap holds fails silently, and
   `*rt-edf-heap-size*` in `~/.incudinerc` is where that is raised. The gauge
   turns red before the heap is full, while there is still room to react.
 
-  Individual pending events are deliberately not listed. Incudine offers no
-  synchronised way to enumerate them; walking the heap would need four
-  internal symbols while the audio thread reorders it underneath, and the
-  result would place events at wrong times occasionally while looking
-  entirely convincing. The window says so rather than leaving the absence to
-  be read as an unfinished feature.
+  Everything is read in one synchronous `rt-eval` inside the realtime thread,
+  where the heap the scheduler uses is the one that answers: `heap-count`
+  reads whichever heap is currently bound, and outside the realtime thread
+  that is not the one `at` writes to. `rt-eval` needs `:return-value-p t`,
+  or it returns before its body has run.
 
-  All values are read in one synchronous `rt-eval` inside the realtime
-  thread, through exported functions only. That matters for three reasons,
-  each of which otherwise produces a plausible wrong answer: EDF times are
-  absolute sample positions and a second symbol named `now` is visible in the
-  CLAMPS package counting seconds; `heap-count` and `next-time` read whichever
-  heap is currently bound, which outside the realtime thread is not the one
-  `at` writes to; and `rt-eval` returns before its body has run unless given
-  `:return-value-p t`.
+  Every symbol in the probe carries two colons. `rt-eval` and `*sample-rate*`
+  are internal to `INCUDINE` despite being documented, and a single colon on
+  an internal symbol is a reader error that no handler can catch — which
+  names a given Incudine version exports is not something the extension can
+  know.
 
-  An empty queue is distinguished from an imminent event: `next-time` returns
-  0 when nothing is pending, and shown as a duration that would read as
-  "right now".
+  Neither a countdown to the next event nor the reach of the queue is shown.
+  `next-time` does not describe the heap that `heap-count` counts: measured
+  against a running session it stays at one value while events are scheduled
+  and after `flush-pending`, and its magnitude does not relate to `now` by
+  the sample rate. Reported anyway it produced a countdown of "17579:24.3"
+  for an event due in five seconds. Individual pending events are likewise
+  absent, since Incudine offers no synchronised way to enumerate the queue.
+  The window states both, so the absences are not read as unfinished work.
 
 ## [1.4.4] - 2026-08-02
 

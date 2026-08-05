@@ -19,14 +19,13 @@ import * as vscode from 'vscode';
  *                       MIDI file with more events than the heap holds
  *                       fails silently, and *rt-edf-heap-size* is where
  *                       that is raised.
- *   next - now        — how long until the next event fires.
- *   last - now        — how far ahead the queue reaches. During playback
- *                       of a scheduled score this falls steadily; when it
- *                       reaches zero the piece is over.
+ *   now               — the transport position in samples, and in seconds.
  *
- * All times arrive as absolute sample positions on the same base as
- * INCUDINE:NOW. The conversion to seconds happens here, with the sample
- * rate that came with them, so that no assumed base creeps in.
+ * NEXT-TIME and LAST-TIME are absent by measurement, not by caution.
+ * Scheduling events changes HEAP-COUNT as expected while NEXT-TIME stays at
+ * the same value, across new events and across FLUSH-PENDING; its magnitude
+ * does not relate to NOW by the sample rate either. Reported anyway, it put
+ * a countdown of "17579:24.3" beside an event due in five seconds.
  */
 
 export interface SchedulerStatus {
@@ -34,8 +33,6 @@ export interface SchedulerStatus {
   error?: string;
   now: number;
   count: number;
-  nextTime: number;
-  lastTime: number;
   capacity: number;
   sampleRate: number;
   warnings: string[];
@@ -180,10 +177,6 @@ export class SchedulerView {
 <div class="figures">
   <div class="figure"><div class="label">Pending</div>
     <div class="value" id="count">—</div></div>
-  <div class="figure"><div class="label">Next event in</div>
-    <div class="value" id="next">—</div></div>
-  <div class="figure"><div class="label">Queue reaches</div>
-    <div class="value" id="last">—</div></div>
   <div class="figure"><div class="label">Heap</div>
     <div class="value" id="heap">—</div></div>
 </div>
@@ -192,11 +185,9 @@ export class SchedulerView {
 <div class="dim" id="axis"></div>
 <div class="warn" id="warn"></div>
 <div class="note">
-  Times are absolute sample positions read inside the realtime thread and
-  converted with the session's sample rate. Individual pending events are
-  not listed: Incudine offers no synchronised way to enumerate them, and a
-  timeline built from the heap directly would occasionally place events at
-  the wrong time while looking correct.
+  Read inside the realtime thread. Individual pending events and a countdown
+  to the next one are not shown — Incudine offers no dependable way to read
+  either.
 </div>
 <script>
 const vscode = acquireVsCodeApi();
@@ -260,7 +251,7 @@ window.addEventListener('message', event => {
   const s = message.status;
   if (!s.available) {
     document.getElementById('warn').textContent = s.error || '';
-    for (const id of ['count', 'next', 'last', 'heap']) {
+    for (const id of ['count', 'heap']) {
       document.getElementById(id).textContent = '\\u2014';
     }
     return;
@@ -269,14 +260,6 @@ window.addEventListener('message', event => {
   const toSeconds = samples => rate ? samples / rate : null;
 
   document.getElementById('count').textContent = s.count;
-  // NEXT-TIME and LAST-TIME are 0 when nothing is pending. Showing that as
-  // "0.0 ms" would read as "right now", which is the opposite of the truth.
-  document.getElementById('next').textContent =
-    (s.count > 0 && s.nextTime > 0)
-      ? distanceLabel(toSeconds(s.nextTime - s.now)) : '\\u2014';
-  document.getElementById('last').textContent =
-    (s.count > 0 && s.lastTime > 0)
-      ? distanceLabel(toSeconds(s.lastTime - s.now)) : '\\u2014';
   document.getElementById('heap').textContent =
     s.count + ' / ' + s.capacity;
 

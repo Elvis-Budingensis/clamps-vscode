@@ -95,8 +95,8 @@
   "longStrings": 23
  },
  "src/schedulerView.ts": {
-  "lines": 304,
-  "comments": 63,
+  "lines": 287,
+  "comments": 60,
   "longStrings": 2
  },
  "src/slimeTools.ts": {
@@ -145,7 +145,7 @@
   "longStrings": 11
  },
  "lisp/bridge-server.lisp": {
-  "lines": 2020,
+  "lines": 2017,
   "comments": 152,
   "longStrings": 93
  },
@@ -165,8 +165,8 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 4552,
-  "comments": 634,
+  "lines": 4576,
+  "comments": 642,
   "longStrings": 209
  },
  "lisp/swankframing.lisp": {
@@ -215,9 +215,9 @@
   "longStrings": 5
  },
  "lisp/test-scheduler.lisp": {
-  "lines": 111,
-  "comments": 56,
-  "longStrings": 4
+  "lines": 152,
+  "comments": 83,
+  "longStrings": 5
  },
  "lisp/test-spectrum.lisp": {
   "lines": 560,
@@ -325,9 +325,9 @@
   "longStrings": 5
  },
  "test/scheduler.test.js": {
-  "lines": 111,
-  "comments": 43,
-  "longStrings": 8
+  "lines": 133,
+  "comments": 58,
+  "longStrings": 10
  },
  "test/session.test.js": {
   "lines": 108,
