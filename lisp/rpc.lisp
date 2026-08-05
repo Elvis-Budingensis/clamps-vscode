@@ -1438,7 +1438,15 @@ not yet exist."
 
 ELEMENT-TYPE is T (any value, boxed) or DOUBLE-FLOAT (unboxed samples).
 DECIMATION N keeps every Nth recorded value and discards the rest, so the
-DSP body can call the recorder unconditionally."
+DSP body can call the recorder unconditionally.
+
+The lambda list mixes &OPTIONAL and &KEY, which SBCL warns about with good
+reason: a caller passing a keyword positionally gets it bound to CAPACITY
+instead, silently. It stays this way because the positional CAPACITY is how
+this constructor is called throughout the documentation and in existing
+sessions, and changing it would break code that is already written. The
+CHECK-TYPE below is what catches the mistake — a keyword is not a positive
+fixnum, so it is reported rather than accepted."
   (check-type capacity (and fixnum (integer 1)))
   (check-type decimation (and fixnum (integer 1)))
   (unless (member element-type '(t double-float))
@@ -2231,7 +2239,7 @@ nobody checks."
              "plain vector: no sample rate, the time axis is in frames"))
     (t (values nil 0 0 0.0d0 "not a buffer and not a vector of samples"))))
 
-(defun %buffer-columns (reader frames channels channel start end columns)
+(defun %buffer-columns (reader channel start end columns)
   "Reduces the range [START, END) to COLUMNS triples (min max rms).
 
 Every sample of the range is looked at, none is skipped.  Decimating by
@@ -2239,7 +2247,13 @@ stepping — reading every Nth sample — is the obvious shortcut and it is
 wrong for exactly the case one wants a waveform for: a single clipped
 sample between two steps is invisible, and a click is nothing but that.
 The cost is linear in the range, but it is paid here, where the data
-already is, and once per request rather than per pixel."
+already is, and once per request rather than per pixel.
+
+FRAMES and CHANNELS were parameters until 1.4.8 and never read: START and
+END already bound the range, and READER closes over the channel layout.
+Unused parameters are worse than clutter — they suggest that the function
+consults the buffer's shape, so a reader looking for where the channel
+count is validated looks here and finds nothing."
   (let* ((span (max 1 (- end start)))
          (per-column (/ (float span 1.0d0) (float columns 1.0d0)))
          (out '()))
@@ -2352,7 +2366,7 @@ display refresh."
                       ;; columns; the display then draws gaps that are not
                       ;; in the signal.
                       (columns (min columns (- end start)))
-                      (values* (%buffer-columns reader frames channels channel
+                      (values* (%buffer-columns reader channel
                                                 start end columns))
                       (peak 0.0d0) (sum 0.0d0) (clipped 0))
                  (declare (type double-float peak sum))

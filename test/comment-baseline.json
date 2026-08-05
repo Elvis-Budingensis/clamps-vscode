@@ -165,7 +165,7 @@
   "longStrings": 8
  },
  "lisp/rpc.lisp": {
-  "lines": 4576,
+  "lines": 4590,
   "comments": 642,
   "longStrings": 209
  },
@@ -225,8 +225,8 @@
   "longStrings": 15
  },
  "lisp/test-sticker-state.lisp": {
-  "lines": 267,
-  "comments": 51,
+  "lines": 288,
+  "comments": 61,
   "longStrings": 5
  },
  "lisp/test-xref.lisp": {

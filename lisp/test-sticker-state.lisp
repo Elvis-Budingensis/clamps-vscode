@@ -263,4 +263,25 @@
   (declare (ignore ok))
   (assert (= 0 seq)) (assert (= 0 dropped)) (assert (null values)))
 
+
+;;; A keyword passed positionally is refused, not accepted.
+;;;
+;;; The lambda list mixes &OPTIONAL and &KEY, which SBCL warns about with
+;;; good reason: (make-sticker-state-for-repl :double-float) binds the
+;;; keyword to CAPACITY. It stays that way because the positional CAPACITY
+;;; is how the constructor is called throughout the documentation, and
+;;; changing it would break code already written — so the CHECK-TYPE is what
+;;; has to catch the mistake. Without this test the reasoning in the
+;;; docstring would be a claim rather than a fact.
+(dolist (wrong '(:double-float :element-type t nil))
+  (assert (handler-case
+              (progn (clamps-bridge-rpc:make-sticker-state-for-repl wrong) nil)
+            (error () t))
+          () "~S was accepted as a capacity" wrong))
+
+;;; And a real capacity still works, positionally and with keywords.
+(assert (clamps-bridge-rpc:make-sticker-state-for-repl 64))
+(assert (clamps-bridge-rpc:make-sticker-state-for-repl
+         64 :element-type 'double-float :decimation 2))
+
 (format t "sticker-state: ok~%")
