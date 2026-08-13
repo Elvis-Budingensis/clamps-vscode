@@ -1,6 +1,40 @@
 # Changelog
-
 All notable changes to CLAMPS for VS Code are documented here.
+
+## [1.5.0] - 2026-08-13
+
+### Fixed
+
+- **`node_modules` is packaged again.** `.vscodeignore` carried a blanket
+  `node_modules/**`, which overrode the production dependencies `vsce`
+  includes by itself. The resulting `.vsix` shipped `out/` alone, so every
+  one of the thirteen `require("vscode-languageclient/node")` calls in the
+  compiled sources had nothing to resolve against: an install from the
+  `.vsix` died on activation with `Cannot find module`, while F5 from the
+  workspace kept working because `node_modules` sits next to it there.
+
+  The bug had been in 1.4.8 and 1.4.9 and no gate saw it, because all of
+  them examine the source tree and none examined the artefact.
+
+- `brace-expansion` 2.1.2 → 2.1.4, reached through
+  `vscode-languageclient` → `minimatch` (GHSA-mh99-v99m-4gvg,
+  GHSA-rgw5-rvv9-x895). A lockfile change only; the patterns minimatch
+  expands here come from the extension's own `documentSelector`.
+
+### Added
+
+- **Package gate** (`test/package.test.js`): unzips the built `.vsix`,
+  collects every non-relative `require()` in `extension/out`, and resolves
+  each one against the package. A module that is imported but not shipped
+  now fails `npm run gates` instead of waiting for an install to break.
+
+### Changed
+
+- `lisp/rpc.fasl` is no longer shipped or tracked. `bootstrap.lisp` loads
+  `rpc.lisp`, never the compiled file, so the 527 KB were a by-product of
+  `loadcheck.lisp` — and a FASL is bound to the SBCL version that produced
+  it, which would have failed on a mismatch rather than recompiling.
+  Package size 1.01 MB → 812 KB.
 
 ## [1.4.8] - 2026-08-05
 
