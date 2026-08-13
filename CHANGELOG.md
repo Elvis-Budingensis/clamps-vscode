@@ -1,7 +1,7 @@
 # Changelog
 All notable changes to CLAMPS for VS Code are documented here.
 
-## [1.5.0] - 2026-08-13
+## [1.6.0] - 2026-08-13
 
 ### Fixed
 
