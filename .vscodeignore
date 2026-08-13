@@ -28,3 +28,6 @@ lisp/loadcheck.lisp
 lisp/framingtest.lisp
 lisp/swankframing.lisp
 lisp/test-*.lisp
+
+# Kompilate, nie geladen (bootstrap.lisp lädt rpc.lisp)
+**/*.fasl
